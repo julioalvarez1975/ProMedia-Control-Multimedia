@@ -22,6 +22,7 @@ import {
 } from "@promedia/shared";
 import {
   maybeRefreshSubtitleAgent,
+  maybeStartKaraokeOnGuionItem,
   nudgeSubtitleCancionero,
   setSubtitleAgent,
   teachSubtitleCancionero,
@@ -266,6 +267,13 @@ function parseClientMessage(raw: string): ClientToHubMessage | null {
       }
       return { type: "live.setSceneMode", payload: { sceneMode } };
     }
+    if (type === "live.setWatermark") {
+      const enabled = (payload as { enabled?: unknown } | undefined)?.enabled;
+      if (typeof enabled !== "boolean") {
+        return null;
+      }
+      return { type: "live.setWatermark", payload: { enabled } };
+    }
     if (type === "live.setTheme") {
       const p = payload as {
         themeId?: unknown;
@@ -486,9 +494,15 @@ export class WsHub {
       case "session.touch":
         this.applyResult(conn, session, sessionStore.touch(session, msg.payload?.note));
         return;
-      case "playlist.itemAdd":
-        this.applyResult(conn, session, sessionStore.addItem(session, msg.payload.item));
+      case "playlist.itemAdd": {
+        const addResult = sessionStore.addItem(session, msg.payload.item);
+        this.applyResult(conn, session, addResult);
+        if (!("error" in addResult)) {
+          // YouTube / audio in Guion → download, silence scan, cancionero cues.
+          maybeStartKaraokeOnGuionItem(session, msg.payload.item);
+        }
         return;
+      }
       case "playlist.itemUpdate":
         this.applyResult(
           conn,
@@ -561,6 +575,13 @@ export class WsHub {
           conn,
           session,
           sessionStore.setSceneMode(session, msg.payload.sceneMode),
+        );
+        return;
+      case "live.setWatermark":
+        this.applyResult(
+          conn,
+          session,
+          sessionStore.setWatermark(session, msg.payload.enabled),
         );
         return;
       case "live.setTheme":

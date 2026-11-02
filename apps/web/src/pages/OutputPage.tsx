@@ -12,6 +12,7 @@ import {
 } from "@promedia/shared";
 import { LiveItemLayer } from "../components/LiveItemLayer";
 import { SceneOverlay } from "../components/SceneOverlay";
+import { WatermarkOverlay } from "../components/WatermarkOverlay";
 import {
   StageBackground,
   StageDotsOverlay,
@@ -131,6 +132,7 @@ export function OutputPage() {
   const liveSlideIndex = snapshot?.live.currentSlideIndex ?? 0;
   const mediaClock = snapshot?.live.mediaClock ?? null;
   const sceneMode: SceneMode = snapshot?.live.sceneMode ?? "normal";
+  const watermarkEnabled = snapshot?.live.watermarkEnabled === true;
   const logoUpdatedAt = snapshot?.live.logoUpdatedAt ?? null;
   const themeId: ThemeId = snapshot?.live.themeId ?? DEFAULT_THEME_ID;
   const themeOverrides = snapshot?.live.themeOverrides ?? null;
@@ -408,6 +410,19 @@ export function OutputPage() {
             />
             <SceneOverlay
               mode={sceneMode}
+              logoSrc={
+                logoUpdatedAt && sessionId && wsTicket
+                  ? buildBrandingLogoUrl(
+                      sessionId,
+                      wsTicket,
+                      logoUpdatedAt,
+                    )
+                  : null
+              }
+            />
+            <WatermarkOverlay
+              enabled={watermarkEnabled}
+              sceneBlocksWatermark={sceneMode !== "normal"}
               logoSrc={
                 logoUpdatedAt && sessionId && wsTicket
                   ? buildBrandingLogoUrl(

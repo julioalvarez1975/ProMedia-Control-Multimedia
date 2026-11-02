@@ -160,6 +160,9 @@ export class SessionStore {
     if (brandingAt && session.live.logoUpdatedAt !== brandingAt) {
       session.live.logoUpdatedAt = brandingAt;
     }
+    if (typeof session.live.watermarkEnabled !== "boolean") {
+      session.live.watermarkEnabled = false;
+    }
     return {
       id: session.id,
       code: session.code,
@@ -512,6 +515,17 @@ export class SessionStore {
     }
     // Overlay only — does not touch currentItemId or mediaClock (Q1/Q2)
     session.live.sceneMode = sceneMode;
+    return this.bumpUpdated(session);
+  }
+
+  setWatermark(
+    session: SessionRecord,
+    enabled: unknown,
+  ): HubMessage | { error: string } {
+    if (typeof enabled !== "boolean") {
+      return { error: "invalid_watermark" };
+    }
+    session.live.watermarkEnabled = enabled;
     return this.bumpUpdated(session);
   }
 

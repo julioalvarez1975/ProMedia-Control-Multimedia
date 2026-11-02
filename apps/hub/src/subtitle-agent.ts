@@ -46,6 +46,7 @@ import {
   rememberCancioneroTiming,
 } from "./cancionero-memory.js";
 import {
+  alignCancioneroLinesToSilence,
   alignCancioneroLinesToTiming,
   buildKaraokeAlignPrompt,
   findCancioneroSongCandidates,
@@ -58,6 +59,10 @@ import {
   titleFromAudioFilename,
   type CancioneroMatchHit,
 } from "./subtitle-cancionero.js";
+import {
+  detectSpeechOnsetsFromSilence,
+  SILENCE_AIR_ANTICIPATION_MS,
+} from "./subtitle-silence.js";
 import {
   ensureYoutubeAudio,
   expandCaptionPreferLangs,
@@ -449,23 +454,80 @@ function isStickyHardYoutube(
   );
 }
 
-/** Cancionero miss is intentional — do not fall through to Whisper on Go Live. */
-function isStickyCancioneroMiss(
-  agent: SubtitleAgentState | null | undefined,
-): boolean {
-  return Boolean(
-    agent &&
-      agent.status === "error" &&
-      (agent.hint === "cancionero_no_match" ||
-        agent.hint === "cancionero_empty" ||
-        agent.hint === "cancionero_no_songs"),
-  );
-}
-
 /**
  * Timing-only probe for karaoke forced align. Captions/ASR clocks decide
  * *when* to reveal each Biblioteca line — never rewrite the text.
  */
+/**
+ * Temp-download (YouTube) / open local media → examine real silence → speech onsets.
+ */
+async function fetchSilenceSpeechOnsets(options: {
+  sessionId: string;
+  gen: number;
+  resolved: ResolveOk;
+  onStatus?: (
+    status: "downloading" | "extracting" | "transcribing",
+    hint: string,
+  ) => void;
+}): Promise<{
+  onsetsMs: number[];
+  durationMs: number;
+  assetId: string;
+  mediaPath: string;
+} | null> {
+  const { sessionId, gen, resolved } = options;
+  let mediaPath = resolved.mediaPath;
+  let assetId = resolved.assetId;
+
+  if (resolved.youtube) {
+    options.onStatus?.("downloading", "silence_scan");
+    try {
+      const yt = await ensureYoutubeAudio({
+        videoId: resolved.youtube.videoId,
+        sourceUrl: resolved.youtube.sourceUrl,
+      });
+      if (!isCurrent(sessionId, gen)) return null;
+      mediaPath = yt.mediaPath;
+      assetId = yt.assetId;
+    } catch (err) {
+      console.warn(
+        "[subtitle] silence-scan YT download failed:",
+        err instanceof Error ? err.message : err,
+      );
+      return null;
+    }
+  }
+
+  if (!mediaPath) return null;
+  const exists = await mediaFileExists(mediaPath);
+  if (!exists) return null;
+
+  options.onStatus?.("extracting", "silence_scan");
+  try {
+    const analysis = await detectSpeechOnsetsFromSilence(mediaPath);
+    if (!isCurrent(sessionId, gen)) return null;
+    let durationMs = analysis.durationMs;
+    if (durationMs <= 0) {
+      durationMs = await probeMediaDurationMs(mediaPath);
+    }
+    console.log(
+      `[subtitle] silence-scan onsets=${analysis.speechOnsetsMs.length} silences=${analysis.silences.length} airMs=${SILENCE_AIR_ANTICIPATION_MS}`,
+    );
+    return {
+      onsetsMs: analysis.speechOnsetsMs,
+      durationMs,
+      assetId,
+      mediaPath,
+    };
+  } catch (err) {
+    console.warn(
+      "[subtitle] silence-scan failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+}
+
 async function fetchCancioneroTimingCues(options: {
   sessionId: string;
   gen: number;
@@ -583,9 +645,8 @@ async function fetchCancioneroTimingCues(options: {
 
 /**
  * Guion Audio + YouTube — karaoke when the Biblioteca cancionero matches.
- * Audio miss → sticky modal (no Whisper-as-lyrics for songs).
- * YouTube miss → return false so captions / Whisper handle general videos.
- * Returns true when the job should stop (karaoke hit or sticky Audio miss).
+ * Miss / empty lyrics → return false so captions / Whisper auto-generate text.
+ * Returns true when the job should stop (karaoke cues ready).
  */
 async function tryCancioneroLyricPath(options: {
   sessionId: string;
@@ -690,36 +751,11 @@ async function tryCancioneroLyricPath(options: {
   if (!match) {
     const strong = listed.candidates.filter((c) => c.score >= 55);
     if (strong.length === 0) {
-      if (isYoutube) {
-        console.warn(
-          `[subtitle] cancionero miss for YouTube (${listed.reason ?? "no_match"}) — captions/Whisper fallback tried=${JSON.stringify(listed.tried)}`,
-        );
-        return false;
-      }
-      const live = sessionStore.get(sessionId);
-      if (!live?.live.subtitleAgent?.enabled) return true;
-      const hint =
-        listed.reason === "no_songs"
-          ? "cancionero_no_songs"
-          : listed.reason === "no_query"
-            ? "cancionero_no_match"
-            : "cancionero_no_match";
       console.warn(
-        `[subtitle] cancionero miss (${listed.reason ?? "no_match"}) tried=${JSON.stringify(listed.tried)}`,
+        `[subtitle] cancionero miss (${listed.reason ?? "no_match"}) — auto-generate lyrics via captions/Whisper tried=${JSON.stringify(listed.tried)}`,
       );
-      patchAndBroadcast(live, {
-        enabled: true,
-        targetLang,
-        status: "error",
-        itemId: item.id,
-        assetId: resolved.assetId,
-        cues: [],
-        translated: false,
-        sourceLang: null,
-        hint,
-        timingMode: "exact",
-      });
-      return true;
+      // Continue runSubtitleJob → YouTube captions or Whisper ASR as lyric text.
+      return false;
     }
     match = strong[0]!;
     learnSource = match.score >= 100 ? "exact" : "fuzzy";
@@ -741,55 +777,88 @@ async function tryCancioneroLyricPath(options: {
     (match.score < 95 ||
       (pool[1] != null && pool[1].score >= match.score - 25));
 
-  // Karaoke forced align: captions/ASR clocks only — Biblioteca text exact.
+  // Karaoke: download → real silence → cancionero cues (−200 ms air).
+  // Fallback: captions/ASR forced-align. Biblioteca text exact either way.
   const liveSync = sessionStore.get(sessionId);
   if (!liveSync?.live.subtitleAgent?.enabled) return true;
 
   let lines = songCancioneroLines(match.song);
   if (!lines.length) {
+    console.warn(
+      `[subtitle] cancionero empty lyrics for "${match.song.title}" — auto-generate via captions/Whisper`,
+    );
+    return false;
+  }
+
+  const statusPatch = (
+    status: "downloading" | "extracting" | "transcribing",
+    hint: string,
+  ) => {
+    if (!isCurrent(sessionId, gen)) return;
     const live = sessionStore.get(sessionId);
-    if (!live?.live.subtitleAgent?.enabled) return true;
+    if (!live?.live.subtitleAgent?.enabled) return;
     patchAndBroadcast(live, {
-      enabled: true,
-      targetLang,
-      status: "error",
+      status,
+      hint,
       itemId: item.id,
       assetId: resolved.assetId,
       cues: [],
       translated: false,
       sourceLang: null,
-      hint: "cancionero_empty",
-      timingMode: "exact",
     });
-    return true;
-  }
+  };
 
-  let alignPrompt = buildKaraokeAlignPrompt(lines);
-  const timing = await fetchCancioneroTimingCues({
+  // 1) Preferred: examine downloaded audio for real silence → speech onsets.
+  const silence = await fetchSilenceSpeechOnsets({
     sessionId,
     gen,
-    targetLang,
     resolved,
-    alignPrompt,
-    onStatus: (status, hint) => {
-      if (!isCurrent(sessionId, gen)) return;
-      const live = sessionStore.get(sessionId);
-      if (!live?.live.subtitleAgent?.enabled) return;
-      patchAndBroadcast(live, {
-        status,
-        hint,
-        itemId: item.id,
-        assetId: resolved.assetId,
-        cues: [],
-        translated: false,
-        sourceLang: null,
-      });
-    },
+    onStatus: statusPatch,
   });
   if (!isCurrent(sessionId, gen)) return true;
+  if (silence && silence.durationMs > 0) {
+    durationMs = Math.max(durationMs, silence.durationMs);
+  }
 
-  // 2) Learn from captions/ASR: pick the cancionero whose words match the voice track.
-  // Skip when the operator explicitly taught a song.
+  let lineCues = songToSubtitleCues(match.song, durationMs);
+  let synced = false;
+  let assetId = resolved.assetId;
+  let timingModeHint = "cancionero_match";
+
+  if (silence && silence.onsetsMs.length > 0) {
+    const aligned = alignCancioneroLinesToSilence(
+      lines,
+      silence.onsetsMs,
+      durationMs || silence.durationMs,
+      SILENCE_AIR_ANTICIPATION_MS,
+    );
+    lineCues = aligned.cues;
+    synced = aligned.synced;
+    assetId = silence.assetId;
+    timingModeHint = synced
+      ? "cancionero_match_silence"
+      : "cancionero_match_silence_partial";
+    console.log(
+      `[subtitle] karaoke silence-align synced=${synced} aligned=${aligned.alignedCount}/${lines.length} airMs=${SILENCE_AIR_ANTICIPATION_MS}`,
+    );
+  }
+
+  // 2) Fallback / lyric-learn: captions or Whisper clocks when silence is thin.
+  let alignPrompt = buildKaraokeAlignPrompt(lines);
+  const needTimingFallback = !synced || silence == null || silence.onsetsMs.length < 2;
+  const timing = needTimingFallback
+    ? await fetchCancioneroTimingCues({
+        sessionId,
+        gen,
+        targetLang,
+        resolved,
+        alignPrompt,
+        onStatus: statusPatch,
+      })
+    : null;
+  if (!isCurrent(sessionId, gen)) return true;
+
+  // Learn from captions/ASR text when several cancionero candidates compete.
   if (
     learnSource !== "manual" &&
     timing &&
@@ -822,33 +891,32 @@ async function tryCancioneroLyricPath(options: {
       learnSource = "lyric";
       lines = songCancioneroLines(match.song);
       alignPrompt = buildKaraokeAlignPrompt(lines);
+      if (silence && silence.onsetsMs.length > 0) {
+        const realigned = alignCancioneroLinesToSilence(
+          lines,
+          silence.onsetsMs,
+          durationMs || silence.durationMs,
+          SILENCE_AIR_ANTICIPATION_MS,
+        );
+        lineCues = realigned.cues;
+        synced = realigned.synced;
+        timingModeHint = synced
+          ? "cancionero_match_silence"
+          : "cancionero_match_silence_partial";
+      }
     } else if (bestLyric && bestLyric.lyric >= 18) {
       learnSource = learnSource === "exact" ? "exact" : "lyric";
     }
   }
 
   if (!lines.length) {
-    const live = sessionStore.get(sessionId);
-    if (!live?.live.subtitleAgent?.enabled) return true;
-    patchAndBroadcast(live, {
-      enabled: true,
-      targetLang,
-      status: "error",
-      itemId: item.id,
-      assetId: resolved.assetId,
-      cues: [],
-      translated: false,
-      sourceLang: null,
-      hint: "cancionero_empty",
-      timingMode: "exact",
-    });
-    return true;
+    console.warn(
+      "[subtitle] cancionero lines cleared after lyric-learn — auto-generate via captions/Whisper",
+    );
+    return false;
   }
 
-  let lineCues = songToSubtitleCues(match.song, durationMs);
-  let synced = false;
-  let assetId = resolved.assetId;
-  if (timing && timing.cues.length > 0) {
+  if ((!synced || lineCues.length === 0) && timing && timing.cues.length > 0) {
     const aligned = alignCancioneroLinesToTiming(
       lines,
       timing.cues,
@@ -857,8 +925,9 @@ async function tryCancioneroLyricPath(options: {
     lineCues = aligned.cues;
     synced = aligned.synced;
     assetId = timing.assetId;
+    timingModeHint = synced ? "cancionero_match_synced" : "cancionero_match";
     console.log(
-      `[subtitle] karaoke align synced=${synced} aligned=${aligned.alignedCount}/${lines.length}`,
+      `[subtitle] karaoke caption/ASR align synced=${synced} aligned=${aligned.alignedCount}/${lines.length}`,
     );
   }
 
@@ -927,7 +996,7 @@ async function tryCancioneroLyricPath(options: {
     nativeTrack: true,
     preserveLyricsSource: true,
     timingMode: "exact",
-    hint: synced ? "cancionero_match_synced" : "cancionero_match",
+    hint: timingModeHint,
     leadMs: CANCIONERO_DEFAULT_LEAD_MS,
   });
   return ok || true;
@@ -1114,13 +1183,10 @@ export function setSubtitleAgent(
     return sessionStore.touchSubtitleAgent(session);
   }
 
-  // Keep missing-binary / hard YT / cancionero-miss visible when focus/lang
-  // changes; only clear on toggle-on (wasOff) so Control shows the hint
-  // instead of retry spam (and never invents lyrics via Whisper after a miss).
+  // Keep missing-binary / hard YT visible when focus/lang changes; only clear
+  // on toggle-on (wasOff). Cancionero miss falls through to auto ASR lyrics.
   const stickyHardYt = isStickyHardYoutube(prev);
-  const stickyCancionero = isStickyCancioneroMiss(prev);
-  const keepSticky =
-    (stickyMissing || stickyHardYt || stickyCancionero) && !wasOff;
+  const keepSticky = (stickyMissing || stickyHardYt) && !wasOff;
   if (wasOff) {
     clearYtHardFail(session.id);
   }
@@ -1159,6 +1225,36 @@ export function maybeRefreshSubtitleAgent(session: SessionRecord): void {
   });
 }
 
+/**
+ * When a YouTube (or audio) link lands in Guion: enable karaoke and examine
+ * the downloaded media (silence → cancionero cues). Fire-and-forget.
+ */
+export function maybeStartKaraokeOnGuionItem(
+  session: SessionRecord,
+  item: PlaylistItem,
+): void {
+  const isYoutube =
+    item.type === "video" && item.payload.sourceKind === "youtube";
+  const isAudio = item.type === "audio";
+  if (!isYoutube && !isAudio) return;
+
+  const prev = session.live.subtitleAgent ?? emptySubtitleAgentState();
+  const targetLang = prev.targetLang ?? "es";
+  session.live.subtitleAgent = {
+    ...prev,
+    enabled: true,
+    targetLang,
+    status: "idle",
+    itemId: item.id,
+    hint: isYoutube ? "silence_scan" : prev.hint,
+    cues: prev.itemId === item.id ? prev.cues : [],
+    updatedAt: new Date().toISOString(),
+  };
+  const message = sessionStore.touchSubtitleAgent(session);
+  broadcastSession(session.id, message);
+  void runSubtitleJob(session.id, item.id, { force: true });
+}
+
 async function runSubtitleJob(
   sessionId: string,
   preferredItemId?: string,
@@ -1187,11 +1283,6 @@ async function runSubtitleJob(
     // Same hard YT failure — wait for backoff or user toggle-on.
     return;
   }
-  if (!force && agentPeek && isStickyCancioneroMiss(agentPeek)) {
-    // Cancionero miss — wait for toggle-on or library update (no Whisper).
-    return;
-  }
-
   const gen = bumpJob(sessionId);
   const session = sessionStore.get(sessionId);
   if (!session) return;
@@ -1241,7 +1332,7 @@ async function runSubtitleJob(
     if (!isCurrent(sessionId, gen)) return;
 
     // Karaoke when cancionero matches (Audio / YouTube).
-    // Audio miss → sticky modal. YouTube miss → captions/Whisper below.
+    // Miss → captions / Whisper auto-generate subtitle text below.
     // Local file video skips this path and uses sidecar / Whisper.
     const cancioneroDone = await tryCancioneroLyricPath({
       sessionId,
@@ -1453,11 +1544,11 @@ async function runSubtitleJob(
       sourceLang: asr.sourceLang ?? (asr.whisperTranslatedToEn ? "en" : targetLang),
       targetLang,
       alreadyEnglish: asr.whisperTranslatedToEn,
-      // ASR fallback: shape + assisted intro-hold; skip Marian when same lang.
+      // Auto lyrics when cancionero miss: shape + assisted timing.
       nativeTrack: false,
       preserveLyricsSource: false,
       timingMode: "assisted",
-      hint: "asr_fallback",
+      hint: "asr_auto_lyrics",
     });
     if (okAsr) return;
 

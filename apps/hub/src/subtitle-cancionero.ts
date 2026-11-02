@@ -1,7 +1,8 @@
 /**
- * Karaoke-gen / Lyricsync path for Guion Audio + YouTube (Julio option 2):
- * Biblioteca / cancionero is the ONLY text source. Whisper / captions supply
- * clocks for forced alignment — never rewrite words.
+ * Karaoke path for Guion Audio + YouTube:
+ * Biblioteca / cancionero is the ONLY text source.
+ * Preferred clocks: real silence → speech onsets (−200 ms air).
+ * Fallback: captions / Whisper forced-align — never rewrite words.
  */
 import { spawn } from "node:child_process";
 import type {
@@ -18,6 +19,10 @@ import {
   resolveFfmpegBin,
 } from "./subtitle-bins.js";
 import { cleanCueText, filterSpeechCues } from "./subtitle-cue-text.js";
+import {
+  cueStartWithAirMs,
+  SILENCE_AIR_ANTICIPATION_MS,
+} from "./subtitle-silence.js";
 
 const AUDIO_EXT_RE =
   /\.(mp3|wav|m4a|aac|flac|ogg|opus|wma|aiff|aif|caf|webm)$/i;
@@ -519,6 +524,111 @@ export function packKaraokeDisplayCues(
     });
   }
   return out;
+}
+
+/**
+ * Map exact cancionero lines onto speech onsets after real silence.
+ * Each cue starts `airMs` (default 200 ms) before the voice resumes.
+ * Cue `.text` stays Biblioteca. Call packKaraokeDisplayCues for display packs.
+ */
+export function alignCancioneroLinesToSilence(
+  lines: readonly string[],
+  speechOnsetsMs: readonly number[],
+  durationMs = 0,
+  airMs: number = SILENCE_AIR_ANTICIPATION_MS,
+): CancioneroAlignResult {
+  const exactLines = lines.map((l) => String(l).trim()).filter(Boolean);
+  if (exactLines.length === 0) {
+    return { cues: [], alignedCount: 0, synced: false };
+  }
+
+  const onsets = [...speechOnsetsMs]
+    .map((t) => Math.max(0, Math.round(t)))
+    .filter((t, i, arr) => i === 0 || t > arr[i - 1]!)
+    .sort((a, b) => a - b);
+
+  const total = Math.max(
+    durationMs > 0 ? durationMs : 0,
+    onsets.length > 0 ? onsets[onsets.length - 1]! + 4_000 : 0,
+    exactLines.length * 2_500,
+  );
+
+  if (onsets.length === 0) {
+    return {
+      cues: cuesFromEqualTime(exactLines, total),
+      alignedCount: 0,
+      synced: false,
+    };
+  }
+
+  // Prefer one onset per line. If more onsets than lines, keep evenly spaced
+  // samples across the song so early/late phrases still land on real breaks.
+  const picked: number[] = [];
+  if (onsets.length >= exactLines.length) {
+    for (let i = 0; i < exactLines.length; i++) {
+      const idx =
+        exactLines.length === 1
+          ? 0
+          : Math.round((i * (onsets.length - 1)) / (exactLines.length - 1));
+      picked.push(onsets[idx]!);
+    }
+  } else {
+    for (let i = 0; i < exactLines.length; i++) {
+      if (i < onsets.length) {
+        picked.push(onsets[i]!);
+      } else {
+        const prev = picked[picked.length - 1] ?? 0;
+        const remain = exactLines.length - i;
+        const slice = Math.max(
+          1_500,
+          Math.floor((total - prev) / Math.max(1, remain)),
+        );
+        picked.push(prev + slice);
+      }
+    }
+  }
+
+  // Enforce monotonic starts after air anticipation.
+  const MIN_LINE_GAP_MS = 850;
+  const GAP_BLANK_MS = 350;
+  const MIN_PHRASE_MS = 1_200;
+  const MAX_PHRASE_MS = 5_500;
+  const starts: number[] = [];
+  for (let i = 0; i < picked.length; i++) {
+    let start = cueStartWithAirMs(picked[i]!, airMs);
+    if (i > 0) {
+      start = Math.max(start, starts[i - 1]! + MIN_LINE_GAP_MS);
+    }
+    starts.push(start);
+  }
+
+  const cues: SubtitleCue[] = exactLines.map((text, index) => {
+    const startMs = starts[index]!;
+    const nextStart =
+      index + 1 < exactLines.length ? starts[index + 1]! : total;
+    let endMs = startMs +
+      Math.min(
+        MAX_PHRASE_MS,
+        Math.max(MIN_PHRASE_MS, Math.floor((nextStart - startMs) * 0.72)),
+      );
+    if (nextStart - startMs > MIN_PHRASE_MS + GAP_BLANK_MS) {
+      endMs = Math.min(endMs, nextStart - GAP_BLANK_MS);
+    } else {
+      endMs = Math.min(endMs, nextStart);
+    }
+    endMs = Math.max(startMs + 500, endMs);
+    return {
+      id: `cancionero_${index}`,
+      startMs,
+      endMs,
+      text,
+    };
+  });
+
+  const alignedCount = Math.min(exactLines.length, onsets.length);
+  const synced =
+    alignedCount >= Math.max(2, Math.ceil(exactLines.length * 0.35));
+  return { cues, alignedCount, synced };
 }
 
 /**

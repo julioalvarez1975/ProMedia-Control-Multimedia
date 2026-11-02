@@ -684,6 +684,11 @@ export type SessionLiveState = {
    * Null = no custom logo yet — Output falls back to the default SVG.
    */
   logoUpdatedAt: string | null;
+  /**
+   * Corner watermark: show branding logo top-right over live content.
+   * Independent of sceneMode (works with "normal"; hidden under full logo/black).
+   */
+  watermarkEnabled: boolean;
 };
 
 export type SessionSnapshot = {
@@ -839,6 +844,11 @@ export type LiveSetSceneModeMessage = {
   payload: { sceneMode: SceneMode };
 };
 
+export type LiveSetWatermarkMessage = {
+  type: "live.setWatermark";
+  payload: { enabled: boolean };
+};
+
 export type LiveSetThemeMessage = {
   type: "live.setTheme";
   payload: {
@@ -865,6 +875,7 @@ export type ClientToHubMessage =
   | LiveSubtitleAgentTeachMessage
   | LiveSubtitleAgentNudgeMessage
   | LiveSetSceneModeMessage
+  | LiveSetWatermarkMessage
   | LiveSetThemeMessage;
 
 export type CreateSessionRequest = {
@@ -911,6 +922,7 @@ export function emptyLiveState(): SessionLiveState {
     mediaClock: null,
     subtitleAgent: emptySubtitleAgentState(),
     logoUpdatedAt: null,
+    watermarkEnabled: false,
   };
 }
 

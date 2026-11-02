@@ -331,6 +331,11 @@ export function useSessionConnection(role: ClientRole) {
       send("live.setSceneMode", { sceneMode }),
     [send],
   );
+  const setWatermark = useCallback(
+    (enabled: boolean): boolean =>
+      send("live.setWatermark", { enabled }),
+    [send],
+  );
   const setTheme = useCallback(
     (patch: {
       themeId?: ThemeId;
@@ -398,6 +403,7 @@ export function useSessionConnection(role: ClientRole) {
     setSlide,
     setMediaClock,
     setSceneMode,
+    setWatermark,
     setTheme,
     setSubtitleAgent,
     teachSubtitleCancionero,

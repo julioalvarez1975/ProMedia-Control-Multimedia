@@ -2248,6 +2248,56 @@ body {
   animation: pm-scene-logo-in 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+/* Corner watermark — branding logo, top-right over live content */
+.scene-watermark {
+  position: absolute;
+  top: clamp(0.6rem, 2.2vh, 1.4rem);
+  right: clamp(0.6rem, 2.2vw, 1.4rem);
+  z-index: 40;
+  pointer-events: none;
+  max-width: min(18vw, 7.5rem);
+  max-height: min(14vh, 5.5rem);
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  animation: pm-watermark-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.scene-watermark-img {
+  max-width: 100%;
+  max-height: min(14vh, 5.5rem);
+  width: auto;
+  height: auto;
+  display: block;
+  object-fit: contain;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.45));
+  opacity: 0.92;
+}
+
+.scene-watermark-fallback {
+  font-size: clamp(0.7rem, 1.4vw, 0.95rem);
+  color: rgba(232, 238, 246, 0.85);
+  letter-spacing: 0.04em;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+
+@keyframes pm-watermark-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scene-watermark {
+    animation: none;
+  }
+}
+
 @keyframes pm-scene-logo-in {
   from {
     opacity: 0;

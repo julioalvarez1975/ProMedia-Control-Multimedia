@@ -70,7 +70,11 @@ import {
   loadPersistedControlSession,
   savePersistedControlSession,
 } from "../lib/controlSessionPersist";
-import { createLibrarySong } from "../lib/library";
+import {
+  addLibraryItemToSession,
+  createLibrarySong,
+  uploadLibraryFile,
+} from "../lib/library";
 import { isLoopbackPageHost } from "../lib/hub";
 import {
   openOutputWindow,
@@ -80,6 +84,7 @@ import {
 import {
   TEXT_IMPORT_MAX_BYTES,
   TEXT_IMPORT_MAX_SLIDES,
+  fileToGuionTextPayload,
   importFileToTextSlides,
 } from "../lib/textImport";
 import { themeSurfaceStyle } from "../lib/theme";
@@ -167,7 +172,6 @@ export function ControlPage() {
   const [cancioneroTeachBusy, setCancioneroTeachBusy] = useState(false);
   /** Local Preview playhead (ms) before Go Live — karaoke overlay + ←/→ teach. */
   const [previewLocalPositionMs, setPreviewLocalPositionMs] = useState(0);
-  const cancioneroWarnShownFor = useRef<string | null>(null);
   /** YouTube items already probed for oEmbed title (avoid repeat fetches). */
   const youtubeTitleTried = useRef<Set<string>>(new Set());
   /** Remember video durations (preview metadata) for remaining-time / scrub max. */
@@ -254,6 +258,12 @@ export function ControlPage() {
         return t("control.subtitleAgentDownloadingAudio");
       }
       if (
+        (st === "downloading" || st === "extracting") &&
+        (hint === "silence_scan" || hint === "cancionero_sync")
+      ) {
+        return t("control.subtitleAgentSilenceScan");
+      }
+      if (
         st === "downloading" ||
         st === "extracting" ||
         st === "transcribing" ||
@@ -267,11 +277,15 @@ export function ControlPage() {
           return t("control.subtitleAgentSourceOnly");
         }
         if (
-          hint === "cancionero_match_synced"
+          hint === "cancionero_match_synced" ||
+          hint === "cancionero_match_silence"
         ) {
           return t("control.subtitleAgentCancioneroSynced");
         }
-        if (hint === "cancionero_match") {
+        if (
+          hint === "cancionero_match" ||
+          hint === "cancionero_match_silence_partial"
+        ) {
           return t("control.subtitleAgentCancioneroReady");
         }
         if (
@@ -283,8 +297,8 @@ export function ControlPage() {
         if (hint === "local_sidecar" || hint === "local_embedded") {
           return t("control.subtitleAgentLocalTracksReady");
         }
-        if (hint === "asr_fallback") {
-          return t("control.subtitleAgentAsrReady");
+        if (hint === "asr_fallback" || hint === "asr_auto_lyrics") {
+          return t("control.subtitleAgentAsrAutoLyrics");
         }
         return t("control.subtitleAgentReady");
       }
@@ -294,7 +308,8 @@ export function ControlPage() {
           hint === "cancionero_no_songs" ||
           hint === "cancionero_empty"
         ) {
-          return t("control.cancioneroNoMatchTitle");
+          // Should be rare now (auto-ASR); keep a short status if it appears.
+          return t("control.subtitleAgentAsrAutoLyrics");
         }
         if (hint === "no_speech") {
           return t("control.subtitleAgentNoSpeech");
@@ -436,35 +451,8 @@ export function ControlPage() {
   /** Playlist chrome needs a session; mutations need WS (auto-reconnects if down). */
   const canMutate = sessionReady && wsReady;
 
-  // Modal when Subtítulos finds no cancionero match for Guion Audio / YouTube.
-  useEffect(() => {
-    if (!subtitleAgent.enabled) {
-      cancioneroWarnShownFor.current = null;
-      return;
-    }
-    if (subtitleAgent.status !== "error") {
-      return;
-    }
-    const hint = subtitleAgent.hint ?? "";
-    if (
-      hint !== "cancionero_no_match" &&
-      hint !== "cancionero_no_songs" &&
-      hint !== "cancionero_empty"
-    ) {
-      return;
-    }
-    const key = `${subtitleAgent.itemId ?? ""}:${hint}`;
-    if (cancioneroWarnShownFor.current === key) {
-      return;
-    }
-    cancioneroWarnShownFor.current = key;
-    setCancioneroNoMatchOpen(true);
-  }, [
-    subtitleAgent.enabled,
-    subtitleAgent.status,
-    subtitleAgent.hint,
-    subtitleAgent.itemId,
-  ]);
+  // Cancionero miss no longer opens a blocking modal — Whisper/captions
+  // auto-generate subtitle text. Teach UI remains available from the toolbar.
 
   // Karaoke agent always uses the dots pattern for lyric contrast on video.
   useEffect(() => {
@@ -1105,9 +1093,67 @@ export function ControlPage() {
     order: number,
   ): Promise<{ ok: boolean; itemId?: string; hint?: string }> => {
     const kind = classifyMediaFile(file);
-    if (kind === "unsupported") {
-      return { ok: false, hint: t("text.importUnsupported") };
+
+    // Presentations (PPTX/PDF/…) → Biblioteca import → Guion slides.
+    if (kind === "presentation") {
+      if (!session.sessionId || !session.wsTicket) {
+        return { ok: false, hint: t("control.wsDisconnectedHint") };
+      }
+      try {
+        const libItem = await uploadLibraryFile(file);
+        const playlistItem = await addLibraryItemToSession({
+          sessionId: session.sessionId,
+          credential: session.wsTicket,
+          libraryItemId: libItem.id,
+        });
+        return {
+          ok: true,
+          itemId: playlistItem.id,
+          hint: t("playlist.presentationAdded"),
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          hint: err instanceof Error ? err.message : String(err),
+        };
+      }
     }
+
+    // Unknown / other types: still add to Guion (text if readable, else stub).
+    if (kind === "unsupported") {
+      try {
+        const payload = await fileToGuionTextPayload(file);
+        const item: PlaylistItem = {
+          id: cryptoRandomId(),
+          type: "text",
+          order,
+          payload: {
+            title: payload.title,
+            align: payload.align,
+            slides: payload.slides,
+          },
+        };
+        if (!session.addItem(item)) {
+          return { ok: false, hint: t("control.wsDisconnectedHint") };
+        }
+        return {
+          ok: true,
+          itemId: item.id,
+          hint: payload.usedBinaryStub
+            ? t("playlist.genericFileAdded")
+            : t("text.importAdded").replace(
+                "{n}",
+                String(payload.slides.length),
+              ),
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          hint: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
     if (kind === "text") {
       if (file.size > TEXT_IMPORT_MAX_BYTES) {
         return { ok: false, hint: t("text.importTooLarge") };
@@ -1370,6 +1416,16 @@ export function ControlPage() {
       return;
     }
     session.setSceneMode("logo");
+  };
+
+  const watermarkEnabled =
+    session.snapshot?.live.watermarkEnabled === true;
+
+  const toggleWatermark = () => {
+    if (!ensureWsOrHint()) {
+      return;
+    }
+    session.setWatermark(!watermarkEnabled);
   };
 
   const openLogoFilePicker = () => {
@@ -2216,6 +2272,22 @@ export function ControlPage() {
                 {uploadingLogo
                   ? t("control.sceneLogoUploading")
                   : t("control.sceneLogo")}
+              </button>
+              <button
+                type="button"
+                className={[
+                  "btn preview-tb-btn preview-tb-scene",
+                  watermarkEnabled ? "is-active" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                disabled={!canMutate}
+                title={t("control.sceneWatermarkHint")}
+                aria-label={t("control.sceneWatermark")}
+                aria-pressed={watermarkEnabled}
+                onClick={toggleWatermark}
+              >
+                {t("control.sceneWatermark")}
               </button>
               <button
                 type="button"
