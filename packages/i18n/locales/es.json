@@ -368,5 +368,7 @@
   "control.sceneWatermarkHint": "Muestra el logo en la esquina superior derecha de la proyección",
   "scene.watermark": "Marca de agua",
   "playlist.presentationAdded": "Presentación añadida al guion",
-  "playlist.genericFileAdded": "Archivo añadido al guion como referencia"
+  "playlist.genericFileAdded": "Archivo añadido al guion como referencia",
+  "control.dotsOverlay": "Puntos",
+  "control.dotsOverlayHint": "Activa o quita el patrón de puntos que oscurece el vídeo"
 }

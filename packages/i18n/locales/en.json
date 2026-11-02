@@ -368,5 +368,7 @@
   "control.sceneWatermarkHint": "Show the logo in the top-right corner of the projection",
   "scene.watermark": "Watermark",
   "playlist.presentationAdded": "Presentation added to the schedule",
-  "playlist.genericFileAdded": "File added to the schedule as a reference"
+  "playlist.genericFileAdded": "File added to the schedule as a reference",
+  "control.dotsOverlay": "Dots",
+  "control.dotsOverlayHint": "Toggle the dot pattern that darkens video"
 }

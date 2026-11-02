@@ -368,5 +368,7 @@
   "control.sceneWatermarkHint": "Affiche le logo dans le coin supérieur droit de la projection",
   "scene.watermark": "Filigrane",
   "playlist.presentationAdded": "Présentation ajoutée au programme",
-  "playlist.genericFileAdded": "Fichier ajouté au programme comme référence"
+  "playlist.genericFileAdded": "Fichier ajouté au programme comme référence",
+  "control.dotsOverlay": "Points",
+  "control.dotsOverlayHint": "Active ou retire le motif de points qui assombrit la vidéo"
 }

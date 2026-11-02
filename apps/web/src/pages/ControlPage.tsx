@@ -454,23 +454,6 @@ export function ControlPage() {
   // Cancionero miss no longer opens a blocking modal — Whisper/captions
   // auto-generate subtitle text. Teach UI remains available from the toolbar.
 
-  // Karaoke agent always uses the dots pattern for lyric contrast on video.
-  useEffect(() => {
-    if (!subtitleAgent.enabled || !canMutate) {
-      return;
-    }
-    if (themeBackground.dotsOverlay === true) {
-      return;
-    }
-    session.setTheme({
-      themeBackground: normalizeThemeBackground({
-        ...themeBackground,
-        dotsOverlay: true,
-      }),
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subtitleAgent.enabled, canMutate, themeBackground.dotsOverlay]);
-
   // When agent is on, re-target ASR if focus item changed (live preferred).
   useEffect(() => {
     if (!subtitleAgent.enabled || !canMutate) {
@@ -1428,6 +1411,18 @@ export function ControlPage() {
     session.setWatermark(!watermarkEnabled);
   };
 
+  const toggleDotsOverlay = () => {
+    if (!ensureWsOrHint()) {
+      return;
+    }
+    session.setTheme({
+      themeBackground: normalizeThemeBackground({
+        ...themeBackground,
+        dotsOverlay: !dotsOverlay,
+      }),
+    });
+  };
+
   const openLogoFilePicker = () => {
     if (!canMutate || uploadingLogo) {
       return;
@@ -2288,6 +2283,22 @@ export function ControlPage() {
                 onClick={toggleWatermark}
               >
                 {t("control.sceneWatermark")}
+              </button>
+              <button
+                type="button"
+                className={[
+                  "btn preview-tb-btn preview-tb-scene",
+                  dotsOverlay ? "is-active" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                disabled={!canMutate}
+                title={t("control.dotsOverlayHint")}
+                aria-label={t("control.dotsOverlay")}
+                aria-pressed={dotsOverlay}
+                onClick={toggleDotsOverlay}
+              >
+                {t("control.dotsOverlay")}
               </button>
               <button
                 type="button"

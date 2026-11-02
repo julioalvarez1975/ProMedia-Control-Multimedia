@@ -368,5 +368,7 @@
   "control.sceneWatermarkHint": "在投影右上角显示标志",
   "scene.watermark": "水印",
   "playlist.presentationAdded": "演示文稿已添加到日程",
-  "playlist.genericFileAdded": "文件已作为参考添加到日程"
+  "playlist.genericFileAdded": "文件已作为参考添加到日程",
+  "control.dotsOverlay": "点阵",
+  "control.dotsOverlayHint": "开关用于压暗视频的点阵图案"
 }

@@ -368,5 +368,7 @@
   "control.sceneWatermarkHint": "Mostra o logo no canto superior direito da projeção",
   "scene.watermark": "Marca d'água",
   "playlist.presentationAdded": "Apresentação adicionada ao roteiro",
-  "playlist.genericFileAdded": "Arquivo adicionado ao roteiro como referência"
+  "playlist.genericFileAdded": "Arquivo adicionado ao roteiro como referência",
+  "control.dotsOverlay": "Pontos",
+  "control.dotsOverlayHint": "Ativa ou remove o padrão de pontos que escurece o vídeo"
 }
