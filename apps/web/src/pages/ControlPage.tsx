@@ -50,7 +50,15 @@ import {
 import { StatusTip } from "../components/StatusTip";
 import { SubtitleOverlay } from "../components/SubtitleOverlay";
 import { TextItemEditor } from "../components/TextItemEditor";
-import { IconGoLive, IconNext, IconPrev } from "../components/UiIcons";
+import {
+  IconDotsOverlay,
+  IconGoLive,
+  IconNext,
+  IconPrev,
+  IconSceneEmpty,
+  IconSceneLogo,
+  IconWatermark,
+} from "../components/UiIcons";
 import { useLocale } from "../locale/LocaleContext";
 import { useControlShortcuts } from "../hooks/useControlShortcuts";
 import { useSessionConnection } from "../hooks/useSessionConnection";
@@ -2264,9 +2272,14 @@ export function ControlPage() {
                   openLogoFilePicker();
                 }}
               >
-                {uploadingLogo
-                  ? t("control.sceneLogoUploading")
-                  : t("control.sceneLogo")}
+                <span className="preview-tb-scene-glyph" aria-hidden>
+                  <IconSceneLogo />
+                </span>
+                <span className="preview-tb-scene-label">
+                  {uploadingLogo
+                    ? t("control.sceneLogoUploading")
+                    : t("control.sceneLogo")}
+                </span>
               </button>
               <button
                 type="button"
@@ -2282,7 +2295,12 @@ export function ControlPage() {
                 aria-pressed={watermarkEnabled}
                 onClick={toggleWatermark}
               >
-                {t("control.sceneWatermark")}
+                <span className="preview-tb-scene-glyph" aria-hidden>
+                  <IconWatermark />
+                </span>
+                <span className="preview-tb-scene-label">
+                  {t("control.sceneWatermark")}
+                </span>
               </button>
               <button
                 type="button"
@@ -2298,7 +2316,12 @@ export function ControlPage() {
                 aria-pressed={dotsOverlay}
                 onClick={toggleDotsOverlay}
               >
-                {t("control.dotsOverlay")}
+                <span className="preview-tb-scene-glyph" aria-hidden>
+                  <IconDotsOverlay />
+                </span>
+                <span className="preview-tb-scene-label">
+                  {t("control.dotsOverlay")}
+                </span>
               </button>
               <button
                 type="button"
@@ -2314,7 +2337,12 @@ export function ControlPage() {
                 aria-pressed={sceneMode === "black"}
                 onClick={showEmptyScene}
               >
-                {t("control.sceneEmpty")}
+                <span className="preview-tb-scene-glyph" aria-hidden>
+                  <IconSceneEmpty />
+                </span>
+                <span className="preview-tb-scene-label">
+                  {t("control.sceneEmpty")}
+                </span>
               </button>
               <span className="preview-tb-spacer" />
               <StatusTip
