@@ -20,7 +20,10 @@ import {
 import { SubtitleOverlay } from "../components/SubtitleOverlay";
 import { useSessionConnection } from "../hooks/useSessionConnection";
 import { buildAssetUrl, buildBrandingLogoUrl } from "../lib/assets";
-import { OUTPUT_BROADCAST_CHANNEL } from "../lib/openOutputWindow";
+import {
+  OUTPUT_BROADCAST_CHANNEL,
+  pickSecondaryScreen,
+} from "../lib/openOutputWindow";
 import {
   loadPersistedOutputSession,
   savePersistedOutputSession,
@@ -41,6 +44,27 @@ function readFullscreenElement(): Element | null {
   return document.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
 }
 
+/**
+ * Fullscreen options: hide browser UI and target the secondary screen when
+ * Window Management allows (Chrome full-canvas on the projector).
+ */
+async function buildFullscreenOptions(): Promise<FullscreenOptions | undefined> {
+  const base: FullscreenOptions = { navigationUI: "hide" };
+  try {
+    if (typeof window.getScreenDetails !== "function") {
+      return base;
+    }
+    const details = await window.getScreenDetails();
+    const secondary = pickSecondaryScreen(details);
+    if (secondary) {
+      return { ...base, screen: secondary as ScreenDetailed };
+    }
+  } catch {
+    // Permission not granted yet — still hide navigation UI on current screen.
+  }
+  return base;
+}
+
 /** Prefer the projection stage; fall back to documentElement (hides browser chrome). */
 async function requestOutputFullscreen(stage: HTMLElement | null): Promise<boolean> {
   const candidates: FullscreenCapable[] = [];
@@ -48,11 +72,12 @@ async function requestOutputFullscreen(stage: HTMLElement | null): Promise<boole
     candidates.push(stage);
   }
   candidates.push(document.documentElement as FullscreenCapable);
+  const options = await buildFullscreenOptions();
 
   for (const el of candidates) {
     try {
       if (typeof el.requestFullscreen === "function") {
-        await el.requestFullscreen();
+        await el.requestFullscreen(options);
         return true;
       }
       if (typeof el.webkitRequestFullscreen === "function") {
@@ -64,7 +89,15 @@ async function requestOutputFullscreen(stage: HTMLElement | null): Promise<boole
         return true;
       }
     } catch {
-      // try next candidate
+      // try next candidate / without screen option
+      try {
+        if (typeof el.requestFullscreen === "function") {
+          await el.requestFullscreen({ navigationUI: "hide" });
+          return true;
+        }
+      } catch {
+        // continue
+      }
     }
   }
   return false;
@@ -108,7 +141,6 @@ export function OutputPage() {
   } = useSessionConnection("output");
   const stageRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [manualCode, setManualCode] = useState("");
   const autoJoinStarted = useRef(false);
   const autofullscreenTried = useRef(false);
   const joinRef = useRef(join);
@@ -313,9 +345,9 @@ export function OutputPage() {
     };
   }, [wantAutofullscreen, hasSession, wsStatus]);
 
-  // First real user gesture on Output → enter fullscreen (hides browser bar).
+  // Any gesture on Output → fullscreen (hides localhost address bar).
   useEffect(() => {
-    if (!wantAutofullscreen || isFullscreen) {
+    if (isFullscreen) {
       return;
     }
     const onGesture = () => {
@@ -330,11 +362,10 @@ export function OutputPage() {
       window.removeEventListener("pointerdown", onGesture, { capture: true });
       window.removeEventListener("keydown", onGesture, { capture: true });
     };
-  }, [wantAutofullscreen, isFullscreen]);
+  }, [isFullscreen]);
 
-  const showJoinForm = !hasSession && !queryCode && !queryToken;
-  const showFsPrompt =
-    wantAutofullscreen && !isFullscreen && hasSession && !showJoinForm;
+  // Projection surface — one click hides the browser address bar.
+  const showFsPrompt = !isFullscreen;
 
   return (
     <div className="output-shell">
@@ -390,15 +421,6 @@ export function OutputPage() {
                   <p className="output-waiting">
                     {t(locale, "output.waiting")}
                   </p>
-                  {sessionCode ? (
-                    <p className="output-session-code" aria-live="polite">
-                      {t(locale, "output.sessionCode")}:{" "}
-                      <strong>{sessionCode}</strong>
-                    </p>
-                  ) : null}
-                  <p className="output-pair-hint">
-                    {t(locale, "output.pairHint")}
-                  </p>
                 </div>
               </LiveItemLayer>
             ) : null}
@@ -436,50 +458,7 @@ export function OutputPage() {
           </>
         )}
 
-        {!isFullscreen && !hasSession ? (
-          <div className="output-chrome">
-            {showJoinForm ? (
-              <form
-                className="output-join"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  if (manualCode.trim()) {
-                    void join({ code: manualCode.trim().toUpperCase() });
-                  }
-                }}
-              >
-                <label>
-                  {t(locale, "output.codeLabel")}
-                  <input
-                    value={manualCode}
-                    onChange={(e) =>
-                      setManualCode(e.target.value.toUpperCase())
-                    }
-                    placeholder="AB12"
-                    maxLength={8}
-                    autoFocus
-                  />
-                </label>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={!manualCode.trim()}
-                >
-                  {t(locale, "output.join")}
-                </button>
-              </form>
-            ) : null}
-
-            <p className="output-hint">{t(locale, "output.fullscreenHint")}</p>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => void enterFullscreen()}
-            >
-              {t(locale, "output.enterFullscreen")}
-            </button>
-          </div>
-        ) : showFsPrompt ? (
+        {showFsPrompt ? (
           <button
             type="button"
             className="output-fs-prompt"
@@ -491,14 +470,6 @@ export function OutputPage() {
               {t(locale, "output.clickFullscreen")}
             </span>
           </button>
-        ) : !isFullscreen && hasSession ? (
-          <button
-            type="button"
-            className="output-exit-fs"
-            onClick={() => void enterFullscreen()}
-            title={t(locale, "output.enterFullscreen")}
-            aria-label={t(locale, "output.enterFullscreen")}
-          />
         ) : (
           <button
             type="button"
