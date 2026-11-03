@@ -471,6 +471,7 @@ async function fetchSilenceSpeechOnsets(options: {
   ) => void;
 }): Promise<{
   onsetsMs: number[];
+  silences: import("./subtitle-silence.js").SilenceRegion[];
   durationMs: number;
   assetId: string;
   mediaPath: string;
@@ -480,21 +481,24 @@ async function fetchSilenceSpeechOnsets(options: {
   let assetId = resolved.assetId;
 
   if (resolved.youtube) {
-    options.onStatus?.("downloading", "silence_scan");
-    try {
-      const yt = await ensureYoutubeAudio({
-        videoId: resolved.youtube.videoId,
-        sourceUrl: resolved.youtube.sourceUrl,
-      });
-      if (!isCurrent(sessionId, gen)) return null;
-      mediaPath = yt.mediaPath;
-      assetId = yt.assetId;
-    } catch (err) {
-      console.warn(
-        "[subtitle] silence-scan YT download failed:",
-        err instanceof Error ? err.message : err,
-      );
-      return null;
+    const haveLocal = mediaPath ? await mediaFileExists(mediaPath) : false;
+    if (!haveLocal) {
+      options.onStatus?.("downloading", "silence_scan");
+      try {
+        const yt = await ensureYoutubeAudio({
+          videoId: resolved.youtube.videoId,
+          sourceUrl: resolved.youtube.sourceUrl,
+        });
+        if (!isCurrent(sessionId, gen)) return null;
+        mediaPath = yt.mediaPath;
+        assetId = yt.assetId;
+      } catch (err) {
+        console.warn(
+          "[subtitle] silence-scan YT download failed:",
+          err instanceof Error ? err.message : err,
+        );
+        return null;
+      }
     }
   }
 
@@ -515,6 +519,7 @@ async function fetchSilenceSpeechOnsets(options: {
     );
     return {
       onsetsMs: analysis.speechOnsetsMs,
+      silences: analysis.silences,
       durationMs,
       assetId,
       mediaPath,
@@ -831,6 +836,7 @@ async function tryCancioneroLyricPath(options: {
       silence.onsetsMs,
       durationMs || silence.durationMs,
       SILENCE_AIR_ANTICIPATION_MS,
+      silence.silences,
     );
     lineCues = aligned.cues;
     synced = aligned.synced;
@@ -897,6 +903,7 @@ async function tryCancioneroLyricPath(options: {
           silence.onsetsMs,
           durationMs || silence.durationMs,
           SILENCE_AIR_ANTICIPATION_MS,
+          silence.silences,
         );
         lineCues = realigned.cues;
         synced = realigned.synced;
@@ -1535,16 +1542,71 @@ async function runSubtitleJob(
     const liveAfterAsr = sessionStore.get(sessionId);
     if (!liveAfterAsr?.live.subtitleAgent?.enabled) return;
 
+    // Cancionero miss: Whisper types the lyrics, then empty spaces (silence)
+    // pick where each sentence starts (−200 ms air) — same clock as karaoke.
+    const shapedAsr = shapeLyricLikeCues(filterSpeechCues(asr.cues));
+    const asrLines = shapedAsr.map((c) => c.text).filter(Boolean);
+    const silenceAuto = await fetchSilenceSpeechOnsets({
+      sessionId,
+      gen,
+      resolved: {
+        ...resolved,
+        mediaPath,
+        assetId,
+      },
+      onStatus: (st, hint) => {
+        if (!isCurrent(sessionId, gen)) return;
+        const live = sessionStore.get(sessionId);
+        if (!live?.live.subtitleAgent?.enabled) return;
+        patchAndBroadcast(live, {
+          status: st,
+          hint: hint ?? "silence_scan",
+        });
+      },
+    });
+    if (!isCurrent(sessionId, gen)) return;
+
+    if (silenceAuto && silenceAuto.onsetsMs.length > 0 && asrLines.length > 0) {
+      const aligned = alignCancioneroLinesToSilence(
+        asrLines,
+        silenceAuto.onsetsMs,
+        silenceAuto.durationMs,
+        SILENCE_AIR_ANTICIPATION_MS,
+        silenceAuto.silences,
+      );
+      const packed = packKaraokeDisplayCues(aligned.cues);
+      console.log(
+        `[subtitle] ASR silence-align synced=${aligned.synced} lines=${asrLines.length} onsets=${silenceAuto.onsetsMs.length} airMs=${SILENCE_AIR_ANTICIPATION_MS}`,
+      );
+      const okSilence = await finishWithCues({
+        sessionId,
+        gen,
+        itemId: resolved.item.id,
+        assetId: silenceAuto.assetId || assetId,
+        cues: packed,
+        sourceLang:
+          asr.sourceLang ?? (asr.whisperTranslatedToEn ? "en" : targetLang),
+        targetLang,
+        alreadyEnglish: asr.whisperTranslatedToEn,
+        // Keep silence clocks — do not reshape timings again.
+        nativeTrack: true,
+        preserveLyricsSource: true,
+        timingMode: "exact",
+        hint: aligned.synced ? "asr_silence_aligned" : "asr_silence_partial",
+      });
+      if (okSilence) return;
+    }
+
     const okAsr = await finishWithCues({
       sessionId,
       gen,
       itemId: resolved.item.id,
       assetId,
-      cues: asr.cues,
+      cues: shapedAsr.length > 0 ? shapedAsr : asr.cues,
       sourceLang: asr.sourceLang ?? (asr.whisperTranslatedToEn ? "en" : targetLang),
       targetLang,
       alreadyEnglish: asr.whisperTranslatedToEn,
-      // Auto lyrics when cancionero miss: shape + assisted timing.
+      // Silence scan unavailable — shape + assisted timing fallback.
       nativeTrack: false,
       preserveLyricsSource: false,
       timingMode: "assisted",

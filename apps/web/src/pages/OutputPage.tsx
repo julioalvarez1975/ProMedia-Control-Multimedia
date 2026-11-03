@@ -21,6 +21,7 @@ import { SubtitleOverlay } from "../components/SubtitleOverlay";
 import { useSessionConnection } from "../hooks/useSessionConnection";
 import { buildAssetUrl, buildBrandingLogoUrl } from "../lib/assets";
 import { OUTPUT_BROADCAST_CHANNEL } from "../lib/openOutputWindow";
+import { loadPersistedControlSession } from "../lib/controlSessionPersist";
 import {
   loadPersistedOutputSession,
   savePersistedOutputSession,
@@ -108,7 +109,6 @@ export function OutputPage() {
   } = useSessionConnection("output");
   const stageRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [manualCode, setManualCode] = useState("");
   const autoJoinStarted = useRef(false);
   const autofullscreenTried = useRef(false);
   const joinRef = useRef(join);
@@ -206,34 +206,67 @@ export function OutputPage() {
     };
   }, []);
 
+  /**
+   * Projection only joins the Control session — never asks for a code and
+   * never creates a parallel session. Phone pairing lives on /control.
+   */
   useEffect(() => {
     if (autoJoinStarted.current || hasSession) {
       return;
     }
-    if (queryCode) {
-      autoJoinStarted.current = true;
-      void joinRef.current({ code: queryCode });
-      return;
-    }
-    if (queryToken) {
-      autoJoinStarted.current = true;
-      void joinRef.current({ accessToken: queryToken });
-      return;
-    }
-    // Projector refresh without query — resume last Output session.
-    const saved = loadPersistedOutputSession();
-    if (saved?.code) {
-      autoJoinStarted.current = true;
-      void joinRef.current({ code: saved.code });
-      return;
-    }
-    if (saved?.accessToken) {
-      autoJoinStarted.current = true;
-      void joinRef.current({ accessToken: saved.accessToken });
-    }
+    autoJoinStarted.current = true;
+    void (async () => {
+      const tryJoin = async (opts: {
+        code?: string;
+        accessToken?: string;
+      }): Promise<boolean> => {
+        try {
+          await joinRef.current(opts);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
+      if (queryCode && (await tryJoin({ code: queryCode }))) {
+        return;
+      }
+      if (queryToken && (await tryJoin({ accessToken: queryToken }))) {
+        return;
+      }
+
+      const savedOut = loadPersistedOutputSession();
+      if (savedOut?.code && (await tryJoin({ code: savedOut.code }))) {
+        return;
+      }
+      if (
+        savedOut?.accessToken &&
+        (await tryJoin({ accessToken: savedOut.accessToken }))
+      ) {
+        return;
+      }
+
+      // Same PC browser: reuse the Control panel session (code stays on Control).
+      const savedControl = loadPersistedControlSession();
+      if (
+        savedControl?.code &&
+        (await tryJoin({ code: savedControl.code }))
+      ) {
+        return;
+      }
+      if (
+        savedControl?.accessToken &&
+        (await tryJoin({ accessToken: savedControl.accessToken }))
+      ) {
+        return;
+      }
+
+      // Nothing to join yet — wait until Control opens proyección with ?code=.
+      autoJoinStarted.current = false;
+    })();
   }, [queryCode, queryToken, hasSession]);
 
-  // Remember join so phone Control can pair to the same code after refresh.
+  // Remember Output join for projector refresh (pairing UI stays on Control).
   useEffect(() => {
     if (!hasSession) {
       return;
@@ -332,9 +365,58 @@ export function OutputPage() {
     };
   }, [wantAutofullscreen, isFullscreen]);
 
-  const showJoinForm = !hasSession && !queryCode && !queryToken;
-  const showFsPrompt =
-    wantAutofullscreen && !isFullscreen && hasSession && !showJoinForm;
+  const showFsPrompt = wantAutofullscreen && !isFullscreen && hasSession;
+
+  const retryProjectionSession = () => {
+    if (autoJoinStarted.current && (wsStatus === "connecting" || hasSession)) {
+      return;
+    }
+    autoJoinStarted.current = false;
+    // Re-run the join effect by flipping the guard after a tick.
+    window.setTimeout(() => {
+      if (hasSession) {
+        return;
+      }
+      autoJoinStarted.current = true;
+      void (async () => {
+        const tryJoin = async (opts: {
+          code?: string;
+          accessToken?: string;
+        }): Promise<boolean> => {
+          try {
+            await joinRef.current(opts);
+            return true;
+          } catch {
+            return false;
+          }
+        };
+        if (queryCode && (await tryJoin({ code: queryCode }))) return;
+        if (queryToken && (await tryJoin({ accessToken: queryToken }))) return;
+        const savedOut = loadPersistedOutputSession();
+        if (savedOut?.code && (await tryJoin({ code: savedOut.code }))) return;
+        if (
+          savedOut?.accessToken &&
+          (await tryJoin({ accessToken: savedOut.accessToken }))
+        ) {
+          return;
+        }
+        const savedControl = loadPersistedControlSession();
+        if (
+          savedControl?.code &&
+          (await tryJoin({ code: savedControl.code }))
+        ) {
+          return;
+        }
+        if (
+          savedControl?.accessToken &&
+          (await tryJoin({ accessToken: savedControl.accessToken }))
+        ) {
+          return;
+        }
+        autoJoinStarted.current = false;
+      })();
+    }, 0);
+  };
 
   return (
     <div className="output-shell">
@@ -356,9 +438,18 @@ export function OutputPage() {
         {wsStatus === "connecting" && !hasSession ? (
           <p className="output-waiting">{t(locale, "output.joining")}</p>
         ) : error && !hasSession ? (
-          <p className="output-waiting output-error">
-            {t(locale, "output.joinFailed")}
-          </p>
+          <div className="output-waiting-block">
+            <p className="output-waiting output-error">
+              {t(locale, "output.joinFailed")}
+            </p>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={retryProjectionSession}
+            >
+              {t(locale, "output.retry")}
+            </button>
+          </div>
         ) : (
           <>
             {/* Keep item mounted under overlays so video clock/audio continue (Q1). */}
@@ -389,15 +480,6 @@ export function OutputPage() {
                 <div className="output-waiting-block">
                   <p className="output-waiting">
                     {t(locale, "output.waiting")}
-                  </p>
-                  {sessionCode ? (
-                    <p className="output-session-code" aria-live="polite">
-                      {t(locale, "output.sessionCode")}:{" "}
-                      <strong>{sessionCode}</strong>
-                    </p>
-                  ) : null}
-                  <p className="output-pair-hint">
-                    {t(locale, "output.pairHint")}
                   </p>
                 </div>
               </LiveItemLayer>
@@ -438,38 +520,6 @@ export function OutputPage() {
 
         {!isFullscreen && !hasSession ? (
           <div className="output-chrome">
-            {showJoinForm ? (
-              <form
-                className="output-join"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  if (manualCode.trim()) {
-                    void join({ code: manualCode.trim().toUpperCase() });
-                  }
-                }}
-              >
-                <label>
-                  {t(locale, "output.codeLabel")}
-                  <input
-                    value={manualCode}
-                    onChange={(e) =>
-                      setManualCode(e.target.value.toUpperCase())
-                    }
-                    placeholder="AB12"
-                    maxLength={8}
-                    autoFocus
-                  />
-                </label>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={!manualCode.trim()}
-                >
-                  {t(locale, "output.join")}
-                </button>
-              </form>
-            ) : null}
-
             <p className="output-hint">{t(locale, "output.fullscreenHint")}</p>
             <button
               type="button"

@@ -370,5 +370,6 @@
   "playlist.presentationAdded": "Presentation added to the schedule",
   "playlist.genericFileAdded": "File added to the schedule as a reference",
   "control.dotsOverlay": "Dots",
-  "control.dotsOverlayHint": "Toggle the dot pattern that darkens video"
+  "control.dotsOverlayHint": "Toggle the dot pattern that darkens video",
+  "output.retry": "Retry projection"
 }

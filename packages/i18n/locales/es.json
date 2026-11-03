@@ -370,5 +370,6 @@
   "playlist.presentationAdded": "Presentación añadida al guion",
   "playlist.genericFileAdded": "Archivo añadido al guion como referencia",
   "control.dotsOverlay": "Puntos",
-  "control.dotsOverlayHint": "Activa o quita el patrón de puntos que oscurece el vídeo"
+  "control.dotsOverlayHint": "Activa o quita el patrón de puntos que oscurece el vídeo",
+  "output.retry": "Reintentar proyección"
 }

@@ -517,7 +517,8 @@ export function ControlPage() {
         selectedItem.type === "image" ||
         selectedItem.type === "video" ||
         selectedItem.type === "audio" ||
-        selectedItem.type === "bible") &&
+        selectedItem.type === "bible" ||
+        selectedItem.type === "presentation") &&
       canMutate,
   );
 

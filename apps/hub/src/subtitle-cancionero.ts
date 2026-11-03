@@ -21,7 +21,9 @@ import {
 import { cleanCueText, filterSpeechCues } from "./subtitle-cue-text.js";
 import {
   cueStartWithAirMs,
+  PHRASE_SILENCE_MS,
   SILENCE_AIR_ANTICIPATION_MS,
+  type SilenceRegion,
 } from "./subtitle-silence.js";
 
 const AUDIO_EXT_RE =
@@ -527,15 +529,130 @@ export function packKaraokeDisplayCues(
 }
 
 /**
- * Map exact cancionero lines onto speech onsets after real silence.
+ * Pick one speech onset per lyric line, preferring gaps after real empty
+ * space (long silence). Avoids even-sampling every micro-dip in a music bed.
+ */
+export function pickPhraseOnsetsForLines(
+  speechOnsetsMs: readonly number[],
+  lineCount: number,
+  durationMs: number,
+  silences: readonly SilenceRegion[] = [],
+): number[] {
+  const n = Math.max(0, Math.trunc(lineCount));
+  if (n <= 0) return [];
+
+  const onsets = [...speechOnsetsMs]
+    .map((t) => Math.max(0, Math.round(t)))
+    .filter((t, i, arr) => i === 0 || t > arr[i - 1]!)
+    .sort((a, b) => a - b);
+  if (onsets.length === 0) return [];
+
+  const silenceByEnd = new Map<number, number>();
+  for (const s of silences) {
+    const end = Math.max(0, Math.round(s.endMs));
+    const dur = Math.max(0, Math.round(s.durationMs));
+    const prev = silenceByEnd.get(end) ?? 0;
+    if (dur > prev) silenceByEnd.set(end, dur);
+  }
+
+  const weightAt = (onset: number): number => {
+    if (onset <= 40) return Math.max(PHRASE_SILENCE_MS, 800);
+    let best = 0;
+    for (const [end, dur] of silenceByEnd) {
+      if (Math.abs(end - onset) <= 90) {
+        best = Math.max(best, dur);
+      }
+    }
+    return best;
+  };
+
+  const total = Math.max(
+    durationMs > 0 ? durationMs : 0,
+    onsets[onsets.length - 1]! + 4_000,
+    n * 2_500,
+  );
+
+  // Prefer phrase-level empty space; fall back to all onsets if too few.
+  const phraseOnsets = onsets.filter(
+    (t) => t <= 40 || weightAt(t) >= PHRASE_SILENCE_MS,
+  );
+  const pool = phraseOnsets.length >= Math.min(n, 2) ? phraseOnsets : onsets;
+
+  if (pool.length <= n) {
+    const picked = [...pool];
+    while (picked.length < n) {
+      const prev = picked[picked.length - 1] ?? 0;
+      const remain = n - picked.length;
+      const slice = Math.max(
+        1_500,
+        Math.floor((total - prev) / Math.max(1, remain)),
+      );
+      picked.push(prev + slice);
+    }
+    return picked;
+  }
+
+  // One onset per lyric window: in each slice of the song, take the onset
+  // after the emptiest silence (not a uniform subsample of every dip).
+  const minGap = Math.max(1_100, Math.floor(total / (n * 1.85)));
+  const picked: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const windowStart =
+      i === 0 ? 0 : Math.round((i * total) / n) - Math.floor(minGap * 0.35);
+    const windowEnd =
+      i === n - 1
+        ? total + 1
+        : Math.round(((i + 1) * total) / n) + Math.floor(minGap * 0.35);
+    const center = Math.round(((i + 0.45) * total) / n);
+    let best: number | null = null;
+    let bestScore = -Infinity;
+    for (const onset of pool) {
+      if (onset < windowStart || onset > windowEnd) continue;
+      const prev = picked[picked.length - 1];
+      if (prev != null && onset - prev < minGap * 0.72) continue;
+      const silenceW = weightAt(onset);
+      const dist = Math.abs(onset - center);
+      const score = silenceW * 3 - dist * 0.35;
+      if (score > bestScore) {
+        bestScore = score;
+        best = onset;
+      }
+    }
+    if (best == null) {
+      // Fallback: nearest unused pool onset after previous pick.
+      const prev = picked[picked.length - 1] ?? -minGap;
+      let nearest: number | null = null;
+      let nearestDist = Infinity;
+      for (const onset of pool) {
+        if (onset <= prev + minGap * 0.5) continue;
+        if (picked.includes(onset)) continue;
+        const d = Math.abs(onset - center);
+        if (d < nearestDist) {
+          nearestDist = d;
+          nearest = onset;
+        }
+      }
+      best = nearest ?? pool[Math.min(pool.length - 1, i)]!;
+    }
+    picked.push(best);
+  }
+
+  return picked
+    .map((t) => Math.max(0, Math.round(t)))
+    .filter((t, i, arr) => i === 0 || t > arr[i - 1]!);
+}
+
+/**
+ * Map exact cancionero / ASR lines onto speech onsets after real silence.
  * Each cue starts `airMs` (default 200 ms) before the voice resumes.
- * Cue `.text` stays Biblioteca. Call packKaraokeDisplayCues for display packs.
+ * Cue `.text` stays Biblioteca (or ASR text). Call packKaraokeDisplayCues.
  */
 export function alignCancioneroLinesToSilence(
   lines: readonly string[],
   speechOnsetsMs: readonly number[],
   durationMs = 0,
   airMs: number = SILENCE_AIR_ANTICIPATION_MS,
+  silences: readonly SilenceRegion[] = [],
 ): CancioneroAlignResult {
   const exactLines = lines.map((l) => String(l).trim()).filter(Boolean);
   if (exactLines.length === 0) {
@@ -561,32 +678,12 @@ export function alignCancioneroLinesToSilence(
     };
   }
 
-  // Prefer one onset per line. If more onsets than lines, keep evenly spaced
-  // samples across the song so early/late phrases still land on real breaks.
-  const picked: number[] = [];
-  if (onsets.length >= exactLines.length) {
-    for (let i = 0; i < exactLines.length; i++) {
-      const idx =
-        exactLines.length === 1
-          ? 0
-          : Math.round((i * (onsets.length - 1)) / (exactLines.length - 1));
-      picked.push(onsets[idx]!);
-    }
-  } else {
-    for (let i = 0; i < exactLines.length; i++) {
-      if (i < onsets.length) {
-        picked.push(onsets[i]!);
-      } else {
-        const prev = picked[picked.length - 1] ?? 0;
-        const remain = exactLines.length - i;
-        const slice = Math.max(
-          1_500,
-          Math.floor((total - prev) / Math.max(1, remain)),
-        );
-        picked.push(prev + slice);
-      }
-    }
-  }
+  const picked = pickPhraseOnsetsForLines(
+    onsets,
+    exactLines.length,
+    total,
+    silences,
+  );
 
   // Enforce monotonic starts after air anticipation.
   const MIN_LINE_GAP_MS = 850;
@@ -606,7 +703,8 @@ export function alignCancioneroLinesToSilence(
     const startMs = starts[index]!;
     const nextStart =
       index + 1 < exactLines.length ? starts[index + 1]! : total;
-    let endMs = startMs +
+    let endMs =
+      startMs +
       Math.min(
         MAX_PHRASE_MS,
         Math.max(MIN_PHRASE_MS, Math.floor((nextStart - startMs) * 0.72)),
@@ -625,7 +723,7 @@ export function alignCancioneroLinesToSilence(
     };
   });
 
-  const alignedCount = Math.min(exactLines.length, onsets.length);
+  const alignedCount = Math.min(exactLines.length, onsets.length, picked.length);
   const synced =
     alignedCount >= Math.max(2, Math.ceil(exactLines.length * 0.35));
   return { cues, alignedCount, synced };

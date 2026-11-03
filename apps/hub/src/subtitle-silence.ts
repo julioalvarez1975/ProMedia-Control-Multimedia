@@ -13,7 +13,13 @@ import {
 export const SILENCE_AIR_ANTICIPATION_MS = 200;
 
 /** Minimum quiet stretch to count as a real phrase break. */
-export const MIN_REAL_SILENCE_MS = 250;
+export const MIN_REAL_SILENCE_MS = 280;
+
+/**
+ * Stronger gaps preferred when mapping lyric sentences onto onsets
+ * (instrumental beds create many short dips; sentences need room to breathe).
+ */
+export const PHRASE_SILENCE_MS = 420;
 
 /**
  * Noise floor for silencedetect (dB below full scale).

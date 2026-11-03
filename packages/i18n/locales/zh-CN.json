@@ -370,5 +370,6 @@
   "playlist.presentationAdded": "演示文稿已添加到日程",
   "playlist.genericFileAdded": "文件已作为参考添加到日程",
   "control.dotsOverlay": "点阵",
-  "control.dotsOverlayHint": "开关用于压暗视频的点阵图案"
+  "control.dotsOverlayHint": "开关用于压暗视频的点阵图案",
+  "output.retry": "重试投影"
 }

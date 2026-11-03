@@ -1443,9 +1443,21 @@ body {
 }
 
 .preview-tb-golive.is-on-air {
-  border: 1.5px solid #e03535;
-  box-shadow: 0 0 0 1px rgba(224, 53, 53, 0.35);
-  animation: pm-live-border-blink 1s ease-in-out infinite;
+  border: 1.5px solid #e03535 !important;
+  background: #6b1212 !important;
+  color: #ffe8e8 !important;
+  box-shadow: 0 0 0 1px rgba(224, 53, 53, 0.45);
+  animation: pm-live-on-air-blink 0.85s ease-in-out infinite;
+}
+
+.preview-tb-golive.is-on-air:not(:disabled):hover {
+  border-color: #ff5050 !important;
+  background: #821616 !important;
+}
+
+.preview-tb-golive.is-on-air .preview-tb-golive-label,
+.preview-tb-golive.is-on-air .ui-icon-svg {
+  color: #ff7a7a;
 }
 
 .preview-tb-golive-label {
@@ -3050,7 +3062,7 @@ body.output-route #root {
   border: 1.5px solid #e03535;
   border-radius: 2px;
   padding: 0.08rem 0.3rem;
-  animation: pm-live-border-blink 1s ease-in-out infinite;
+  animation: pm-live-on-air-blink 0.85s ease-in-out infinite;
 }
 
 .schedule-row-actions {
@@ -3075,10 +3087,10 @@ body.output-route #root {
 }
 
 .schedule-go-btn.is-on-air {
-  color: #ff6b6b !important;
-  border-color: #e03535;
-  background: rgba(224, 53, 53, 0.12);
-  animation: pm-live-border-blink 1s ease-in-out infinite;
+  color: #ff8a8a !important;
+  border-color: #e03535 !important;
+  background: rgba(224, 53, 53, 0.22) !important;
+  animation: pm-live-on-air-blink 0.85s ease-in-out infinite;
 }
 
 @keyframes pm-live-border-blink {
@@ -3093,11 +3105,27 @@ body.output-route #root {
   }
 }
 
+/* Stronger pulse for En vivo — red fill + glow so it reads while transmitting. */
+@keyframes pm-live-on-air-blink {
+  0%,
+  100% {
+    border-color: #e03535;
+    box-shadow: 0 0 0 0 rgba(224, 53, 53, 0.65);
+    filter: brightness(1);
+  }
+  50% {
+    border-color: #ff6a6a;
+    box-shadow: 0 0 0 3px rgba(224, 53, 53, 0.55);
+    filter: brightness(1.25);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .schedule-go-btn.is-on-air,
   .schedule-live-badge,
   .preview-tb-golive.is-on-air {
     animation: none;
+    filter: none;
   }
 }
 

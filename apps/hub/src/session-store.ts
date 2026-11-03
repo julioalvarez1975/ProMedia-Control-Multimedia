@@ -422,7 +422,8 @@ export class SessionStore {
       item.type !== "image" &&
       item.type !== "video" &&
       item.type !== "audio" &&
-      item.type !== "bible"
+      item.type !== "bible" &&
+      item.type !== "presentation"
     ) {
       return { error: "unsupported_type" };
     }

@@ -370,5 +370,6 @@
   "playlist.presentationAdded": "Apresentação adicionada ao roteiro",
   "playlist.genericFileAdded": "Arquivo adicionado ao roteiro como referência",
   "control.dotsOverlay": "Pontos",
-  "control.dotsOverlayHint": "Ativa ou remove o padrão de pontos que escurece o vídeo"
+  "control.dotsOverlayHint": "Ativa ou remove o padrão de pontos que escurece o vídeo",
+  "output.retry": "Tentar projetar de novo"
 }
