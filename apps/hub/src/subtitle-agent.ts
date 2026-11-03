@@ -55,6 +55,7 @@ import {
   resolveCancioneroSongById,
   scoreSongLyricOverlap,
   scoreSongMatch,
+  snapAlignedCuesToSilenceOnsets,
   songCancioneroLines,
   songToSubtitleCues,
   titleFromAudioFilename,
@@ -64,6 +65,10 @@ import {
   detectSpeechOnsetsFromSilence,
   SILENCE_AIR_ANTICIPATION_MS,
 } from "./subtitle-silence.js";
+import {
+  alignLyricsWithWhisperx,
+  whisperxAvailable,
+} from "./subtitle-whisperx.js";
 import {
   ensureYoutubeAudio,
   expandCaptionPreferLangs,
@@ -800,8 +805,8 @@ async function tryCancioneroLyricPath(options: {
     (match.score < 95 ||
       (pool[1] != null && pool[1].score >= match.score - 25));
 
-  // Karaoke: download → real silence → cancionero cues (−200 ms air).
-  // Fallback: captions/ASR forced-align. Biblioteca text exact either way.
+  // Karaoke: download → WhisperX forced align (cancionero text → audio) →
+  // one line per phrase, 500 ms before the voice. Silence/ASR only as fallback.
   const liveSync = sessionStore.get(sessionId);
   if (!liveSync?.live.subtitleAgent?.enabled) return true;
 
@@ -820,33 +825,106 @@ async function tryCancioneroLyricPath(options: {
     if (!isCurrent(sessionId, gen)) return;
     const live = sessionStore.get(sessionId);
     if (!live?.live.subtitleAgent?.enabled) return;
+    // Do NOT clear cues here — wiping them left Output blank while WhisperX ran.
     patchAndBroadcast(live, {
       status,
       hint,
       itemId: item.id,
       assetId: resolved.assetId,
-      cues: [],
-      translated: false,
-      sourceLang: null,
     });
   };
 
-  // 1) Preferred: examine downloaded audio for real silence → speech onsets.
+  // Ensure local audio exists (YouTube download) before WhisperX / silence.
+  let mediaPath = resolved.mediaPath;
+  let assetId = resolved.assetId;
+  if (resolved.youtube) {
+    const haveLocal = mediaPath ? await mediaFileExists(mediaPath) : false;
+    if (!haveLocal) {
+      statusPatch("downloading", "whisperx_align");
+      try {
+        const yt = await ensureYoutubeAudio({
+          videoId: resolved.youtube.videoId,
+          sourceUrl: resolved.youtube.sourceUrl,
+        });
+        if (!isCurrent(sessionId, gen)) return true;
+        mediaPath = yt.mediaPath;
+        assetId = yt.assetId;
+      } catch (err) {
+        console.warn(
+          "[subtitle] karaoke YT download failed:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  }
+  if (mediaPath) {
+    const probed = await probeMediaDurationMs(mediaPath);
+    if (probed > 0) durationMs = Math.max(durationMs, probed);
+  }
+  if (!isCurrent(sessionId, gen)) return true;
+
+  let lineCues = songToSubtitleCues(match.song, durationMs);
+  let synced = false;
+  let timingModeHint = "cancionero_match";
+  let published = false;
+
+  const publishKaraokeCues = async (
+    nextLineCues: SubtitleCue[],
+    hint: string,
+  ): Promise<boolean> => {
+    let nextCues = packKaraokeDisplayCues(nextLineCues, 1, 1);
+    const taughtTiming = await recallCancioneroTiming(mediaKey);
+    if (taughtTiming?.cueStarts?.length) {
+      nextCues = applyRememberedCueStarts(nextCues, taughtTiming.cueStarts);
+    }
+    if (!nextCues.length) return false;
+    const okPub = await finishWithCues({
+      sessionId,
+      gen,
+      itemId: item.id,
+      assetId,
+      cues: nextCues,
+      sourceLang: targetLang,
+      targetLang,
+      alreadyEnglish: targetLang === "en",
+      nativeTrack: true,
+      preserveLyricsSource: true,
+      timingMode: "exact",
+      hint,
+      leadMs: CANCIONERO_DEFAULT_LEAD_MS,
+    });
+    if (okPub) return true;
+    if (!isCurrent(sessionId, gen)) return false;
+    const liveForce = sessionStore.get(sessionId);
+    if (!liveForce?.live.subtitleAgent?.enabled) return false;
+    patchAndBroadcast(liveForce, {
+      status: "ready",
+      cues: nextCues,
+      sourceLang: targetLang,
+      translated: false,
+      timingMode: "exact",
+      hint: hint || "cancionero_match_force",
+      itemId: item.id,
+      assetId,
+      cueIndex: null,
+      leadMs: CANCIONERO_DEFAULT_LEAD_MS,
+    });
+    return true;
+  };
+
+  // 1) Silence map first (fast) — publish ASAP so Output is not blank.
   const silence = await fetchSilenceSpeechOnsets({
     sessionId,
     gen,
-    resolved,
+    resolved: { ...resolved, mediaPath, assetId },
     onStatus: statusPatch,
   });
   if (!isCurrent(sessionId, gen)) return true;
   if (silence && silence.durationMs > 0) {
     durationMs = Math.max(durationMs, silence.durationMs);
+    assetId = silence.assetId || assetId;
+    mediaPath = silence.mediaPath || mediaPath;
   }
-
-  let lineCues = songToSubtitleCues(match.song, durationMs);
-  let synced = false;
-  let assetId = resolved.assetId;
-  let timingModeHint = "cancionero_match";
 
   if (silence && silence.onsetsMs.length > 0) {
     const aligned = alignCancioneroLinesToSilence(
@@ -858,7 +936,7 @@ async function tryCancioneroLyricPath(options: {
     );
     lineCues = aligned.cues;
     synced = aligned.synced;
-    assetId = silence.assetId;
+    assetId = silence.assetId || assetId;
     timingModeHint = synced
       ? "cancionero_match_silence"
       : "cancionero_match_silence_partial";
@@ -867,111 +945,163 @@ async function tryCancioneroLyricPath(options: {
     );
   }
 
-  // 2) Fallback / lyric-learn: captions or Whisper clocks when silence is thin.
-  let alignPrompt = buildKaraokeAlignPrompt(lines);
-  const needTimingFallback = !synced || silence == null || silence.onsetsMs.length < 2;
-  const timing = needTimingFallback
-    ? await fetchCancioneroTimingCues({
-        sessionId,
-        gen,
-        targetLang,
-        resolved,
-        alignPrompt,
-        onStatus: statusPatch,
-      })
-    : null;
+  // Publish baseline (silence or equal-time) before WhisperX / ASR.
+  published = await publishKaraokeCues(lineCues, timingModeHint);
   if (!isCurrent(sessionId, gen)) return true;
 
-  // Learn from captions/ASR text when several cancionero candidates compete.
-  if (
-    learnSource !== "manual" &&
-    timing &&
-    timing.cues.length > 0 &&
-    (ambiguous || pool.length > 1)
-  ) {
-    const timingTexts = timing.cues.map((c) => c.text);
-    let bestLyric: { hit: CancioneroMatchHit; lyric: number; combined: number } | null =
-      null;
-    for (const cand of pool) {
-      const lyric = scoreSongLyricOverlap(cand.song, timingTexts);
-      const combined = Math.round(cand.score * 0.35 + lyric * 0.65);
+  // 2) WhisperX forced align — refine clocks; cues already on screen.
+  const canWhisperx = mediaPath ? await whisperxAvailable() : false;
+  if (canWhisperx && mediaPath) {
+    const wx = await alignLyricsWithWhisperx({
+      mediaPath,
+      assetId,
+      lines,
+      language: targetLang === "en" ? "en" : "es",
+      durationMs,
+      airMs: SILENCE_AIR_ANTICIPATION_MS,
+      onsetHintsMs: silence?.onsetsMs ?? [],
+      onStatus: (st) => statusPatch(st, "whisperx_align"),
+    });
+    if (!isCurrent(sessionId, gen)) return true;
+    if (wx && wx.cues.length > 0) {
+      lineCues = wx.cues;
+      synced = wx.cues.length >= Math.max(1, Math.ceil(lines.length * 0.5));
+      if (wx.durationMs > 0) durationMs = Math.max(durationMs, wx.durationMs);
+      timingModeHint = synced
+        ? "cancionero_match_whisperx"
+        : "cancionero_match_whisperx_partial";
+      console.log(
+        `[subtitle] karaoke whisperx synced=${synced} lines=${wx.cues.length}/${lines.length} model=${wx.alignModel} airMs=${SILENCE_AIR_ANTICIPATION_MS}`,
+      );
+      published =
+        (await publishKaraokeCues(lineCues, timingModeHint)) || published;
+    }
+  } else if (!canWhisperx) {
+    console.warn(
+      "[subtitle] whisperx not installed — using silence/equal karaoke align",
+    );
+  }
+
+  // 3) Only if still weak: captions/ASR clocks (slow) + lyric disambiguation.
+  if (!synced || (ambiguous && learnSource !== "manual")) {
+    const alignPrompt = buildKaraokeAlignPrompt(lines);
+    const timing = await fetchCancioneroTimingCues({
+      sessionId,
+      gen,
+      targetLang,
+      resolved: { ...resolved, mediaPath, assetId },
+      alignPrompt,
+      onStatus: statusPatch,
+    });
+    if (!isCurrent(sessionId, gen)) return true;
+
+    if (
+      learnSource !== "manual" &&
+      timing &&
+      timing.cues.length > 0 &&
+      (ambiguous || pool.length > 1)
+    ) {
+      const timingTexts = timing.cues.map((c) => c.text);
+      let bestLyric: {
+        hit: CancioneroMatchHit;
+        lyric: number;
+        combined: number;
+      } | null = null;
+      for (const cand of pool) {
+        const lyric = scoreSongLyricOverlap(cand.song, timingTexts);
+        const combined = Math.round(cand.score * 0.35 + lyric * 0.65);
+        if (
+          !bestLyric ||
+          combined > bestLyric.combined ||
+          (combined === bestLyric.combined && lyric > bestLyric.lyric)
+        ) {
+          bestLyric = { hit: cand, lyric, combined };
+        }
+      }
       if (
-        !bestLyric ||
-        combined > bestLyric.combined ||
-        (combined === bestLyric.combined && lyric > bestLyric.lyric)
+        bestLyric &&
+        bestLyric.lyric >= 12 &&
+        bestLyric.hit.item.id !== match.item.id
       ) {
-        bestLyric = { hit: cand, lyric, combined };
+        console.log(
+          `[subtitle] karaoke lyric-learn switch "${match.song.title}" → "${bestLyric.hit.song.title}" lyric=${bestLyric.lyric} combined=${bestLyric.combined}`,
+        );
+        match = bestLyric.hit;
+        learnSource = "lyric";
+        lines = songCancioneroLines(match.song);
+        lineCues = songToSubtitleCues(match.song, durationMs);
+        if (silence && silence.onsetsMs.length > 0) {
+          const realigned = alignCancioneroLinesToSilence(
+            lines,
+            silence.onsetsMs,
+            durationMs || silence.durationMs,
+            SILENCE_AIR_ANTICIPATION_MS,
+            silence.silences,
+          );
+          lineCues = realigned.cues;
+          synced = realigned.synced;
+        }
+      } else if (bestLyric && bestLyric.lyric >= 18) {
+        learnSource = learnSource === "exact" ? "exact" : "lyric";
       }
     }
-    if (
-      bestLyric &&
-      bestLyric.lyric >= 12 &&
-      bestLyric.hit.item.id !== match.item.id
-    ) {
-      console.log(
-        `[subtitle] karaoke lyric-learn switch "${match.song.title}" → "${bestLyric.hit.song.title}" lyric=${bestLyric.lyric} combined=${bestLyric.combined}`,
+
+    if (!lines.length) {
+      console.warn(
+        "[subtitle] cancionero lines cleared after lyric-learn — auto-generate via captions/Whisper",
       );
-      match = bestLyric.hit;
-      learnSource = "lyric";
-      lines = songCancioneroLines(match.song);
-      alignPrompt = buildKaraokeAlignPrompt(lines);
+      return false;
+    }
+
+    if (!synced && timing && timing.cues.length > 0) {
       if (silence && silence.onsetsMs.length > 0) {
-        const realigned = alignCancioneroLinesToSilence(
+        const textAligned = alignCancioneroLinesToTiming(
           lines,
+          timing.cues,
+          durationMs,
+        );
+        const snapped = snapAlignedCuesToSilenceOnsets(
+          textAligned.cues,
           silence.onsetsMs,
           durationMs || silence.durationMs,
           SILENCE_AIR_ANTICIPATION_MS,
           silence.silences,
         );
-        lineCues = realigned.cues;
-        synced = realigned.synced;
+        lineCues = snapped.cues;
+        synced = snapped.synced || textAligned.synced;
         timingModeHint = synced
-          ? "cancionero_match_silence"
-          : "cancionero_match_silence_partial";
+          ? "cancionero_match_silence_snap"
+          : "cancionero_match_silence_snap_partial";
+      } else {
+        const aligned = alignCancioneroLinesToTiming(
+          lines,
+          timing.cues,
+          durationMs,
+        );
+        const airOnly = snapAlignedCuesToSilenceOnsets(
+          aligned.cues,
+          [],
+          durationMs,
+          SILENCE_AIR_ANTICIPATION_MS,
+          [],
+        );
+        lineCues = airOnly.cues;
+        synced = aligned.synced;
+        assetId = timing.assetId || assetId;
+        timingModeHint = synced
+          ? "cancionero_match_audio_air"
+          : "cancionero_match_audio_air_partial";
       }
-    } else if (bestLyric && bestLyric.lyric >= 18) {
-      learnSource = learnSource === "exact" ? "exact" : "lyric";
     }
   }
 
-  if (!lines.length) {
-    console.warn(
-      "[subtitle] cancionero lines cleared after lyric-learn — auto-generate via captions/Whisper",
-    );
-    return false;
+  // Final publish if ASR/lyric-learn improved clocks after the baseline.
+  if (lineCues.length > 0) {
+    published =
+      (await publishKaraokeCues(lineCues, timingModeHint)) || published;
   }
 
-  if ((!synced || lineCues.length === 0) && timing && timing.cues.length > 0) {
-    const aligned = alignCancioneroLinesToTiming(
-      lines,
-      timing.cues,
-      durationMs,
-    );
-    lineCues = aligned.cues;
-    synced = aligned.synced;
-    assetId = timing.assetId;
-    timingModeHint = synced ? "cancionero_match_synced" : "cancionero_match";
-    console.log(
-      `[subtitle] karaoke caption/ASR align synced=${synced} aligned=${aligned.alignedCount}/${lines.length}`,
-    );
-  }
-
-  // Two cancionero phrases per cue (2 large lines); gaps between packs stay blank.
-  let cues = packKaraokeDisplayCues(lineCues);
-
-  // Apply operator-taught ←/→ timing from a previous session, if any.
-  const taughtTiming = await recallCancioneroTiming(mediaKey);
-  if (taughtTiming?.cueStarts?.length) {
-    const applied = applyRememberedCueStarts(cues, taughtTiming.cueStarts);
-    if (applied !== cues) {
-      console.log(
-        `[subtitle] karaoke timing memory applied n=${taughtTiming.cueStarts.length}`,
-      );
-    }
-    cues = applied;
-  }
-
-  if (!cues.length) {
+  if (!published && !lineCues.length) {
     const live = sessionStore.get(sessionId);
     if (!live?.live.subtitleAgent?.enabled) return true;
     patchAndBroadcast(live, {
@@ -990,11 +1120,10 @@ async function tryCancioneroLyricPath(options: {
   }
 
   console.log(
-    `[subtitle] karaoke match score=${match.score} q="${match.matchedQuery}" song="${match.song.title}" learn=${learnSource} lines=${lineCues.length} cues=${cues.length} synced=${synced}`,
+    `[subtitle] karaoke match score=${match.score} q="${match.matchedQuery}" song="${match.song.title}" learn=${learnSource} lines=${lineCues.length} synced=${synced} published=${published}`,
   );
 
-  // 3) Remember for next time — never persist weak fuzzy near-misses
-  // (e.g. fiel ↔ bueno) that poison later runs.
+  // Remember for next time — never persist weak fuzzy near-misses.
   const rememberOk =
     learnSource === "manual" ||
     learnSource === "exact" ||
@@ -1015,24 +1144,7 @@ async function tryCancioneroLyricPath(options: {
     });
   }
 
-  const ok = await finishWithCues({
-    sessionId,
-    gen,
-    itemId: item.id,
-    assetId,
-    cues,
-    sourceLang: targetLang,
-    targetLang,
-    alreadyEnglish: targetLang === "en",
-    // Exact Biblioteca text; exact timingMode so we wait for the voice
-    // (no intro-hold race). Default lead 0 — sync with onset (Adelante optional).
-    nativeTrack: true,
-    preserveLyricsSource: true,
-    timingMode: "exact",
-    hint: timingModeHint,
-    leadMs: CANCIONERO_DEFAULT_LEAD_MS,
-  });
-  return ok || true;
+  return published || lineCues.length > 0;
 }
 
 async function missingBinStillAbsent(hint: string): Promise<boolean> {
@@ -1600,7 +1712,7 @@ async function runSubtitleJob(
         SILENCE_AIR_ANTICIPATION_MS,
         silenceAuto.silences,
       );
-      const packed = packKaraokeDisplayCues(aligned.cues);
+      const packed = packKaraokeDisplayCues(aligned.cues, 1, 1);
       console.log(
         `[subtitle] ASR silence-align synced=${aligned.synced} lines=${asrLines.length} onsets=${silenceAuto.onsetsMs.length} airMs=${SILENCE_AIR_ANTICIPATION_MS}`,
       );

@@ -6,6 +6,18 @@
       "songTitle": "Vasijas Rotas",
       "source": "manual",
       "updatedAt": "2026-10-29T03:38:03.357Z"
+    },
+    "yt:JGw1FRCpL94": {
+      "songId": "4d15bda3598ebaff4ed4",
+      "songTitle": "Dios ha sido fiel",
+      "source": "exact",
+      "updatedAt": "2026-11-03T04:04:50.801Z"
+    },
+    "yt:q1SxbBtXLkw": {
+      "songId": "aae652d9b7b193795cb6",
+      "songTitle": "digno",
+      "source": "manual",
+      "updatedAt": "2026-11-03T04:20:00.000Z"
     }
   },
   "byTitle": {
@@ -14,6 +26,24 @@
       "songTitle": "Vasijas Rotas",
       "source": "manual",
       "updatedAt": "2026-10-29T03:38:03.357Z"
+    },
+    "marcos witt dios ha sido fiel": {
+      "songId": "4d15bda3598ebaff4ed4",
+      "songTitle": "Dios ha sido fiel",
+      "source": "exact",
+      "updatedAt": "2026-11-03T04:04:50.801Z"
+    },
+    "digno marcos brunet": {
+      "songId": "aae652d9b7b193795cb6",
+      "songTitle": "digno",
+      "source": "manual",
+      "updatedAt": "2026-11-03T04:20:00.000Z"
+    },
+    "digno": {
+      "songId": "aae652d9b7b193795cb6",
+      "songTitle": "digno",
+      "source": "exact",
+      "updatedAt": "2026-11-03T04:20:00.000Z"
     }
   },
   "timingByMedia": {

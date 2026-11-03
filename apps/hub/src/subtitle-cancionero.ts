@@ -1,8 +1,8 @@
 /**
  * Karaoke path for Guion Audio + YouTube:
  * Biblioteca / cancionero is the ONLY text source.
- * Preferred clocks: real silence → speech onsets (−200 ms air).
- * Fallback: captions / Whisper forced-align — never rewrite words.
+ * Preferred clocks: analyze audio (Whisper/captions + silence) → each
+ * cancionero line 500 ms before that phrase is sung — never rewrite words.
  */
 import { spawn } from "node:child_process";
 import type {
@@ -179,12 +179,20 @@ export function scoreSongMatch(
 
   if (songTitle === q) {
     score = 100;
+  } else if (
+    // "DIGNO – Marcos Brunet…" → q starts with exact short cancionero title.
+    (q.startsWith(`${songTitle} `) || q.endsWith(` ${songTitle}`)) &&
+    songTitle.length >= 4
+  ) {
+    score = 96;
   } else if (songTitle.includes(q) || q.includes(songTitle)) {
     const shorter = Math.min(songTitle.length, q.length);
     const longer = Math.max(songTitle.length, q.length);
     // Prefer near-equal contains (avoid "a" matching everything).
-    if (shorter >= 4 && shorter / longer >= 0.45) {
-      score = 70 + Math.round(20 * (shorter / longer));
+    // Also allow short exact titles inside long YouTube strings when they are
+    // a whole-token prefix (handled above) or ratio is decent.
+    if (shorter >= 4 && (shorter / longer >= 0.45 || q.startsWith(songTitle))) {
+      score = 70 + Math.round(20 * Math.min(1, shorter / Math.max(longer * 0.45, 1)));
       // Prefix = real title. Mid-string = parenthetical "tune of X" noise.
       // e.g. q="vasijas rotas sublime gracia": vasijas rotas wins, sublime gracia loses.
       if (q.startsWith(songTitle) || songTitle.startsWith(q)) {
@@ -571,7 +579,8 @@ export function pickPhraseOnsetsForLines(
   }
 
   const weightAt = (onset: number): number => {
-    if (onset <= 40) return Math.max(PHRASE_SILENCE_MS, 800);
+    // Never boost t≈0 — worship intros are audible music, not the first phrase.
+    if (onset <= 40) return 0;
     let best = 0;
     for (const [end, dur] of silenceByEnd) {
       if (Math.abs(end - onset) <= 90) {
@@ -588,8 +597,9 @@ export function pickPhraseOnsetsForLines(
   );
 
   // Prefer phrase-level empty space; fall back to all onsets if too few.
+  // Skip t≈0 entirely (credits / music bed are not lyric phrases).
   const phraseOnsets = onsets.filter(
-    (t) => t <= 40 || weightAt(t) >= PHRASE_SILENCE_MS,
+    (t) => t > 40 && weightAt(t) >= PHRASE_SILENCE_MS,
   );
   const pool = phraseOnsets.length >= Math.min(n, 2) ? phraseOnsets : onsets;
 
@@ -701,28 +711,50 @@ export function alignCancioneroLinesToSilence(
   );
 
   // Enforce monotonic starts after air anticipation.
+  const starts: number[] = picked.map((onset) =>
+    cueStartWithAirMs(onset, airMs),
+  );
+  const cues = cuesFromVoiceStarts(exactLines, starts, total);
+
+  const alignedCount = Math.min(exactLines.length, onsets.length, picked.length);
+  const synced =
+    alignedCount >= Math.max(2, Math.ceil(exactLines.length * 0.35));
+  return { cues, alignedCount, synced };
+}
+
+/**
+ * Build display cues from voice-onset clocks (already −airMs applied to starts).
+ * Holds each line until just before the next phrase so karaoke does not go
+ * blank mid-song between short gaps.
+ */
+function cuesFromVoiceStarts(
+  lines: readonly string[],
+  startsIn: readonly number[],
+  durationMs: number,
+): SubtitleCue[] {
   const MIN_LINE_GAP_MS = 850;
-  const GAP_BLANK_MS = 350;
-  const MIN_PHRASE_MS = 1_200;
-  const MAX_PHRASE_MS = 5_500;
+  const GAP_BLANK_MS = 200;
+  const MIN_PHRASE_MS = 1_400;
+  const MAX_PHRASE_MS = 8_000;
   const starts: number[] = [];
-  for (let i = 0; i < picked.length; i++) {
-    let start = cueStartWithAirMs(picked[i]!, airMs);
-    if (i > 0) {
-      start = Math.max(start, starts[i - 1]! + MIN_LINE_GAP_MS);
-    }
+  for (let i = 0; i < startsIn.length; i++) {
+    let start = Math.max(0, Math.round(startsIn[i]!));
+    if (i > 0) start = Math.max(start, starts[i - 1]! + MIN_LINE_GAP_MS);
     starts.push(start);
   }
-
-  const cues: SubtitleCue[] = exactLines.map((text, index) => {
+  const total = Math.max(
+    durationMs > 0 ? durationMs : 0,
+    starts[starts.length - 1]! + 4_000,
+    lines.length * 2_500,
+  );
+  return lines.map((text, index) => {
     const startMs = starts[index]!;
-    const nextStart =
-      index + 1 < exactLines.length ? starts[index + 1]! : total;
+    const nextStart = index + 1 < lines.length ? starts[index + 1]! : total;
     let endMs =
       startMs +
       Math.min(
         MAX_PHRASE_MS,
-        Math.max(MIN_PHRASE_MS, Math.floor((nextStart - startMs) * 0.72)),
+        Math.max(MIN_PHRASE_MS, Math.floor((nextStart - startMs) * 0.88)),
       );
     if (nextStart - startMs > MIN_PHRASE_MS + GAP_BLANK_MS) {
       endMs = Math.min(endMs, nextStart - GAP_BLANK_MS);
@@ -730,15 +762,173 @@ export function alignCancioneroLinesToSilence(
       endMs = Math.min(endMs, nextStart);
     }
     endMs = Math.max(startMs + 500, endMs);
-    return {
-      id: `cancionero_${index}`,
-      startMs,
-      endMs,
-      text,
-    };
+    return { id: `cancionero_${index}`, startMs, endMs, text };
   });
+}
 
-  const alignedCount = Math.min(exactLines.length, onsets.length, picked.length);
+/**
+ * Snap ASR/caption voice clocks onto real silence onsets, then −airMs.
+ * Silence onsets span the FULL track (backbone). ASR only nudges locally —
+ * never pack every line into the first minute when captions die early.
+ */
+export function snapAlignedCuesToSilenceOnsets(
+  alignedCues: readonly SubtitleCue[],
+  speechOnsetsMs: readonly number[],
+  durationMs = 0,
+  airMs: number = SILENCE_AIR_ANTICIPATION_MS,
+  silences: readonly SilenceRegion[] = [],
+): CancioneroAlignResult {
+  const exactLines = alignedCues
+    .map((c) => String(c.text ?? "").trim())
+    .filter(Boolean);
+  if (exactLines.length === 0) {
+    return { cues: [], alignedCount: 0, synced: false };
+  }
+
+  const asrStarts = alignedCues.map((c) => Math.max(0, Math.round(c.startMs)));
+  const asrMin = asrStarts.length ? Math.min(...asrStarts) : 0;
+  const asrMax = asrStarts.length ? Math.max(...asrStarts) : 0;
+  const asrSpan = Math.max(0, asrMax - asrMin);
+
+  if (speechOnsetsMs.length === 0) {
+    // No silence map. If ASR/captions only cover the opening, redistribute
+    // across the real duration so lyrics do not vanish after ~1 minute.
+    const total = Math.max(
+      durationMs > 0 ? durationMs : 0,
+      asrMax + 4_000,
+      exactLines.length * 2_500,
+    );
+    const asrTooShort =
+      total >= 90_000 && asrSpan > 0 && asrSpan < Math.min(75_000, total * 0.45);
+    if (asrTooShort) {
+      const equal = cuesFromEqualTime(exactLines, total);
+      return {
+        cues: equal,
+        alignedCount: 0,
+        synced: false,
+      };
+    }
+    const starts = asrStarts.map((onset) => cueStartWithAirMs(onset, airMs));
+    const cues = cuesFromVoiceStarts(exactLines, starts, total);
+    return {
+      cues,
+      alignedCount: cues.length,
+      synced: cues.length >= 2,
+    };
+  }
+
+  const onsets = [...speechOnsetsMs]
+    .map((t) => Math.max(0, Math.round(t)))
+    .filter((t) => t > 40)
+    .filter((t, i, arr) => i === 0 || t > arr[i - 1]!)
+    .sort((a, b) => a - b);
+
+  if (onsets.length === 0) {
+    return alignCancioneroLinesToSilence(
+      exactLines,
+      speechOnsetsMs,
+      durationMs,
+      airMs,
+      silences,
+    );
+  }
+
+  const total = Math.max(
+    durationMs > 0 ? durationMs : 0,
+    onsets[onsets.length - 1]! + 4_000,
+    asrMax + 4_000,
+    exactLines.length * 2_500,
+  );
+
+  // Backbone spans the whole song — prevents “lost after 1 minute” when ASR
+  // captions only timed the opening verse.
+  const backbone = pickPhraseOnsetsForLines(
+    onsets,
+    exactLines.length,
+    total,
+    silences,
+  );
+
+  const silenceByEnd = new Map<number, number>();
+  for (const s of silences) {
+    const end = Math.max(0, Math.round(s.endMs));
+    const dur = Math.max(0, Math.round(s.durationMs));
+    silenceByEnd.set(end, Math.max(silenceByEnd.get(end) ?? 0, dur));
+  }
+  const weightAt = (onset: number): number => {
+    let best = 0;
+    for (const [end, dur] of silenceByEnd) {
+      if (Math.abs(end - onset) <= 90) best = Math.max(best, dur);
+    }
+    return best;
+  };
+
+  const firstPhrase =
+    onsets.find((t) => weightAt(t) >= PHRASE_SILENCE_MS) ??
+    backbone[0] ??
+    onsets[0]!;
+
+  // Trust ASR nudge only when its span covers a real share of the track.
+  const asrTrusted =
+    asrSpan >= 90_000 || (total > 0 && asrSpan >= total * 0.45);
+
+  const MIN_LINE_GAP_MS = 850;
+  const used = new Set<number>();
+  const voiceOnsets: number[] = [];
+
+  for (let i = 0; i < exactLines.length; i++) {
+    const spread = backbone[i] ?? firstPhrase + i * 2_500;
+    const asrHint = asrStarts[i] ?? spread;
+    const prev = voiceOnsets[i - 1];
+    const minOnset =
+      prev != null ? prev + MIN_LINE_GAP_MS : Math.max(firstPhrase, 0);
+
+    // Default target = silence backbone across full duration.
+    let target = spread;
+    if (asrTrusted && Math.abs(asrHint - spread) <= 12_000) {
+      target = Math.max(minOnset, asrHint);
+    }
+
+    let best: number | null = null;
+    let bestScore = -Infinity;
+    for (const onset of onsets) {
+      if (used.has(onset)) continue;
+      if (onset < minOnset - 200) continue;
+      const delta = onset - target;
+      // Keep local to the backbone/ASR target — do not jump back to intro.
+      if (Math.abs(delta) > 18_000) continue;
+      const silenceW = weightAt(onset);
+      const earlyPenalty = delta < 0 ? Math.abs(delta) * 1.4 : delta * 0.25;
+      const score = silenceW * 2.2 - earlyPenalty;
+      if (score > bestScore) {
+        bestScore = score;
+        best = onset;
+      }
+    }
+    if (best == null) {
+      for (const onset of onsets) {
+        if (used.has(onset)) continue;
+        if (onset < minOnset) continue;
+        best = onset;
+        break;
+      }
+    }
+    if (best == null) {
+      best = Math.max(minOnset, spread, (prev ?? firstPhrase) + 2_200);
+    }
+    used.add(best);
+    voiceOnsets.push(best);
+  }
+
+  const startsBuilt = voiceOnsets.map((onset) =>
+    cueStartWithAirMs(onset, airMs),
+  );
+  const cues = cuesFromVoiceStarts(exactLines, startsBuilt, total);
+  const alignedCount = Math.min(
+    exactLines.length,
+    onsets.length,
+    voiceOnsets.length,
+  );
   const synced =
     alignedCount >= Math.max(2, Math.ceil(exactLines.length * 0.35));
   return { cues, alignedCount, synced };
@@ -811,14 +1001,14 @@ export function alignCancioneroLinesToTiming(
           const windowToks = stream.slice(i, j + 1).map((t) => t.token);
           const windowText = windowToks.join(" ");
           const score = lineTimingScore(lineTok, windowText);
-          // Prefer stronger text match; near-ties keep the earlier onset.
-          // No “earlier bonus” — that pulled whole songs ahead of the voice.
+          // Prefer stronger text match. On near-ties keep the LATER onset —
+          // picking earlier pulled worship tracks into the intro/credits.
           if (score < 0.4) continue;
           const better =
             bestStart < 0 ||
             score > bestScore + 0.02 ||
             (score >= bestScore - 0.01 &&
-              stream[i]!.startMs < bestStart);
+              stream[i]!.startMs > bestStart);
           if (better) {
             bestScore = score;
             bestStart = stream[i]!.startMs;
@@ -893,7 +1083,8 @@ export function alignCancioneroLinesToTiming(
     }
   }
 
-  // Leading unaligned → estimate from first locked / conservative intro.
+  // Leading unaligned → walk BACK from the first locked phrase.
+  // Spreading from t=0 put lines over intros/credits (looked “adelantado”).
   const firstLocked = starts.findIndex((s) => s >= 0);
   if (firstLocked === -1) {
     return {
@@ -903,9 +1094,15 @@ export function alignCancioneroLinesToTiming(
     };
   }
   if (firstLocked > 0) {
-    for (let i = 0; i < firstLocked; i++) {
-      const span = starts[firstLocked]! / Math.max(1, firstLocked);
-      starts[i] = Math.round(i * span);
+    const backGap = Math.max(
+      MIN_LINE_GAP_MS,
+      Math.min(
+        3_200,
+        Math.floor(starts[firstLocked]! / Math.max(1, firstLocked + 1)),
+      ),
+    );
+    for (let i = firstLocked - 1; i >= 0; i--) {
+      starts[i] = Math.max(0, starts[i + 1]! - backGap);
     }
   }
 

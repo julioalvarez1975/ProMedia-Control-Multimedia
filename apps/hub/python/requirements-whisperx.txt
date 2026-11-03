@@ -1,0 +1,5 @@
+# Karaoke forced alignment (cancionero letter → audio clocks).
+# Install into data/models/whisperx-venv (Python 3.11–3.12 recommended):
+#   python3.12 -m venv data/models/whisperx-venv
+#   data/models/whisperx-venv/bin/pip install -r apps/hub/python/requirements-whisperx.txt
+whisperx>=3.8.0,<4
