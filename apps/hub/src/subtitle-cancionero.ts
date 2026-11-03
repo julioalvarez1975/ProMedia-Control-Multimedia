@@ -743,11 +743,25 @@ export function alignCancioneroLinesToSilence(
     silences,
   );
 
-  // Enforce monotonic starts after air anticipation.
+  // Display start = voice onset − air. End = when that phrase's voice stops
+  // (first silence after onset / last word), NOT the next lyric line.
   const starts: number[] = picked.map((onset) =>
     cueStartWithAirMs(onset, airMs),
   );
-  const cues = cuesFromVoiceStarts(exactLines, starts, total);
+  const voiceEnds = picked.map((onset, i) => {
+    const nextOnset =
+      i + 1 < picked.length ? picked[i + 1]! : total;
+    let end = nextOnset - 80;
+    for (const s of silences) {
+      const silenceStart = Math.max(0, Math.round(s.startMs));
+      if (silenceStart > onset + 250 && silenceStart < nextOnset) {
+        end = silenceStart;
+        break;
+      }
+    }
+    return Math.max(onset + 700, end);
+  });
+  const cues = cuesFromVoiceStarts(exactLines, starts, total, voiceEnds);
 
   const alignedCount = Math.min(exactLines.length, onsets.length, picked.length);
   const synced =
@@ -756,17 +770,18 @@ export function alignCancioneroLinesToSilence(
 }
 
 /**
- * Build display cues from voice-onset clocks (already −airMs applied to starts).
- * Hold each phrase through the sung line until the next phrase appears
- * (last word stays on screen — no early blank mid-phrase).
+ * Build display cues from voice clocks (starts already −airMs).
+ * Keep each phrase on screen until that phrase's last sung word ends —
+ * then blank until the next phrase's air start.
  */
 function cuesFromVoiceStarts(
   lines: readonly string[],
   startsIn: readonly number[],
   durationMs: number,
+  voiceEndsIn: readonly number[] = [],
 ): SubtitleCue[] {
   const MIN_LINE_GAP_MS = 850;
-  const MIN_PHRASE_MS = 1_400;
+  const MIN_PHRASE_MS = 1_200;
   const starts: number[] = [];
   for (let i = 0; i < lines.length; i++) {
     const raw = startsIn[i];
@@ -787,12 +802,22 @@ function cuesFromVoiceStarts(
   return lines.map((text, index) => {
     const startMs = starts[index]!;
     const nextStart = index + 1 < lines.length ? starts[index + 1]! : total;
-    // Keep visible until the next line takes over (covers voice through last word).
-    let endMs = Math.max(startMs + MIN_PHRASE_MS, nextStart);
-    if (index + 1 < lines.length) {
-      endMs = nextStart;
-    }
+    const rawEnd = voiceEndsIn[index];
+    let endMs =
+      typeof rawEnd === "number" && Number.isFinite(rawEnd)
+        ? Math.round(rawEnd)
+        : startMs +
+          Math.max(
+            MIN_PHRASE_MS,
+            Math.floor((nextStart - startMs) * 0.78),
+          );
+    // Hold through last word only — never stretch into the next phrase.
     endMs = Math.max(startMs + 500, endMs);
+    if (index + 1 < lines.length) {
+      endMs = Math.min(endMs, nextStart);
+    } else if (durationMs > 0) {
+      endMs = Math.min(endMs, Math.max(startMs + 500, durationMs));
+    }
     if (!Number.isFinite(endMs)) endMs = startMs + MIN_PHRASE_MS;
     return { id: `cancionero_${index}`, startMs, endMs, text };
   });
@@ -841,7 +866,10 @@ export function snapAlignedCuesToSilenceOnsets(
       };
     }
     const starts = asrStarts.map((onset) => cueStartWithAirMs(onset, airMs));
-    const cues = cuesFromVoiceStarts(exactLines, starts, total);
+    const voiceEnds = alignedCues.map((c) =>
+      Math.max(0, Math.round(c.endMs)),
+    );
+    const cues = cuesFromVoiceStarts(exactLines, starts, total, voiceEnds);
     return {
       cues,
       alignedCount: cues.length,
@@ -955,7 +983,30 @@ export function snapAlignedCuesToSilenceOnsets(
   const startsBuilt = voiceOnsets.map((onset) =>
     cueStartWithAirMs(onset, airMs),
   );
-  const cues = cuesFromVoiceStarts(exactLines, startsBuilt, total);
+  // Prefer caption/ASR last-word ends; else first silence after each onset.
+  const asrEnds = alignedCues.map((c) => Math.max(0, Math.round(c.endMs)));
+  const voiceEnds = voiceOnsets.map((onset, i) => {
+    const asrEnd = asrEnds[i];
+    if (
+      typeof asrEnd === "number" &&
+      Number.isFinite(asrEnd) &&
+      asrEnd > onset + 400
+    ) {
+      return asrEnd;
+    }
+    const nextOnset =
+      i + 1 < voiceOnsets.length ? voiceOnsets[i + 1]! : total;
+    let end = nextOnset - 80;
+    for (const s of silences) {
+      const silenceStart = Math.max(0, Math.round(s.startMs));
+      if (silenceStart > onset + 250 && silenceStart < nextOnset) {
+        end = silenceStart;
+        break;
+      }
+    }
+    return Math.max(onset + 700, end);
+  });
+  const cues = cuesFromVoiceStarts(exactLines, startsBuilt, total, voiceEnds);
   const alignedCount = Math.min(
     exactLines.length,
     onsets.length,
@@ -1191,17 +1242,18 @@ export function alignCancioneroLinesToTiming(
       index + 1 < exactLines.length
         ? Math.round(starts[index + 1]!)
         : paddedTotal;
-    // Hold through last sung word; keep on screen until the next phrase.
+    // End when THIS phrase's last word finishes — then blank until next air.
     const voiceEnd =
-      ends[index]! > startMs ? Math.round(ends[index]!) : startMs + MIN_PHRASE_MS;
+      ends[index]! > startMs
+        ? Math.round(ends[index]!)
+        : startMs +
+          Math.max(
+            MIN_PHRASE_MS,
+            Math.floor((nextStart - startMs) * 0.78),
+          );
     let endMs = Math.max(startMs + 500, voiceEnd);
     if (index + 1 < exactLines.length) {
-      endMs = Math.min(Math.max(endMs, startMs + 500), nextStart);
-      if (nextStart - endMs < 900) {
-        endMs = nextStart;
-      }
-    } else {
-      endMs = Math.max(endMs, startMs + MIN_PHRASE_MS);
+      endMs = Math.min(endMs, nextStart);
     }
     endMs = Math.max(startMs + 500, endMs);
     return {

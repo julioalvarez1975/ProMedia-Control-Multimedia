@@ -175,10 +175,9 @@ function applyAirToCues(
       i + 1 < cues.length
         ? cueStartWithAirMs(cues[i + 1]!.startMs, airMs)
         : null;
-    // Keep through last sung word (WhisperX end); only yield when next line starts.
+    // End = last sung word of THIS phrase (WhisperX/caption end). Blank after.
     let endMs = Math.max(startMs + 500, Math.round(c.endMs));
     if (nextDisplayStart != null) {
-      endMs = Math.max(startMs + 500, Math.max(endMs, nextDisplayStart));
       endMs = Math.min(endMs, nextDisplayStart);
     }
     out.push({

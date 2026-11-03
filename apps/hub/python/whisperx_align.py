@@ -209,14 +209,11 @@ def _cues_from_aligned(
             }
         )
 
-    # Hold each phrase through its last word; yield only when the next line starts.
+    # End = last word of THIS phrase only; blank until the next phrase starts.
     for i in range(len(cues) - 1):
         next_start = cues[i + 1]["startMs"]
         end = max(cues[i]["endMs"], cues[i]["startMs"] + 500)
-        if next_start - end < 900:
-            end = next_start
-        else:
-            end = min(end, next_start)
+        end = min(end, next_start)
         cues[i]["endMs"] = max(cues[i]["startMs"] + 500, end)
     if cues and duration_ms > 0:
         cues[-1]["endMs"] = min(
