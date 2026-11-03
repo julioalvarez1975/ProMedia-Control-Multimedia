@@ -18,6 +18,12 @@
       "songTitle": "digno",
       "source": "manual",
       "updatedAt": "2026-11-03T04:20:00.000Z"
+    },
+    "yt:qKp1f7Vn9dM": {
+      "songId": "6185ec43f6aeb231879e",
+      "songTitle": "Vida de Rico",
+      "source": "manual",
+      "updatedAt": "2026-11-03T14:29:50.449Z"
     }
   },
   "byTitle": {
@@ -44,6 +50,18 @@
       "songTitle": "digno",
       "source": "exact",
       "updatedAt": "2026-11-03T04:20:00.000Z"
+    },
+    "camilo vida de rico": {
+      "songId": "6185ec43f6aeb231879e",
+      "songTitle": "Vida de Rico",
+      "source": "manual",
+      "updatedAt": "2026-11-03T14:29:50.449Z"
+    },
+    "vida de rico": {
+      "songId": "6185ec43f6aeb231879e",
+      "songTitle": "Vida de Rico",
+      "source": "manual",
+      "updatedAt": "2026-11-03T14:29:50.449Z"
     }
   },
   "timingByMedia": {

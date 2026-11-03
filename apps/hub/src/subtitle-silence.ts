@@ -9,8 +9,8 @@ import {
   resolveFfmpegBin,
 } from "./subtitle-bins.js";
 
-/** Air before the sung phrase after audio analysis (0,50 s). */
-export const SILENCE_AIR_ANTICIPATION_MS = 500;
+/** Air before the sung phrase after audio analysis (0,20 s). */
+export const SILENCE_AIR_ANTICIPATION_MS = 200;
 
 /** Minimum quiet stretch to count as a real phrase break. */
 export const MIN_REAL_SILENCE_MS = 280;

@@ -209,13 +209,15 @@ def _cues_from_aligned(
             }
         )
 
-    # Tighten ends so they do not overrun the next line (blank gap ~200 ms).
+    # Hold each phrase through its last word; yield only when the next line starts.
     for i in range(len(cues) - 1):
         next_start = cues[i + 1]["startMs"]
-        cues[i]["endMs"] = max(
-            cues[i]["startMs"] + 500,
-            min(cues[i]["endMs"], next_start - 200, cues[i]["startMs"] + 8000),
-        )
+        end = max(cues[i]["endMs"], cues[i]["startMs"] + 500)
+        if next_start - end < 900:
+            end = next_start
+        else:
+            end = min(end, next_start)
+        cues[i]["endMs"] = max(cues[i]["startMs"] + 500, end)
     if cues and duration_ms > 0:
         cues[-1]["endMs"] = min(
             max(cues[-1]["endMs"], cues[-1]["startMs"] + 500),

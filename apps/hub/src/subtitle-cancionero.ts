@@ -2,7 +2,7 @@
  * Karaoke path for Guion Audio + YouTube:
  * Biblioteca / cancionero is the ONLY text source.
  * Preferred clocks: analyze audio (Whisper/captions + silence) → each
- * cancionero line 500 ms before that phrase is sung — never rewrite words.
+ * cancionero line 200 ms before that phrase is sung — never rewrite words.
  */
 import { spawn } from "node:child_process";
 import type {
@@ -662,9 +662,42 @@ export function pickPhraseOnsetsForLines(
     picked.push(best);
   }
 
-  return picked
-    .map((t) => Math.max(0, Math.round(t)))
-    .filter((t, i, arr) => i === 0 || t > arr[i - 1]!);
+  // Keep exactly n monotonic onsets inside the track — the old unique-filter
+  // dropped duplicates and left trailing lines with undefined/NaN clocks.
+  const lastLimit = Math.max(0, total - 1_200);
+  const enforceGap = Math.max(
+    600,
+    Math.min(2_500, Math.floor(lastLimit / Math.max(1, n))),
+  );
+  const out: number[] = [];
+  for (let i = 0; i < n; i++) {
+    let t =
+      i < picked.length
+        ? Math.max(0, Math.round(picked[i]!))
+        : (out[out.length - 1] ?? 0) + enforceGap;
+    if (out.length > 0) {
+      t = Math.max(t, out[out.length - 1]! + enforceGap);
+    }
+    // Stay inside the song; if we ran past the end, pack remaining evenly.
+    if (t > lastLimit) {
+      const remain = n - out.length;
+      const prev = out[out.length - 1] ?? Math.max(0, lastLimit - remain * enforceGap);
+      const slice = Math.max(
+        500,
+        Math.floor((lastLimit - prev) / Math.max(1, remain)),
+      );
+      for (let j = 0; j < remain; j++) {
+        out.push(Math.min(lastLimit, prev + (j + 1) * slice));
+      }
+      break;
+    }
+    out.push(t);
+  }
+  while (out.length < n) {
+    const prev = out[out.length - 1] ?? 0;
+    out.push(Math.min(lastLimit, prev + enforceGap));
+  }
+  return out.slice(0, n);
 }
 
 /**
@@ -724,8 +757,8 @@ export function alignCancioneroLinesToSilence(
 
 /**
  * Build display cues from voice-onset clocks (already −airMs applied to starts).
- * Holds each line until just before the next phrase so karaoke does not go
- * blank mid-song between short gaps.
+ * Hold each phrase through the sung line until the next phrase appears
+ * (last word stays on screen — no early blank mid-phrase).
  */
 function cuesFromVoiceStarts(
   lines: readonly string[],
@@ -733,35 +766,34 @@ function cuesFromVoiceStarts(
   durationMs: number,
 ): SubtitleCue[] {
   const MIN_LINE_GAP_MS = 850;
-  const GAP_BLANK_MS = 200;
   const MIN_PHRASE_MS = 1_400;
-  const MAX_PHRASE_MS = 8_000;
   const starts: number[] = [];
-  for (let i = 0; i < startsIn.length; i++) {
-    let start = Math.max(0, Math.round(startsIn[i]!));
+  for (let i = 0; i < lines.length; i++) {
+    const raw = startsIn[i];
+    let start =
+      typeof raw === "number" && Number.isFinite(raw)
+        ? Math.max(0, Math.round(raw))
+        : starts.length > 0
+          ? starts[starts.length - 1]! + MIN_LINE_GAP_MS
+          : 0;
     if (i > 0) start = Math.max(start, starts[i - 1]! + MIN_LINE_GAP_MS);
     starts.push(start);
   }
   const total = Math.max(
     durationMs > 0 ? durationMs : 0,
-    starts[starts.length - 1]! + 4_000,
+    (starts[starts.length - 1] ?? 0) + 4_000,
     lines.length * 2_500,
   );
   return lines.map((text, index) => {
     const startMs = starts[index]!;
     const nextStart = index + 1 < lines.length ? starts[index + 1]! : total;
-    let endMs =
-      startMs +
-      Math.min(
-        MAX_PHRASE_MS,
-        Math.max(MIN_PHRASE_MS, Math.floor((nextStart - startMs) * 0.88)),
-      );
-    if (nextStart - startMs > MIN_PHRASE_MS + GAP_BLANK_MS) {
-      endMs = Math.min(endMs, nextStart - GAP_BLANK_MS);
-    } else {
-      endMs = Math.min(endMs, nextStart);
+    // Keep visible until the next line takes over (covers voice through last word).
+    let endMs = Math.max(startMs + MIN_PHRASE_MS, nextStart);
+    if (index + 1 < lines.length) {
+      endMs = nextStart;
     }
     endMs = Math.max(startMs + 500, endMs);
+    if (!Number.isFinite(endMs)) endMs = startMs + MIN_PHRASE_MS;
     return { id: `cancionero_${index}`, startMs, endMs, text };
   });
 }
@@ -974,10 +1006,7 @@ export function alignCancioneroLinesToTiming(
   const TOKEN_SEARCH_AHEAD = 96;
   const CUE_SEARCH_AHEAD = 18;
   const MIN_LINE_GAP_MS = 850;
-  /** Leave blank stage between phrases when the voice pauses. */
-  const GAP_BLANK_MS = 350;
   const MIN_PHRASE_MS = 1_200;
-  const MAX_PHRASE_MS = 5_500;
 
   for (let li = 0; li < exactLines.length; li++) {
     const lineTok = alignTokens(exactLines[li]!);
@@ -1162,22 +1191,17 @@ export function alignCancioneroLinesToTiming(
       index + 1 < exactLines.length
         ? Math.round(starts[index + 1]!)
         : paddedTotal;
-    // Prefer voice-matched end; otherwise hold a phrase window — leave blank
-    // before the next line when there is room (instrumental / breath gaps).
-    let endMs =
-      ends[index]! > startMs
-        ? Math.round(ends[index]!)
-        : startMs +
-          Math.min(
-            MAX_PHRASE_MS,
-            Math.max(MIN_PHRASE_MS, Math.floor((nextStart - startMs) * 0.7)),
-          );
-    endMs = Math.max(startMs + 500, Math.min(endMs, startMs + MAX_PHRASE_MS));
-    if (nextStart - startMs > MIN_PHRASE_MS + GAP_BLANK_MS) {
-      endMs = Math.min(endMs, nextStart - GAP_BLANK_MS);
+    // Hold through last sung word; keep on screen until the next phrase.
+    const voiceEnd =
+      ends[index]! > startMs ? Math.round(ends[index]!) : startMs + MIN_PHRASE_MS;
+    let endMs = Math.max(startMs + 500, voiceEnd);
+    if (index + 1 < exactLines.length) {
+      endMs = Math.min(Math.max(endMs, startMs + 500), nextStart);
+      if (nextStart - endMs < 900) {
+        endMs = nextStart;
+      }
     } else {
-      // Tight successive phrases: abut without inventing a long hold.
-      endMs = Math.min(endMs, nextStart);
+      endMs = Math.max(endMs, startMs + MIN_PHRASE_MS);
     }
     endMs = Math.max(startMs + 500, endMs);
     return {

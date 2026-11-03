@@ -30,7 +30,9 @@ assert.equal(synced, true);
 assert.equal(cues[0]!.startMs, 4_800); // 5000 − 200
 assert.equal(cues[1]!.startMs, 11_800);
 assert.equal(cues[2]!.startMs, 19_800);
-assert.ok(cues[0]!.endMs < cues[1]!.startMs);
+// Hold through the phrase until the next line (exclusive end == next start).
+assert.equal(cues[0]!.endMs, cues[1]!.startMs);
+assert.ok(cues[0]!.endMs > cues[0]!.startMs);
 assert.equal(cues[0]!.text, "Línea uno");
 
 console.log("smoke-silence-align: ok");

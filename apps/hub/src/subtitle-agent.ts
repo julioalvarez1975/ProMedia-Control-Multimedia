@@ -318,7 +318,12 @@ async function finishWithCues(options: {
     preserveLyricsSource,
     nativeTrack,
   } = options;
-  const speech = filterSpeechCues(options.cues);
+  const speech = filterSpeechCues(options.cues).filter(
+    (c) =>
+      Number.isFinite(c.startMs) &&
+      Number.isFinite(c.endMs) &&
+      c.endMs > c.startMs,
+  );
   let cues = nativeTrack
     ? preserveNativeCaptionCues(speech)
     : shapeLyricLikeCues(speech);
@@ -806,7 +811,7 @@ async function tryCancioneroLyricPath(options: {
       (pool[1] != null && pool[1].score >= match.score - 25));
 
   // Karaoke: download → WhisperX forced align (cancionero text → audio) →
-  // one line per phrase, 500 ms before the voice. Silence/ASR only as fallback.
+  // one line per phrase, 200 ms before the voice. Silence/ASR only as fallback.
   const liveSync = sessionStore.get(sessionId);
   if (!liveSync?.live.subtitleAgent?.enabled) return true;
 
@@ -945,13 +950,58 @@ async function tryCancioneroLyricPath(options: {
     );
   }
 
-  // Publish baseline (silence or equal-time) before WhisperX / ASR.
+  // Publish baseline (silence or equal-time) before captions / WhisperX.
   published = await publishKaraokeCues(lineCues, timingModeHint);
   if (!isCurrent(sessionId, gen)) return true;
 
-  // 2) WhisperX forced align — refine clocks; cues already on screen.
+  // 2) Captions/ASR clocks (YouTube official tracks are best for pop videos).
+  let timing:
+    | { cues: import("@promedia/shared").SubtitleCue[]; assetId: string }
+    | null = null;
+  {
+    const alignPrompt = buildKaraokeAlignPrompt(lines);
+    timing = await fetchCancioneroTimingCues({
+      sessionId,
+      gen,
+      targetLang,
+      resolved: { ...resolved, mediaPath, assetId },
+      alignPrompt,
+      onStatus: statusPatch,
+    });
+    if (!isCurrent(sessionId, gen)) return true;
+  }
+
+  if (timing && timing.cues.length > 0) {
+    const textAligned = alignCancioneroLinesToTiming(
+      lines,
+      timing.cues,
+      durationMs,
+    );
+    const snapped = snapAlignedCuesToSilenceOnsets(
+      textAligned.cues,
+      silence?.onsetsMs ?? [],
+      durationMs || silence?.durationMs || 0,
+      SILENCE_AIR_ANTICIPATION_MS,
+      silence?.silences ?? [],
+    );
+    if (snapped.cues.length > 0) {
+      lineCues = snapped.cues;
+      synced = snapped.synced || textAligned.synced;
+      assetId = timing.assetId || assetId;
+      timingModeHint = synced
+        ? "cancionero_match_captions_air"
+        : "cancionero_match_captions_air_partial";
+      console.log(
+        `[subtitle] karaoke captions-air synced=${synced} aligned=${snapped.alignedCount}/${lines.length} airMs=${SILENCE_AIR_ANTICIPATION_MS}`,
+      );
+      published =
+        (await publishKaraokeCues(lineCues, timingModeHint)) || published;
+    }
+  }
+
+  // 3) WhisperX only if captions/silence still weak.
   const canWhisperx = mediaPath ? await whisperxAvailable() : false;
-  if (canWhisperx && mediaPath) {
+  if (!synced && canWhisperx && mediaPath) {
     const wx = await alignLyricsWithWhisperx({
       mediaPath,
       assetId,
@@ -976,25 +1026,14 @@ async function tryCancioneroLyricPath(options: {
       published =
         (await publishKaraokeCues(lineCues, timingModeHint)) || published;
     }
-  } else if (!canWhisperx) {
+  } else if (!synced && !canWhisperx) {
     console.warn(
-      "[subtitle] whisperx not installed — using silence/equal karaoke align",
+      "[subtitle] whisperx not installed — using silence/caption karaoke align",
     );
   }
 
-  // 3) Only if still weak: captions/ASR clocks (slow) + lyric disambiguation.
-  if (!synced || (ambiguous && learnSource !== "manual")) {
-    const alignPrompt = buildKaraokeAlignPrompt(lines);
-    const timing = await fetchCancioneroTimingCues({
-      sessionId,
-      gen,
-      targetLang,
-      resolved: { ...resolved, mediaPath, assetId },
-      alignPrompt,
-      onStatus: statusPatch,
-    });
-    if (!isCurrent(sessionId, gen)) return true;
-
+  // 4) Lyric disambiguation when several cancionero candidates compete.
+  if (timing && (!synced || (ambiguous && learnSource !== "manual"))) {
     if (
       learnSource !== "manual" &&
       timing &&
@@ -1456,12 +1495,22 @@ async function runSubtitleJob(
 
   // Same asset already ready for this target — keep cues
   // (unless operator is teaching a different cancionero song).
+  // Reject corrupt clocks (NaN/undefined from short onset maps) so we rebuild.
+  const cuesHealthy =
+    agent.cues.length > 0 &&
+    agent.cues.every(
+      (c) =>
+        Number.isFinite(c.startMs) &&
+        Number.isFinite(c.endMs) &&
+        c.endMs > c.startMs &&
+        Boolean(String(c.text ?? "").trim()),
+    );
   if (
     !teachSongId &&
     agent.status === "ready" &&
     agent.assetId === resolved.assetId &&
     agent.targetLang === targetLang &&
-    agent.cues.length > 0
+    cuesHealthy
   ) {
     if (agent.itemId !== resolved.item.id) {
       patchAndBroadcast(session, { itemId: resolved.item.id });

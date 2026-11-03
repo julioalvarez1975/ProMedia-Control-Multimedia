@@ -171,15 +171,15 @@ function applyAirToCues(
     const c = cues[i]!;
     let startMs = cueStartWithAirMs(c.startMs, airMs);
     if (i > 0) startMs = Math.max(startMs, out[i - 1]!.startMs + 700);
-    const nextStart =
+    const nextDisplayStart =
       i + 1 < cues.length
         ? cueStartWithAirMs(cues[i + 1]!.startMs, airMs)
-        : c.endMs;
-    let endMs = Math.max(startMs + 500, Math.min(c.endMs, nextStart - 200));
-    if (i + 1 < cues.length) {
-      endMs = Math.min(endMs, Math.max(startMs + 500, nextStart - 150));
-    } else {
-      endMs = Math.max(startMs + 500, c.endMs);
+        : null;
+    // Keep through last sung word (WhisperX end); only yield when next line starts.
+    let endMs = Math.max(startMs + 500, Math.round(c.endMs));
+    if (nextDisplayStart != null) {
+      endMs = Math.max(startMs + 500, Math.max(endMs, nextDisplayStart));
+      endMs = Math.min(endMs, nextDisplayStart);
     }
     out.push({
       id: `cancionero_${i}`,
