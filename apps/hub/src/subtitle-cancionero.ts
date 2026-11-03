@@ -204,6 +204,21 @@ export function scoreSongMatch(
 
   if (score <= 0) return 0;
 
+  // "Dios ha sido fiel" must not beat "Dios ha sido bueno" (shared prefix,
+  // different last word) — that put the wrong cancionero on YouTube karaoke.
+  const qTokens = [...tokenSet(q)];
+  const sTokens = [...tokenSet(songTitle)];
+  if (qTokens.length >= 3 && sTokens.length >= 3) {
+    const qLast = qTokens[qTokens.length - 1]!;
+    const sLast = sTokens[sTokens.length - 1]!;
+    if (qLast !== sLast) {
+      const shared = jaccard(tokenSet(songTitle), tokenSet(q));
+      if (shared >= 0.45 && shared < 0.92) {
+        score = Math.min(score, 48);
+      }
+    }
+  }
+
   // Artist bonus / slight penalty.
   if (qArtist && songArtist) {
     if (songArtist === qArtist || songArtist.includes(qArtist) || qArtist.includes(songArtist)) {

@@ -54,6 +54,7 @@ import {
   probeMediaDurationMs,
   resolveCancioneroSongById,
   scoreSongLyricOverlap,
+  scoreSongMatch,
   songCancioneroLines,
   songToSubtitleCues,
   titleFromAudioFilename,
@@ -738,11 +739,27 @@ async function tryCancioneroLyricPath(options: {
     if (remembered) {
       const hit = await resolveCancioneroSongById(remembered.songId);
       if (hit) {
-        match = hit;
-        learnSource = remembered.source;
-        console.log(
-          `[subtitle] karaoke memory hit key=${mediaKey ?? "title"} song="${hit.song.title}" source=${remembered.source}`,
+        // Fuzzy memory once mapped "Dios ha sido fiel" → "Dios ha sido bueno".
+        // Manual/exact memory wins; fuzzy must still agree with the media title.
+        const titleScore = Math.max(
+          0,
+          ...titles.map((t) => scoreSongMatch(hit.song, t)),
         );
+        const trustMemory =
+          remembered.source === "manual" ||
+          remembered.source === "exact" ||
+          titleScore >= 70;
+        if (trustMemory) {
+          match = hit;
+          learnSource = remembered.source;
+          console.log(
+            `[subtitle] karaoke memory hit key=${mediaKey ?? "title"} song="${hit.song.title}" source=${remembered.source} titleScore=${titleScore}`,
+          );
+        } else {
+          console.warn(
+            `[subtitle] karaoke memory rejected song="${hit.song.title}" source=${remembered.source} titleScore=${titleScore} — rematch by title`,
+          );
+        }
       }
     }
   }
@@ -754,7 +771,8 @@ async function tryCancioneroLyricPath(options: {
   if (!isCurrent(sessionId, gen)) return true;
 
   if (!match) {
-    const strong = listed.candidates.filter((c) => c.score >= 55);
+    // Require a firmer title hit so near-miss hymns (fiel/bueno) do not stick.
+    const strong = listed.candidates.filter((c) => c.score >= 70);
     if (strong.length === 0) {
       console.warn(
         `[subtitle] cancionero miss (${listed.reason ?? "no_match"}) — auto-generate lyrics via captions/Whisper tried=${JSON.stringify(listed.tried)}`,
@@ -975,19 +993,27 @@ async function tryCancioneroLyricPath(options: {
     `[subtitle] karaoke match score=${match.score} q="${match.matchedQuery}" song="${match.song.title}" learn=${learnSource} lines=${lineCues.length} cues=${cues.length} synced=${synced}`,
   );
 
-  // 3) Remember for next time (same video / same primary title).
-  void rememberCancioneroMatch({
-    mediaKey,
-    titles,
-    songId: match.item.id,
-    songTitle: match.song.title,
-    source: learnSource,
-  }).catch((err) => {
-    console.warn(
-      "[subtitle] cancionero memory save failed:",
-      err instanceof Error ? err.message : err,
-    );
-  });
+  // 3) Remember for next time — never persist weak fuzzy near-misses
+  // (e.g. fiel ↔ bueno) that poison later runs.
+  const rememberOk =
+    learnSource === "manual" ||
+    learnSource === "exact" ||
+    learnSource === "lyric" ||
+    match.score >= 85;
+  if (rememberOk) {
+    void rememberCancioneroMatch({
+      mediaKey,
+      titles,
+      songId: match.item.id,
+      songTitle: match.song.title,
+      source: learnSource,
+    }).catch((err) => {
+      console.warn(
+        "[subtitle] cancionero memory save failed:",
+        err instanceof Error ? err.message : err,
+      );
+    });
+  }
 
   const ok = await finishWithCues({
     sessionId,

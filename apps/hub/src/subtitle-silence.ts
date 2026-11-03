@@ -171,12 +171,17 @@ export async function detectSpeechOnsetsFromSilence(
 
   const speechOnsetsMs: number[] = [];
   const firstSilence = silences[0];
-  // Audible content from the start (no leading silence) → onset at 0.
-  if (!firstSilence || firstSilence.startMs > 80) {
+  // Karaoke: do NOT fire line 1 at t=0 when the track opens with a music bed
+  // (typical worship intro). Only anchor at 0 when there is no silence map at
+  // all (equal-time fallback) or the file opens with a short leading quiet.
+  if (!firstSilence) {
     speechOnsetsMs.push(0);
+  } else if (firstSilence.startMs <= 120) {
+    // Leading silence — first voice is that silence's end (loop below).
   }
+  // else: audio from the start → wait for the first real phrase break.
   for (const s of silences) {
-    // Voice resumes when silence ends.
+    // Voice / next phrase resumes when silence ends.
     const onset = s.endMs;
     if (durationMs > 0 && onset >= durationMs - 40) continue;
     const prev = speechOnsetsMs[speechOnsetsMs.length - 1];
