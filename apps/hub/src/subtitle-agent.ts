@@ -811,7 +811,7 @@ async function tryCancioneroLyricPath(options: {
       (pool[1] != null && pool[1].score >= match.score - 25));
 
   // Karaoke: download → WhisperX forced align (cancionero text → audio) →
-  // one line per phrase, 200 ms before the voice. Silence/ASR only as fallback.
+  // one line per phrase, on the voice (no air). Silence/ASR only as fallback.
   const liveSync = sessionStore.get(sessionId);
   if (!liveSync?.live.subtitleAgent?.enabled) return true;
 
@@ -1730,7 +1730,7 @@ async function runSubtitleJob(
     if (!liveAfterAsr?.live.subtitleAgent?.enabled) return;
 
     // Cancionero miss: Whisper types the lyrics, then empty spaces (silence)
-    // pick where each sentence starts (−200 ms air) — same clock as karaoke.
+    // pick where each sentence starts (same clock as karaoke, no air).
     const shapedAsr = shapeLyricLikeCues(filterSpeechCues(asr.cues));
     const asrLines = shapedAsr.map((c) => c.text).filter(Boolean);
     const silenceAuto = await fetchSilenceSpeechOnsets({

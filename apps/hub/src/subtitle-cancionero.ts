@@ -2,7 +2,7 @@
  * Karaoke path for Guion Audio + YouTube:
  * Biblioteca / cancionero is the ONLY text source.
  * Preferred clocks: analyze audio (Whisper/captions + silence) → each
- * cancionero line 200 ms before that phrase is sung — never rewrite words.
+ * cancionero line on the sung phrase (no air) — never rewrite words.
  */
 import { spawn } from "node:child_process";
 import type {
@@ -702,7 +702,7 @@ export function pickPhraseOnsetsForLines(
 
 /**
  * Map exact cancionero / ASR lines onto speech onsets after real silence.
- * Each cue starts `airMs` (default 200 ms) before the voice resumes.
+ * Each cue starts at the voice resume (airMs, default 0).
  * Cue `.text` stays Biblioteca (or ASR text). Call packKaraokeDisplayCues.
  */
 export function alignCancioneroLinesToSilence(
