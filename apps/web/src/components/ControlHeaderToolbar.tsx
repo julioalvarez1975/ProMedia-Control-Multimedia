@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { Locale } from "@promedia/i18n";
 import type {
+  SubtitlePrepareState,
   ThemeBackground,
   ThemeId,
   ThemeOverrides,
@@ -16,7 +17,9 @@ import {
   IconAbout,
   IconLanguage,
   IconLibrary,
+  IconPrepare,
   IconProject,
+  IconSaveLyrics,
   IconSubtitles,
   IconTeach,
 } from "./UiIcons";
@@ -58,6 +61,15 @@ export type ControlHeaderToolbarProps = {
   onToggleSubtitleAgent?: () => void;
   /** Open dialog to teach / correct cancionero song for karaoke. */
   onTeachCancionero?: () => void;
+  /** "Preparar Guion": queue progress from the hub (null = never run). */
+  subtitlePrepare?: SubtitlePrepareState | null;
+  /** At least one A/V item in the Guion and none projecting. */
+  canPrepareGuion?: boolean;
+  /** Start the queue, or cancel it when already running. */
+  onPrepareGuion?: () => void;
+  /** Current lyrics came from LRCLIB (offer to save them). */
+  showSaveLyrics?: boolean;
+  onSaveLyrics?: () => void;
 };
 
 function ToolbarBtn({
@@ -122,6 +134,11 @@ export function ControlHeaderToolbar({
   subtitleAgentErrorMessage,
   onToggleSubtitleAgent,
   onTeachCancionero,
+  subtitlePrepare,
+  canPrepareGuion = false,
+  onPrepareGuion,
+  showSaveLyrics = false,
+  onSaveLyrics,
 }: ControlHeaderToolbarProps) {
   const { t, locale, setLocale, locales } = useLocale();
 
@@ -174,6 +191,37 @@ export function ControlHeaderToolbar({
             label={t("control.cancioneroTeach")}
             icon={<IconTeach />}
             onClick={onTeachCancionero}
+          />
+        ) : null}
+        {subtitleAgentEnabled && onPrepareGuion ? (
+          <ToolbarBtn
+            className="toolbar-subtitle-prepare"
+            active={Boolean(subtitlePrepare?.running)}
+            disabled={!canMutate || (!subtitlePrepare?.running && !canPrepareGuion)}
+            title={
+              subtitlePrepare?.running
+                ? t("control.subtitlePrepareCancel")
+                : t("control.subtitlePrepareTitle")
+            }
+            label={
+              subtitlePrepare?.running
+                ? t("control.subtitlePrepareRunning")
+                    .replace("{done}", String(subtitlePrepare.done))
+                    .replace("{total}", String(subtitlePrepare.total))
+                : t("control.subtitlePrepare")
+            }
+            icon={<IconPrepare />}
+            onClick={onPrepareGuion}
+          />
+        ) : null}
+        {subtitleAgentEnabled && showSaveLyrics && onSaveLyrics ? (
+          <ToolbarBtn
+            className="toolbar-subtitle-save-lyrics"
+            disabled={!canMutate}
+            title={t("control.subtitleSaveLyricsTitle")}
+            label={t("control.subtitleSaveLyrics")}
+            icon={<IconSaveLyrics />}
+            onClick={onSaveLyrics}
           />
         ) : null}
       </span>

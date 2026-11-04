@@ -4697,6 +4697,17 @@ body.output-route #root {
   color: var(--muted);
 }
 
+/* Lyrics downloaded from LRCLIB, not reviewed by the operator yet. */
+.biblioteca-item-suggested {
+  padding: 0.05rem 0.45rem;
+  border: 1px solid rgba(240, 180, 60, 0.55);
+  border-radius: 999px;
+  color: #f0b43c;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
 .biblioteca-item-actions {
   display: flex;
   flex-wrap: wrap;

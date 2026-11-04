@@ -18,6 +18,7 @@ import {
   importSongsFromFolder,
   libraryOriginalUrl,
   listLibraryItems,
+  updateLibrarySong,
   uploadLibraryFile,
 } from "../lib/library";
 import { DialogBrand } from "./DialogBrand";
@@ -261,6 +262,23 @@ export function BibliotecaDialog({
     }
   };
 
+  /** Suggested (LRCLIB) lyrics become regular songs once the operator reviews them. */
+  const onMarkReviewed = async (item: LibraryItem) => {
+    if (!item.song) {
+      return;
+    }
+    setBusyId(item.id);
+    setError(null);
+    try {
+      await updateLibrarySong(item.id, { ...item.song, reviewed: true });
+      await reload();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const onSaveSong = async (song: LibrarySongPayload) => {
     setSongBusy(true);
     setSongError(null);
@@ -453,6 +471,15 @@ export function BibliotecaDialog({
                           {item.song.artist}
                         </span>
                       ) : null}
+                      {item.song?.source === "lrclib" &&
+                      item.song.reviewed !== true ? (
+                        <span
+                          className="biblioteca-item-meta biblioteca-item-suggested"
+                          title={t("library.songSuggestedHint")}
+                        >
+                          {t("library.songSuggested")}
+                        </span>
+                      ) : null}
                       {item.slides?.length ? (
                         <span className="biblioteca-item-meta">
                           {t("library.slideCount").replace(
@@ -493,6 +520,17 @@ export function BibliotecaDialog({
                           {t("library.addToGuion")}
                         </button>
                       )}
+                      {item.song?.source === "lrclib" &&
+                      item.song.reviewed !== true ? (
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          disabled={busyId === item.id}
+                          onClick={() => void onMarkReviewed(item)}
+                        >
+                          {t("library.songMarkReviewed")}
+                        </button>
+                      ) : null}
                       {item.original ? (
                         <a
                           className="btn btn-ghost"

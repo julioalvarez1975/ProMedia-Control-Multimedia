@@ -1,3 +1,4 @@
+import { persistReadyAgent } from "./subtitle-aligned-store.js";
 import { rememberReadyAgent } from "./subtitle-ready-cache.js";
 import type {
   AudioPayload,
@@ -265,6 +266,8 @@ export class SessionStore {
     // Finished cues (incl. operator ←/→ retiming) are kept per item so a later
     // Go Live on that item restores them instantly instead of re-running the job.
     rememberReadyAgent(session.id, session.live.subtitleAgent);
+    // …and on disk for YouTube videos, so a hub restart does not lose them.
+    persistReadyAgent(session.live.subtitleAgent);
     return this.bumpUpdated(session);
   }
 

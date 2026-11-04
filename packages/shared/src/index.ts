@@ -193,6 +193,10 @@ export type LibrarySongPayload = {
   title: string;
   artist?: string;
   stanzas: LibrarySongStanza[];
+  /** Where the lyrics came from when not typed/imported by the operator. */
+  source?: "lrclib";
+  /** Suggested lyrics (LRCLIB) stay `false` until the operator reviews them. */
+  reviewed?: boolean;
 };
 
 export type LibraryFileRef = {
@@ -457,7 +461,21 @@ export type SubtitleAgentState = {
   cueIndex: number | null;
   /** Operator-facing hint (downloading YouTube audio, text-only song, error, …). */
   hint: string | null;
+  /** Where the lyric text came from (Biblioteca cancionero vs LRCLIB). */
+  lyricsSource?: "cancionero" | "lrclib" | null;
+  /** "Preparar Guion" queue progress (hub-driven). */
+  prepare?: SubtitlePrepareState | null;
   updatedAt: string | null;
+};
+
+/** Batch pre-alignment of every A/V item in the Guion. */
+export type SubtitlePrepareState = {
+  running: boolean;
+  total: number;
+  done: number;
+  failed: number;
+  /** Item being processed right now. */
+  currentItemId: string | null;
 };
 
 export function emptySubtitleAgentState(
@@ -815,6 +833,18 @@ export type LiveSubtitleAgentSetMessage = {
  * Operator teaches karaoke which Biblioteca song matches the current
  * Audio/YouTube item — saved to cancionero memory and forces a re-align.
  */
+/** Pre-align every A/V item in the Guion (queue). `cancel` stops it. */
+export type LiveSubtitleAgentPrepareMessage = {
+  type: "live.subtitleAgent.prepare";
+  payload: { cancel?: boolean };
+};
+
+/** Save the LRCLIB lyrics used for an item into the Biblioteca (suggested). */
+export type LiveSubtitleAgentSaveLyricsMessage = {
+  type: "live.subtitleAgent.saveLyrics";
+  payload: { itemId?: string };
+};
+
 export type LiveSubtitleAgentTeachMessage = {
   type: "live.subtitleAgent.teach";
   payload: {
@@ -873,6 +903,8 @@ export type ClientToHubMessage =
   | LiveSetSlideMessage
   | LiveMediaClockSetMessage
   | LiveSubtitleAgentSetMessage
+  | LiveSubtitleAgentPrepareMessage
+  | LiveSubtitleAgentSaveLyricsMessage
   | LiveSubtitleAgentTeachMessage
   | LiveSubtitleAgentNudgeMessage
   | LiveSetSceneModeMessage
@@ -1260,12 +1292,12 @@ export function songToTextPayload(song: LibrarySongPayload): TextPayload {
     stanza.lines.length > 0 ? stanza.lines.map((l) => String(l)) : [""];
   const title = flat.title.trim();
   const artist = flat.artist?.trim();
+  const slides = projectionTextSlides([
+    { id: stanza.id || "lyrics", lines },
+  ]);
   return {
     title: artist ? `${title} — ${artist}` : title || undefined,
     align: "center",
     slides,
   };
 }
-  const slides = projectionTextSlides([
-    { id: stanza.id || "lyrics", lines },
-  ]);

@@ -73,10 +73,21 @@ import {
   whisperxAvailable,
 } from "./subtitle-whisperx.js";
 import { findLrclibSong, type LrclibSong } from "./subtitle-lrclib.js";
+import { libraryStore } from "./library-store.js";
+import { songIdentityKey } from "./quelea-import.js";
 import {
   forgetReadyAgent,
   recallReadyAgent,
 } from "./subtitle-ready-cache.js";
+import {
+  clearPersistMeta,
+  forgetPersistedAgent,
+  getPersistMeta,
+  loadPersistedAgent,
+  lyricsHash,
+  setPersistMeta,
+  type PersistedAgent,
+} from "./subtitle-aligned-store.js";
 import {
   ensureYoutubeAudio,
   expandCaptionPreferLangs,
@@ -933,6 +944,25 @@ async function tryCancioneroLyricPath(options: {
       nextCues = applyRememberedCueStarts(nextCues, taughtTiming.cueStarts);
     }
     if (!nextCues.length) return false;
+    // Declare what these cues are built from so they can be saved to disk.
+    // Partial alignments are never persisted.
+    const lyricsFrom: "cancionero" | "lrclib" = lrclib ? "lrclib" : "cancionero";
+    if (!hint.endsWith("_partial") && match) {
+      setPersistMeta(assetId, {
+        songId: match.item.id,
+        lyricsHash: lyricsHash(lines),
+        source: lyricsFrom,
+        lrclibSong: lrclib
+          ? {
+              title: lrclib.song.title,
+              artist: lrclib.song.artist,
+              lines: [...lines],
+            }
+          : undefined,
+      });
+    } else {
+      clearPersistMeta(assetId);
+    }
     const okPub = await finishWithCues({
       sessionId,
       gen,
@@ -948,7 +978,13 @@ async function tryCancioneroLyricPath(options: {
       hint,
       leadMs: CANCIONERO_DEFAULT_LEAD_MS,
     });
-    if (okPub) return true;
+    if (okPub) {
+      const liveSrc = sessionStore.get(sessionId);
+      if (liveSrc?.live.subtitleAgent?.itemId === item.id) {
+        patchAndBroadcast(liveSrc, { lyricsSource: lyricsFrom });
+      }
+      return true;
+    }
     if (!isCurrent(sessionId, gen)) return false;
     const liveForce = sessionStore.get(sessionId);
     if (!liveForce?.live.subtitleAgent?.enabled) return false;
@@ -963,6 +999,7 @@ async function tryCancioneroLyricPath(options: {
       assetId,
       cueIndex: null,
       leadMs: CANCIONERO_DEFAULT_LEAD_MS,
+      lyricsSource: lyricsFrom,
     });
     return true;
   };
@@ -1284,6 +1321,13 @@ export function teachSubtitleCancionero(
   };
   const message = sessionStore.touchSubtitleAgent(session);
   forgetReadyAgent(session.id, itemId ?? session.live.currentItemId ?? undefined);
+  {
+    const target = resolveMediaSource(
+      session,
+      itemId ?? session.live.currentItemId ?? undefined,
+    );
+    if (target.ok) void forgetPersistedAgent(target.assetId);
+  }
   void runSubtitleJob(session.id, itemId ?? session.live.currentItemId ?? undefined, {
     force: true,
     teachSongId: songId,
@@ -1518,6 +1562,203 @@ export function maybeRefreshSubtitleAgent(session: SessionRecord): void {
   });
 }
 
+// ── Preparar Guion: pre-align every A/V item before the service ──────────
+
+const prepareTokens = new Map<string, number>();
+
+function isPrepareTarget(item: PlaylistItem): boolean {
+  return (
+    item.type === "audio" ||
+    (item.type === "video" && item.payload.sourceKind === "youtube")
+  );
+}
+
+function setPrepareState(
+  session: SessionRecord,
+  prepare: SubtitleAgentState["prepare"],
+): HubMessage {
+  const prev = session.live.subtitleAgent ?? emptySubtitleAgentState();
+  session.live.subtitleAgent = {
+    ...prev,
+    prepare,
+    updatedAt: new Date().toISOString(),
+  };
+  const message = sessionStore.touchSubtitleAgent(session);
+  broadcastSession(session.id, message);
+  return message;
+}
+
+/**
+ * Operator asks to pre-align the whole Guion (queue, one item at a time).
+ * Refused while an A/V item is projecting: the agent holds one item's cues
+ * and processing another would blank the live karaoke.
+ */
+export function prepareSubtitleAgent(
+  session: SessionRecord,
+  patch: { cancel?: boolean },
+): HubMessage | { error: string } {
+  const prev = session.live.subtitleAgent ?? emptySubtitleAgentState();
+
+  if (patch.cancel) {
+    prepareTokens.set(session.id, (prepareTokens.get(session.id) ?? 0) + 1);
+    return setPrepareState(
+      session,
+      prev.prepare ? { ...prev.prepare, running: false, currentItemId: null } : null,
+    );
+  }
+  if (prev.prepare?.running) return { error: "prepare_running" };
+
+  const liveItem = session.live.currentItemId
+    ? session.playlist.items.find((i) => i.id === session.live.currentItemId)
+    : null;
+  if (liveItem && (liveItem.type === "video" || liveItem.type === "audio")) {
+    return { error: "live_av_busy" };
+  }
+  const ids = session.playlist.items.filter(isPrepareTarget).map((i) => i.id);
+  if (ids.length === 0) return { error: "no_av_items" };
+
+  const token = (prepareTokens.get(session.id) ?? 0) + 1;
+  prepareTokens.set(session.id, token);
+  session.live.subtitleAgent = { ...prev, enabled: true };
+  const message = setPrepareState(session, {
+    running: true,
+    total: ids.length,
+    done: 0,
+    failed: 0,
+    currentItemId: null,
+  });
+  void runPrepare(session.id, ids, token);
+  return message;
+}
+
+async function runPrepare(
+  sessionId: string,
+  ids: string[],
+  token: number,
+): Promise<void> {
+  let done = 0;
+  let failed = 0;
+  console.log(`[subtitle] prepare start items=${ids.length}`);
+  for (const id of ids) {
+    const session = sessionStore.get(sessionId);
+    if (!session || prepareTokens.get(sessionId) !== token) return;
+    const live = session.live.currentItemId
+      ? session.playlist.items.find((i) => i.id === session.live.currentItemId)
+      : null;
+    if (live && (live.type === "video" || live.type === "audio")) {
+      console.log("[subtitle] prepare aborted: an A/V item went live");
+      break;
+    }
+    setPrepareState(session, {
+      running: true,
+      total: ids.length,
+      done,
+      failed,
+      currentItemId: id,
+    });
+    try {
+      await runSubtitleJob(sessionId, id, { force: true, source: "prepare" });
+      const st = sessionStore.get(sessionId)?.live.subtitleAgent;
+      if (!st || st.itemId !== id || st.status !== "ready") failed += 1;
+    } catch {
+      failed += 1;
+    }
+    done += 1;
+  }
+  const session = sessionStore.get(sessionId);
+  if (session && prepareTokens.get(sessionId) === token) {
+    setPrepareState(session, {
+      running: false,
+      total: ids.length,
+      done,
+      failed,
+      currentItemId: null,
+    });
+    console.log(`[subtitle] prepare done ok=${done - failed} failed=${failed}`);
+  }
+}
+
+// ── Guardar la letra de LRCLIB en la Biblioteca (sugerida) ───────────────
+
+function cleanSongTitle(raw: string): string {
+  return raw
+    .replace(
+      /\s*[(\[](?:official|oficial|lyric|letra|video|v[ií]deo|audio|visualizer|hd|4k)[^)\]]*[)\]]\s*$/gi,
+      "",
+    )
+    .trim();
+}
+
+function setAgentHint(sessionId: string, hint: string, extra?: Partial<SubtitleAgentState>): void {
+  const s = sessionStore.get(sessionId);
+  if (!s) return;
+  patchAndBroadcast(s, { hint, ...extra });
+}
+
+/**
+ * Save the LRCLIB lyrics behind the current item into the Biblioteca as a
+ * "suggested" song (reviewed=false). Never overwrites an existing song.
+ */
+export function saveLrclibLyricsToLibrary(
+  session: SessionRecord,
+): HubMessage | { error: string } {
+  const agent = session.live.subtitleAgent;
+  if (!agent || agent.lyricsSource !== "lrclib" || !agent.assetId) {
+    return { error: "no_lrclib_lyrics" };
+  }
+  const sessionId = session.id;
+  const assetId = agent.assetId;
+  const targetLang = agent.targetLang;
+  void (async () => {
+    try {
+      const song =
+        getPersistMeta(assetId)?.lrclibSong ??
+        (await loadPersistedAgent(assetId, targetLang))?.lrclibSong;
+      if (!song || song.lines.length === 0) {
+        setAgentHint(sessionId, "lyrics_save_failed");
+        return;
+      }
+      const title = cleanSongTitle(song.title) || song.title;
+      const key = songIdentityKey(title, song.artist);
+      const existing = (await libraryStore.list({ category: "canciones" })).find(
+        (i) => i.song && songIdentityKey(i.song.title, i.song.artist) === key,
+      );
+      if (existing) {
+        setAgentHint(sessionId, "lyrics_exists");
+        return;
+      }
+      const created = await libraryStore.createSong({
+        title,
+        artist: song.artist,
+        stanzas: [{ id: "lrclib", lines: song.lines }],
+        source: "lrclib",
+        reviewed: false,
+      });
+      if ("error" in created) {
+        setAgentHint(sessionId, "lyrics_save_failed");
+        return;
+      }
+      // Bind this video to the saved song so the next lookup finds it.
+      await rememberCancioneroMatch({
+        mediaKey: cancioneroMediaKey({ youtubeVideoId: assetId.replace(/^yt_/, "") }),
+        titles: [title],
+        songId: created.id,
+        songTitle: title,
+        source: "manual",
+      });
+      console.log(`[subtitle] lrclib lyrics saved to Biblioteca "${title}"`);
+      setAgentHint(sessionId, "lyrics_saved", { lyricsSource: "cancionero" });
+    } catch (err) {
+      console.warn(
+        "[subtitle] save lrclib lyrics failed:",
+        err instanceof Error ? err.message : err,
+      );
+      setAgentHint(sessionId, "lyrics_save_failed");
+    }
+  })();
+  return sessionStore.touchSubtitleAgent(session);
+}
+
 /**
  * When a YouTube (or audio) link lands in Guion: enable karaoke and examine
  * the downloaded media (silence → cancionero cues). Fire-and-forget.
@@ -1565,10 +1806,69 @@ const INFLIGHT_MAX_AGE_MS = 5 * 60_000;
 /** Guion adds waiting for the running job to finish (per session). */
 const pendingAdds = new Map<string, string[]>();
 
+/** Is a persisted result still trustworthy (lyrics unchanged)? */
+async function persistedStillValid(saved: PersistedAgent): Promise<boolean> {
+  if (saved.source === "lrclib") return true;
+  const hit = await resolveCancioneroSongById(saved.songId);
+  if (!hit) return false;
+  return lyricsHash(songCancioneroLines(hit.song)) === saved.lyricsHash;
+}
+
+/**
+ * Load a saved alignment for this YouTube video into the agent state.
+ * Returns true when the agent now shows the restored (ready) cues.
+ */
+async function restorePersistedAgent(
+  sessionId: string,
+  itemId: string,
+  assetId: string,
+  targetLang: SubtitleTargetLang,
+  cancelRunning: boolean,
+): Promise<boolean> {
+  const saved = await loadPersistedAgent(assetId, targetLang);
+  if (!saved || !(await persistedStillValid(saved))) return false;
+  const session = sessionStore.get(sessionId);
+  const cur = session?.live.subtitleAgent;
+  if (!session || !cur?.enabled) return false;
+  if (cancelRunning) {
+    bumpJob(sessionId); // cancel an in-flight job for another item
+    inflightJobs.delete(sessionId);
+  }
+  setPersistMeta(assetId, {
+    songId: saved.songId,
+    lyricsHash: saved.lyricsHash,
+    source: saved.source,
+    lrclibSong: saved.lrclibSong,
+  });
+  session.live.subtitleAgent = {
+    ...cur,
+    enabled: true,
+    status: "ready",
+    targetLang,
+    itemId,
+    assetId,
+    cues: saved.agent.cues.map((c) => ({ ...c })),
+    hint: saved.agent.hint ?? "cancionero_restored",
+    timingMode: saved.agent.timingMode,
+    sourceLang: saved.agent.sourceLang,
+    translated: saved.agent.translated,
+    lyricsSource: saved.agent.lyricsSource ?? saved.source,
+    leadMs: CANCIONERO_DEFAULT_LEAD_MS,
+    cueIndex: null,
+    updatedAt: new Date().toISOString(),
+  };
+  broadcastSession(sessionId, sessionStore.touchSubtitleAgent(session));
+  console.log(
+    `[subtitle] restored from disk item=${itemId} cues=${saved.agent.cues.length} source=${saved.source}`,
+  );
+  return true;
+}
+
 type JobSource =
   | "guion_add"
   | "toggle_or_set"
   | "go_live"
+  | "prepare"
   | "teach"
   | "other";
 
@@ -1608,6 +1908,7 @@ async function runSubtitleJob(
     peekResolved?.ok &&
     !options?.teachSongId &&
     (source === "go_live" ||
+      source === "prepare" ||
       (source === "toggle_or_set" && options?.force !== true))
   ) {
     const shown =
@@ -1638,6 +1939,42 @@ async function runSubtitleJob(
       console.log(
         `[subtitle] restored cached cues item=${peekResolved.item.id} cues=${hit.cues.length}`,
       );
+      return;
+    }
+  }
+
+  // Restore from disk (survives hub restarts): the same video was aligned before.
+  if (
+    peekSession &&
+    peekAgent &&
+    peekResolved?.ok &&
+    !options?.teachSongId &&
+    (source === "guion_add" ||
+      source === "prepare" ||
+      source === "go_live" ||
+      (source === "toggle_or_set" && options?.force !== true))
+  ) {
+    const busyOther = inflightJobs.get(sessionId);
+    const sameKeyRunning = busyOther?.key === key;
+    const shownNow =
+      peekAgent.status === "ready" &&
+      peekAgent.itemId === peekResolved.item.id &&
+      peekAgent.assetId === peekResolved.assetId;
+    // A guion_add must not hijack the agent while another item is processing.
+    const mayRestore =
+      !shownNow &&
+      !sameKeyRunning &&
+      (!busyOther || source === "go_live" || source === "toggle_or_set");
+    if (
+      mayRestore &&
+      (await restorePersistedAgent(
+        sessionId,
+        peekResolved.item.id,
+        peekResolved.assetId,
+        peekAgent.targetLang,
+        busyOther != null,
+      ))
+    ) {
       return;
     }
   }
