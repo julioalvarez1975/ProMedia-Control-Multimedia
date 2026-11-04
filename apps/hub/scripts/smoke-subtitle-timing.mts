@@ -104,8 +104,8 @@ function main(): void {
     updatedAt: new Date(now - 8_000).toISOString(),
   };
   assert(
-    effectiveMediaClockPositionMs(clock, now) >= 7_500,
-    "clock extrapolated",
+    effectiveMediaClockPositionMs(clock, now) === 0,
+    "stale hub freezes at last reported position (no wall-clock race)",
   );
   assert(
     shouldSnapMediaClockToStart(0, clock, now) === true,
@@ -130,11 +130,24 @@ function main(): void {
     updatedAt: new Date(now - 3_000).toISOString(),
   };
   assert(
-    effectiveMediaClockPositionMs(stalePlaying, now) >= 7_500,
-    "stale hub extrapolates past player",
+    effectiveMediaClockPositionMs(stalePlaying, now) === 5_000,
+    "stale hub freezes — SubtitleOverlay must not race past the player",
   );
   const noChase = shouldCorrectSeek(5_000, stalePlaying, now);
   assert(noChase.seek === false, "do not seek player to extrapolated clock");
+
+  // Fresh heartbeat: still extrapolate smoothly between player reports.
+  const freshPlaying: MediaClock = {
+    itemId: "item1",
+    playing: true,
+    positionMs: 5_000,
+    rate: 1,
+    updatedAt: new Date(now - 200).toISOString(),
+  };
+  assert(
+    Math.abs(effectiveMediaClockPositionMs(freshPlaying, now) - 5_200) < 30,
+    "fresh hub still extrapolates between heartbeats",
+  );
 
   // Fresh operator scrub: seek to explicit hub position.
   const scrub: MediaClock = {

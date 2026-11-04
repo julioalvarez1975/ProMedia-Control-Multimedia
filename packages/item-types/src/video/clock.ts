@@ -1,5 +1,4 @@
 import type { MediaClock } from "@promedia/shared";
-import { effectiveMediaClockPositionMs } from "@promedia/shared";
 
 export const MEDIA_CLOCK_DRIFT_MS = 400;
 
@@ -118,7 +117,11 @@ export function shouldSnapMediaClockToStart(
   if (localPositionMs > MEDIA_CLOCK_COLD_START_MS) {
     return false;
   }
-  return (
-    effectiveMediaClockPositionMs(clock, nowMs) > MEDIA_CLOCK_COLD_START_MS
-  );
+  // Detect wall-clock race even when effectiveMediaClockPositionMs freezes
+  // on a stale updatedAt (karaoke was jumping ahead until rewind).
+  const updated = Date.parse(clock.updatedAt);
+  const age = Number.isFinite(updated)
+    ? nowMs - updated
+    : Number.POSITIVE_INFINITY;
+  return age > MEDIA_CLOCK_COLD_START_MS;
 }

@@ -930,6 +930,13 @@ export function emptyPlaylist(): SessionPlaylist {
   return { items: [] };
 }
 
+/**
+ * Stop wall-clock extrapolation when the hub has not heard from the player.
+ * Otherwise Go Live races karaoke cues ahead while YouTube is still mounting —
+ * sync only looks right after the operator rewinds.
+ */
+export const MEDIA_CLOCK_EXTRAPOLATION_MAX_AGE_MS = 500;
+
 export function effectiveMediaClockPositionMs(
   clock: MediaClock,
   nowMs: number = Date.now(),
@@ -941,8 +948,13 @@ export function effectiveMediaClockPositionMs(
   if (!Number.isFinite(updated)) {
     return clock.positionMs;
   }
+  const age = nowMs - updated;
+  // Freeze at last reported player time until the next heartbeat.
+  if (age > MEDIA_CLOCK_EXTRAPOLATION_MAX_AGE_MS) {
+    return clock.positionMs;
+  }
   const rate = clock.rate ?? 1;
-  return Math.max(0, clock.positionMs + (nowMs - updated) * rate);
+  return Math.max(0, clock.positionMs + age * rate);
 }
 
 export function itemLabel(item: PlaylistItem): string {
