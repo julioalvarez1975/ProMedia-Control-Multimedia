@@ -1,3 +1,4 @@
+import { rememberReadyAgent } from "./subtitle-ready-cache.js";
 import type {
   AudioPayload,
   BiblePayload,
@@ -261,6 +262,9 @@ export class SessionStore {
   /** Persist subtitleAgent field already mutated on session.live. */
   touchSubtitleAgent(session: SessionRecord): HubMessage {
     this.ensureSubtitleAgent(session);
+    // Finished cues (incl. operator ←/→ retiming) are kept per item so a later
+    // Go Live on that item restores them instantly instead of re-running the job.
+    rememberReadyAgent(session.id, session.live.subtitleAgent);
     return this.bumpUpdated(session);
   }
 
@@ -489,20 +493,11 @@ export class SessionStore {
     session.live.currentSlideIndex = 0;
     session.live.mediaClock = null;
     session.live.sceneMode = "normal";
-    const agent = this.ensureSubtitleAgent(session);
-    if (agent.enabled) {
-      session.live.subtitleAgent = {
-        ...agent,
-        status: "idle",
-        itemId: null,
-        assetId: null,
-        cues: [],
-        hint: null,
-        sourceLang: null,
-        translated: false,
-        updatedAt: nowIso(),
-      };
-    }
+    // Keep the subtitle agent state: stopping the projection (black) must not
+    // wipe the aligned cues. Wiping made Control re-target the agent and re-run
+    // the whole download / scan / align job, which then raced the next Go Live.
+    // SubtitleOverlay only renders for the live item, so stale cues are never shown.
+    this.ensureSubtitleAgent(session);
     return this.bumpUpdated(session);
   }
 
