@@ -369,6 +369,17 @@ export function useSessionConnection(role: ClientRole) {
     [send],
   );
 
+  const prepareSubtitleAgent = useCallback(
+    (cancel?: boolean): boolean =>
+      send("live.subtitleAgent.prepare", { cancel: cancel === true }),
+    [send],
+  );
+
+  const saveSubtitleLyrics = useCallback(
+    (): boolean => send("live.subtitleAgent.saveLyrics", {}),
+    [send],
+  );
+
   const teachSubtitleCancionero = useCallback(
     (patch: { songId: string; itemId?: string }): boolean =>
       send("live.subtitleAgent.teach", patch),
@@ -418,6 +429,8 @@ export function useSessionConnection(role: ClientRole) {
     setWatermark,
     setTheme,
     setSubtitleAgent,
+    prepareSubtitleAgent,
+    saveSubtitleLyrics,
     teachSubtitleCancionero,
     nudgeSubtitleCancionero,
     isWsOpen,

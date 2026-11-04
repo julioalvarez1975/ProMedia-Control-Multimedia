@@ -355,6 +355,8 @@ export class LibraryStore {
         title,
         artist: flat.artist,
         stanzas,
+        ...(song.source ? { source: song.source } : {}),
+        ...(song.reviewed !== undefined ? { reviewed: song.reviewed } : {}),
       },
     };
     this.items.set(id, item);
@@ -394,6 +396,13 @@ export class LibraryStore {
             lines: stanza.lines.map((l) => String(l)),
           },
         ],
+        // Keep the "suggested (LRCLIB)" marker unless the editor sets it.
+        ...((song.source ?? existing.song?.source)
+          ? { source: song.source ?? existing.song?.source }
+          : {}),
+        ...((song.reviewed ?? existing.song?.reviewed) !== undefined
+          ? { reviewed: song.reviewed ?? existing.song?.reviewed }
+          : {}),
       },
     };
     this.items.set(id, updated);

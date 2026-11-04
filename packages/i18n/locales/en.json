@@ -59,7 +59,7 @@
   "text.alignRight": "Right",
   "text.slide": "Slide",
   "text.removeSlide": "Remove",
-  "text.slidePlaceholder": "Write slide text…",
+  "text.slidePlaceholder": "Write the text. A blank line separates phrases (each phrase is a slide)…",
   "text.addSlide": "+ Slide",
   "text.cancel": "Cancel",
   "text.save": "Save",

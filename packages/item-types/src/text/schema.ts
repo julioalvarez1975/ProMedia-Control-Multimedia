@@ -64,15 +64,12 @@ export function normalizeTextPayload(payload: TextPayload): TextPayload {
     id: slide.id,
     lines: slide.lines.map((line) => String(line)),
   }));
-  const chunkLines = payload.chunkLines === false ? false : undefined;
-  const slides = resolveProjectionTextSlides({
-    slides: mapped,
-    chunkLines,
-  });
+  // `chunkLines: false` (legacy songs) is dropped: slides are re-split into
+  // one blank-line-separated phrase each.
+  const slides = resolveProjectionTextSlides({ slides: mapped });
   return {
     title: payload.title?.trim() ? payload.title.trim() : undefined,
     align: payload.align ?? "center",
-    ...(chunkLines === false ? { chunkLines: false as const } : {}),
     slides,
   };
 }

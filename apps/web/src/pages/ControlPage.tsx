@@ -258,6 +258,19 @@ export function ControlPage() {
   const themeStyle = themeSurfaceStyle(themeId, themeOverrides);
 
   const subtitleFocusItem = liveItem ?? selectedItem;
+  /** "Preparar Guion": some A/V item exists and none is projecting. */
+  const canPrepareGuion = useMemo(() => {
+    const items = session.snapshot?.playlist.items ?? [];
+    const hasTarget = items.some(
+      (i) =>
+        i.type === "audio" ||
+        (i.type === "video" && i.payload.sourceKind === "youtube"),
+    );
+    const liveAv = Boolean(
+      liveItem && (liveItem.type === "video" || liveItem.type === "audio"),
+    );
+    return hasTarget && !liveAv;
+  }, [session.snapshot?.playlist.items, liveItem]);
   const subtitleAgentTitle = useMemo(() => {
     if (subtitleAgent.enabled) {
       const st = subtitleAgent.status;
@@ -281,6 +294,15 @@ export function ControlPage() {
         return t("control.subtitleAgentWorking");
       }
       if (st === "ready") {
+        if (hint === "lyrics_saved") {
+          return t("control.subtitleLyricsSaved");
+        }
+        if (hint === "lyrics_exists") {
+          return t("control.subtitleLyricsExists");
+        }
+        if (hint === "lyrics_save_failed") {
+          return t("control.subtitleLyricsSaveFailed");
+        }
         if (hint === "mt_source_only") {
           return t("control.subtitleAgentSourceOnly");
         }
@@ -1672,6 +1694,15 @@ export function ControlPage() {
                 }
               }}
               onTeachCancionero={() => setCancioneroTeachOpen(true)}
+              subtitlePrepare={subtitleAgent.prepare ?? null}
+              canPrepareGuion={canPrepareGuion}
+              onPrepareGuion={() =>
+                session.prepareSubtitleAgent(
+                  Boolean(subtitleAgent.prepare?.running),
+                )
+              }
+              showSaveLyrics={subtitleAgent.lyricsSource === "lrclib"}
+              onSaveLyrics={() => session.saveSubtitleLyrics()}
               sessionFallback={
                 <>
                   <button

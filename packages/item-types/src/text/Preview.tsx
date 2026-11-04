@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { PlaylistItem, TextPayload } from "@promedia/shared";
 import { resolveProjectionTextSlides } from "@promedia/shared";
 import { FittedTextStage } from "./FittedTextStage.js";
@@ -44,6 +45,24 @@ function ChevronRightIcon() {
   );
 }
 
+function ListIcon() {
+  return (
+    <svg
+      className="text-preview-nav-icon"
+      width="18"
+      height="18"
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path
+        fillRule="evenodd"
+        d="M2.5 12a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5m0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5m0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5"
+      />
+    </svg>
+  );
+}
+
 /** Preview uses the same theme CSS vars + fit path as Output. */
 export function TextPreview({
   item,
@@ -59,9 +78,49 @@ export function TextPreview({
   const showNav = Boolean(onSlideIndexChange) && total > 1;
   const canPrev = showNav && index > 0;
   const canNext = showNav && index < total - 1;
+  // Full lyrics: scrollable list of every phrase (stage only fits one slide).
+  const [showAll, setShowAll] = useState(false);
+  const canShowAll = total > 1;
+  useEffect(() => {
+    setShowAll(false);
+  }, [item.id]);
 
   return (
     <div className="text-preview" data-has-slide-nav={showNav ? "1" : undefined}>
+      {canShowAll ? (
+        <button
+          type="button"
+          className="text-preview-lyrics-toggle"
+          aria-pressed={showAll}
+          aria-label="Lyrics"
+          title="Lyrics / Letra"
+          onClick={() => setShowAll((v) => !v)}
+        >
+          <ListIcon />
+        </button>
+      ) : null}
+      {canShowAll && showAll ? (
+        <div className="text-preview-lyrics" role="list">
+          {slides.map((s, i) => (
+            <button
+              type="button"
+              key={s.id}
+              role="listitem"
+              className="text-preview-lyrics-slide"
+              data-current={i === index ? "1" : undefined}
+              onClick={() => {
+                onSlideIndexChange?.(i);
+                setShowAll(false);
+              }}
+            >
+              <span className="text-preview-lyrics-num">{i + 1}</span>
+              <span className="text-preview-lyrics-lines">
+                {s.lines.join("\n")}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
       {showNav ? (
         <button
           type="button"

@@ -59,7 +59,7 @@
   "text.alignRight": "右",
   "text.slide": "幻灯片",
   "text.removeSlide": "删除",
-  "text.slidePlaceholder": "输入幻灯片文字…",
+  "text.slidePlaceholder": "输入文字。空行用于分隔短语（每个短语为一张幻灯片）…",
   "text.addSlide": "+ 幻灯片",
   "text.cancel": "取消",
   "text.save": "保存",

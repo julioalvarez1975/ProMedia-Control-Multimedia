@@ -485,3 +485,46 @@ export function IconSceneEmpty(props: IconProps) {
     </svg>
   );
 }
+
+
+/** Pre-align every song in the Guion (queue). */
+export function IconPrepare(props: IconProps) {
+  return (
+    <svg {...svgProps({ ...props, size: props.size ?? 20 })}>
+      <path
+        d="M9 6h11M9 12h11M9 18h11"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+      />
+      <path
+        d="m3.5 6 1.2 1.2L7 4.8M3.5 12l1.2 1.2L7 10.8M3.5 18l1.2 1.2L7 16.8"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+/** Save lyrics to the Biblioteca. */
+export function IconSaveLyrics(props: IconProps) {
+  return (
+    <svg {...svgProps({ ...props, size: props.size ?? 20 })}>
+      <path
+        d="M12 4v10m0 0-4-4m4 4 4-4"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M5 18h14"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}

@@ -59,7 +59,7 @@
   "text.alignRight": "Derecha",
   "text.slide": "Slide",
   "text.removeSlide": "Quitar",
-  "text.slidePlaceholder": "Escribe el texto del slide…",
+  "text.slidePlaceholder": "Escribe el texto. Una línea en blanco separa las frases (cada frase es un slide)…",
   "text.addSlide": "+ Slide",
   "text.cancel": "Cancelar",
   "text.save": "Guardar",

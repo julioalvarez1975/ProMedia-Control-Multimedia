@@ -10,7 +10,7 @@ export type TextOutputRendererProps = {
 /**
  * Text on Output. Align / colors / font family come from session theme CSS
  * vars (`--pm-*` on `.pm-theme`); item.payload.align does not win (subtarea 8).
- * Songs with chunkLines:false keep one lyric block; karaoke agent advances lines.
+ * Songs project one blank-line-separated phrase per slide (←/→ steps phrases).
  */
 export function TextOutputRenderer({ item, slideIndex }: TextOutputRendererProps) {
   const payload = item.payload as TextPayload;

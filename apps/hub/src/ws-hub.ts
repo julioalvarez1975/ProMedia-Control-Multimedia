@@ -24,10 +24,55 @@ import {
   maybeRefreshSubtitleAgent,
   maybeStartKaraokeOnGuionItem,
   nudgeSubtitleCancionero,
+  prepareSubtitleAgent,
+  saveLrclibLyricsToLibrary,
   setSubtitleAgent,
   teachSubtitleCancionero,
 } from "./subtitle-agent.js";
 import { sessionStore, type SessionRecord } from "./session-store.js";
+
+/** Last player→hub clock report per session (diagnostics only). */
+const clockReports = new Map<
+  string,
+  { lastAt: number; lastLogAt: number; goAt: number }
+>();
+
+function noteClockReport(
+  sessionId: string,
+  role: string,
+  payload: { playing?: boolean; positionMs?: number } | undefined,
+): void {
+  const now = Date.now();
+  const rec = clockReports.get(sessionId) ?? { lastAt: 0, lastLogAt: 0, goAt: 0 };
+  rec.lastAt = now;
+  if (now - rec.lastLogAt >= 5_000) {
+    rec.lastLogAt = now;
+    console.log(
+      `[hub] mediaClock report from=${role} playing=${payload?.playing ?? "-"} pos=${
+        typeof payload?.positionMs === "number"
+          ? (payload.positionMs / 1000).toFixed(1) + "s"
+          : "-"
+      }`,
+    );
+  }
+  clockReports.set(sessionId, rec);
+}
+
+/** After Go Live on A/V: warn if the player never reports its playback time. */
+function watchClockAfterGoLive(sessionId: string): void {
+  const rec = clockReports.get(sessionId) ?? { lastAt: 0, lastLogAt: 0, goAt: 0 };
+  rec.goAt = Date.now();
+  clockReports.set(sessionId, rec);
+  const goAt = rec.goAt;
+  setTimeout(() => {
+    const cur = clockReports.get(sessionId);
+    if (cur && cur.goAt === goAt && cur.lastAt < goAt) {
+      console.warn(
+        "[hub] sin reloj del reproductor 10 s después de En vivo: Output cerrada o sin conexión, o YouTube bloqueó el autoplay (hacé clic en Output). Los subtítulos no avanzarán.",
+      );
+    }
+  }, 10_000).unref?.();
+}
 
 type ClientConn = {
   ws: WebSocket;
@@ -215,6 +260,16 @@ function parseClientMessage(raw: string): ClientToHubMessage | null {
         return null;
       }
       return { type: "live.subtitleAgent.set", payload: out };
+    }
+    if (type === "live.subtitleAgent.prepare") {
+      const p = payload as { cancel?: unknown } | undefined;
+      return {
+        type: "live.subtitleAgent.prepare",
+        payload: { cancel: p?.cancel === true },
+      };
+    }
+    if (type === "live.subtitleAgent.saveLyrics") {
+      return { type: "live.subtitleAgent.saveLyrics", payload: {} };
     }
     if (type === "live.subtitleAgent.teach") {
       const p = payload as { songId?: unknown; itemId?: unknown } | undefined;
@@ -490,6 +545,7 @@ export class WsHub {
     // be able to report its playback time, otherwise the hub clock stays at the
     // Go Live anchor and karaoke cues never advance (or stay stuck on cue 0).
     if (msg.type === "live.mediaClock.set" && conn.role === "output") {
+      noteClockReport(session.id, conn.role, msg.payload);
       this.applyResult(
         conn,
         session,
@@ -545,6 +601,12 @@ export class WsHub {
         this.applyResult(conn, session, goResult);
         if (!("error" in goResult)) {
           maybeRefreshSubtitleAgent(session);
+          const goItem = session.playlist.items.find(
+            (i) => i.id === msg.payload.itemId,
+          );
+          if (goItem && (goItem.type === "video" || goItem.type === "audio")) {
+            watchClockAfterGoLive(session.id);
+          }
         }
         return;
       }
@@ -562,6 +624,7 @@ export class WsHub {
         );
         return;
       case "live.mediaClock.set":
+        noteClockReport(session.id, conn.role, msg.payload);
         this.applyResult(
           conn,
           session,
@@ -574,6 +637,16 @@ export class WsHub {
           session,
           setSubtitleAgent(session, msg.payload),
         );
+        return;
+      case "live.subtitleAgent.prepare":
+        this.applyResult(
+          conn,
+          session,
+          prepareSubtitleAgent(session, msg.payload),
+        );
+        return;
+      case "live.subtitleAgent.saveLyrics":
+        this.applyResult(conn, session, saveLrclibLyricsToLibrary(session));
         return;
       case "live.subtitleAgent.teach":
         this.applyResult(
