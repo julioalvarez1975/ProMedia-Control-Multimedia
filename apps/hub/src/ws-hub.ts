@@ -486,7 +486,20 @@ export class WsHub {
       return;
     }
 
+    // The Output window owns the real player (YouTube iframe / <video>). It must
+    // be able to report its playback time, otherwise the hub clock stays at the
+    // Go Live anchor and karaoke cues never advance (or stay stuck on cue 0).
+    if (msg.type === "live.mediaClock.set" && conn.role === "output") {
+      this.applyResult(
+        conn,
+        session,
+        sessionStore.setMediaClock(session, msg.payload),
+      );
+      return;
+    }
+
     if (!this.requireControl(conn, session)) {
+      console.warn(`[hub] rejected ${msg.type} from role=${conn.role}`);
       return;
     }
 
@@ -525,6 +538,9 @@ export class WsHub {
         );
         return;
       case "live.go": {
+        console.log(
+          `[hub] live.go item=${msg.payload.itemId} from=${conn.role} was=${session.live.currentItemId ?? "-"}`,
+        );
         const goResult = sessionStore.goLive(session, msg.payload.itemId);
         this.applyResult(conn, session, goResult);
         if (!("error" in goResult)) {
@@ -533,6 +549,9 @@ export class WsHub {
         return;
       }
       case "live.clear":
+        console.log(
+          `[hub] live.clear from=${conn.role} was=${session.live.currentItemId ?? "-"}`,
+        );
         this.applyResult(conn, session, sessionStore.clearLive(session));
         return;
       case "live.setSlide":
