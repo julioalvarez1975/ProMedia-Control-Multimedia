@@ -3307,6 +3307,87 @@ body.output-route #root {
   display: block;
 }
 
+/* Full-lyrics list (Vista previa): scrollable, one button per phrase. */
+.text-preview-lyrics-toggle {
+  position: absolute;
+  top: 0.45rem;
+  right: 0.45rem;
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(232, 238, 244, 0.22);
+  border-radius: 8px;
+  background: rgba(8, 12, 18, 0.55);
+  color: rgba(232, 238, 244, 0.92);
+  cursor: pointer;
+}
+
+.text-preview-lyrics-toggle:hover,
+.text-preview-lyrics-toggle[aria-pressed="true"] {
+  background: rgba(18, 28, 40, 0.9);
+  border-color: rgba(232, 238, 244, 0.5);
+  color: #fff;
+}
+
+.text-preview-lyrics {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  box-sizing: border-box;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.6rem 3rem 0.8rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  /* Opaque: the fitted stage underneath must not bleed through. */
+  background: #0a0f16;
+}
+
+.text-preview-lyrics-slide {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  width: 100%;
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  text-align: left;
+  font: inherit;
+  color: rgba(232, 238, 244, 0.9);
+  background: rgba(232, 238, 244, 0.05);
+  border: 1px solid rgba(232, 238, 244, 0.12);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.text-preview-lyrics-slide:hover {
+  background: rgba(232, 238, 244, 0.1);
+}
+
+.text-preview-lyrics-slide[data-current="1"] {
+  border-color: rgba(120, 180, 255, 0.85);
+  background: rgba(60, 120, 220, 0.18);
+}
+
+.text-preview-lyrics-num {
+  flex: 0 0 auto;
+  min-width: 1.4rem;
+  font-size: 0.78rem;
+  opacity: 0.6;
+  padding-top: 0.15rem;
+}
+
+.text-preview-lyrics-lines {
+  white-space: pre-line;
+  line-height: 1.35;
+  font-size: 0.95rem;
+}
+
 .text-preview[data-has-slide-nav="1"] .text-stage {
   padding-left: 2.85rem;
   padding-right: 2.85rem;

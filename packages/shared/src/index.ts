@@ -19,8 +19,9 @@ export type TextPayload = {
   slides: TextSlide[];
   align?: TextAlign;
   /**
-   * When false, keep stored slides as-is (no 6-line ←/→ chunking).
-   * Used for cancionero songs: one lyric block; karaoke agent advances lines.
+   * @deprecated Ignored. Older songs stored one big block with `false`; every
+   * text item now projects one blank-line-separated phrase per slide (long
+   * phrases split every 6 lines), so those legacy items still navigate.
    */
   chunkLines?: boolean;
 };
@@ -1162,11 +1163,11 @@ export function projectionTextSlides(
     return [{ id: "empty", lines: [""] }];
   }
   const out: TextSlide[] = [];
-  for (const slide of slides) {
-    const parts = chunkTextLines(slide.lines ?? [], linesPerChunk);
+  for (const phrase of splitSlidesOnBlankLines(slides)) {
+    const parts = chunkTextLines(phrase.lines ?? [], linesPerChunk);
     parts.forEach((lines, partIndex) => {
       out.push({
-        id: partIndex === 0 ? slide.id : `${slide.id}__${partIndex}`,
+        id: partIndex === 0 ? phrase.id : `${phrase.id}__${partIndex}`,
         lines,
       });
     });
@@ -1174,16 +1175,48 @@ export function projectionTextSlides(
   return out.length > 0 ? out : [{ id: "empty", lines: [""] }];
 }
 
-/** Resolve slides for projection (respects text.chunkLines === false). */
+/**
+ * A blank line inside a slide separates phrases: each phrase becomes its own
+ * slide (so ←/→ and Vista previa step phrase by phrase). A slide without
+ * blank-line breaks is returned untouched.
+ */
+export function splitSlideOnBlankLines(slide: TextSlide): TextSlide[] {
+  const groups: string[][] = [];
+  let current: string[] = [];
+  for (const raw of slide.lines ?? []) {
+    for (const part of String(raw)
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n")
+      .split("\n")) {
+      if (part.trim()) {
+        current.push(part);
+      } else if (current.length > 0) {
+        groups.push(current);
+        current = [];
+      }
+    }
+  }
+  if (current.length > 0) {
+    groups.push(current);
+  }
+  if (groups.length <= 1) {
+    return [slide];
+  }
+  return groups.map((lines, i) => ({
+    id: i === 0 ? slide.id : `${slide.id}~${i}`,
+    lines,
+  }));
+}
+
+export function splitSlidesOnBlankLines(slides: TextSlide[]): TextSlide[] {
+  return slides.flatMap((slide) => splitSlideOnBlankLines(slide));
+}
+
+/** Resolve slides for projection: one phrase per slide, ≤6 lines each. */
 export function resolveProjectionTextSlides(payload: {
   slides: TextSlide[];
   chunkLines?: boolean;
 }): TextSlide[] {
-  if (payload.chunkLines === false) {
-    return Array.isArray(payload.slides) && payload.slides.length > 0
-      ? payload.slides
-      : [{ id: "empty", lines: [""] }];
-  }
   return projectionTextSlides(payload.slides);
 }
 
@@ -1216,8 +1249,9 @@ export function flattenSongLyrics(song: LibrarySongPayload): LibrarySongPayload 
 }
 
 /**
- * Convert library song → one text slide with the full lyric block.
- * No line-chunk slider: karaoke agent takes lines and syncs display.
+ * Convert library song → text slides, one per phrase (blank lines in the
+ * lyrics separate phrases). ←/→ steps phrase by phrase; a phrase longer than
+ * 6 lines is split on projection.
  */
 export function songToTextPayload(song: LibrarySongPayload): TextPayload {
   const flat = flattenSongLyrics(song);
@@ -1229,7 +1263,9 @@ export function songToTextPayload(song: LibrarySongPayload): TextPayload {
   return {
     title: artist ? `${title} — ${artist}` : title || undefined,
     align: "center",
-    chunkLines: false,
-    slides: [{ id: stanza.id || "lyrics", lines }],
+    slides,
   };
 }
+  const slides = projectionTextSlides([
+    { id: stanza.id || "lyrics", lines },
+  ]);
