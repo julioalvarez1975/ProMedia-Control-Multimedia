@@ -20,6 +20,24 @@ export function hubHttpBase(): string {
 }
 
 /**
+ * Hub binds IPv4 (`0.0.0.0:8787`), not IPv6. Browsers that resolve
+ * `localhost` to `::1` first fail WS/health unless we pin loopback to IPv4.
+ */
+export function hubDevHostname(pageHostname?: string): string {
+  const host = (pageHostname ?? "").toLowerCase();
+  if (
+    !host ||
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "[::1]" ||
+    host === "::1"
+  ) {
+    return "127.0.0.1";
+  }
+  return pageHostname ?? "127.0.0.1";
+}
+
+/**
  * WebSocket base URL.
  *
  * Prefer a direct hub WS in Vite dev — proxying `/api` WebSockets through Vite
@@ -39,7 +57,7 @@ export function hubWsBase(): string {
   }
   if (import.meta.env.DEV) {
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
-    const host = window.location.hostname || "localhost";
+    const host = hubDevHostname(window.location.hostname);
     return `${proto}://${host}:${HUB_DEV_PORT}`;
   }
   const proto = window.location.protocol === "https:" ? "wss" : "ws";
@@ -104,26 +122,54 @@ export function isLoopbackPageHost(): boolean {
   );
 }
 
+function lanPagePort(): string {
+  return (
+    window.location.port ||
+    (window.location.protocol === "https:" ? "443" : "80")
+  );
+}
+
 /**
  * Control URL(s) a phone should open on the same Wi‑Fi.
- * Uses current Vite port + hub-reported LAN IPs.
- * When `accessToken` is set, appends `?token=` so the phone can join as
- * control (short codes alone no longer grant Guion control).
+ * Prefer `?code=` (shared projection session). Token still works as fallback.
  */
 export function buildLanControlUrls(
   lanAddresses: string[],
-  accessToken?: string | null,
+  opts?: { accessToken?: string | null; code?: string | null },
 ): string[] {
-  const port =
-    window.location.port ||
-    (window.location.protocol === "https:" ? "443" : "80");
-  const token = accessToken?.trim();
-  const path = token
-    ? `/control?token=${encodeURIComponent(token)}`
-    : "/control";
+  const port = lanPagePort();
+  const code = opts?.code?.trim().toUpperCase();
+  const token = opts?.accessToken?.trim();
+  let path = "/control";
+  if (code) {
+    path = `/control?code=${encodeURIComponent(code)}`;
+  } else if (token) {
+    path = `/control?token=${encodeURIComponent(token)}`;
+  }
   return lanAddresses
     .filter((ip) => typeof ip === "string" && ip.length > 0)
     .map((ip) => `http://${ip}:${port}${path}`);
+}
+
+/** Output / projection URL(s) so a second device mirrors the same session. */
+export function buildLanOutputUrls(
+  lanAddresses: string[],
+  code?: string | null,
+): string[] {
+  const port = lanPagePort();
+  const c = code?.trim().toUpperCase();
+  const path = c
+    ? `/output?code=${encodeURIComponent(c)}&autofullscreen=1`
+    : "/output";
+  return lanAddresses
+    .filter((ip) => typeof ip === "string" && ip.length > 0)
+    .map((ip) => `http://${ip}:${port}${path}`);
+}
+
+/** Same-origin Output path for the current session (phone or PC). */
+export function sharedOutputPath(code: string): string {
+  const c = code.trim().toUpperCase();
+  return `/output?code=${encodeURIComponent(c)}&autofullscreen=1`;
 }
 
 export async function createSession(

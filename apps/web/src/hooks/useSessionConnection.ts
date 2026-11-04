@@ -82,7 +82,8 @@ export function useSessionConnection(role: ClientRole) {
   const [wsStatus, setWsStatus] = useState<WsStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [hubUnreachable, setHubUnreachable] = useState(false);
-  const [hubChecking, setHubChecking] = useState(false);
+  /** Control waits for /health before auto-create so a failed probe cannot race. */
+  const [hubChecking, setHubChecking] = useState(role === "control");
   const socketRef = useRef<SessionSocket | null>(null);
   const generationRef = useRef(0);
   const reconnectTimerRef = useRef<number | null>(null);
@@ -145,6 +146,17 @@ export function useSessionConnection(role: ClientRole) {
     }
     void checkHubHealth();
   }, [role, checkHubHealth]);
+
+  // Retry while the hub is down (IPv6 localhost flap, hub still booting).
+  useEffect(() => {
+    if (role !== "control" || !hubUnreachable) {
+      return;
+    }
+    const id = window.setInterval(() => {
+      void checkHubHealth();
+    }, 2000);
+    return () => window.clearInterval(id);
+  }, [role, hubUnreachable, checkHubHealth]);
 
   const attachSocket = useCallback((url: string) => {
     clearReconnectTimer();
@@ -331,6 +343,11 @@ export function useSessionConnection(role: ClientRole) {
       send("live.setSceneMode", { sceneMode }),
     [send],
   );
+  const setWatermark = useCallback(
+    (enabled: boolean): boolean =>
+      send("live.setWatermark", { enabled }),
+    [send],
+  );
   const setTheme = useCallback(
     (patch: {
       themeId?: ThemeId;
@@ -398,6 +415,7 @@ export function useSessionConnection(role: ClientRole) {
     setSlide,
     setMediaClock,
     setSceneMode,
+    setWatermark,
     setTheme,
     setSubtitleAgent,
     teachSubtitleCancionero,

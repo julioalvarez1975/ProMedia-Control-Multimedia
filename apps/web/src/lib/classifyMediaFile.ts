@@ -1,6 +1,12 @@
 import { isSupportedTextImport } from "./textImport";
 
-export type MediaFileKind = "image" | "video" | "audio" | "text" | "unsupported";
+export type MediaFileKind =
+  | "image"
+  | "video"
+  | "audio"
+  | "text"
+  | "presentation"
+  | "unsupported";
 
 const IMAGE_EXTS = new Set([
   ".jpg",
@@ -8,8 +14,9 @@ const IMAGE_EXTS = new Set([
   ".png",
   ".webp",
   ".gif",
+  ".svg",
 ]);
-const VIDEO_EXTS = new Set([".mp4", ".webm", ".mov"]);
+const VIDEO_EXTS = new Set([".mp4", ".webm", ".mov", ".m4v", ".mkv"]);
 const AUDIO_EXTS = new Set([
   ".mp3",
   ".m4a",
@@ -19,6 +26,14 @@ const AUDIO_EXTS = new Set([
   ".ogg",
   ".oga",
   ".opus",
+]);
+const PRESENTATION_EXTS = new Set([
+  ".pptx",
+  ".ppt",
+  ".ppsx",
+  ".potx",
+  ".odp",
+  ".pdf",
 ]);
 
 function extOf(name: string): string {
@@ -40,56 +55,26 @@ export function classifyMediaFile(file: File): MediaFileKind {
   if (mime.startsWith("audio/") || AUDIO_EXTS.has(ext)) {
     return "audio";
   }
+  // PPTX/PDF → presentation slides (before plain-text PDF path).
+  if (
+    PRESENTATION_EXTS.has(ext) ||
+    mime.includes("presentation") ||
+    mime === "application/pdf" ||
+    mime === "application/vnd.ms-powerpoint"
+  ) {
+    return "presentation";
+  }
   if (isSupportedTextImport(file)) {
     return "text";
   }
   return "unsupported";
 }
 
-/** Accept attribute for the unified multi-file picker. */
-export const UNIFIED_MEDIA_ACCEPT = [
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-  "image/gif",
-  ".jpg",
-  ".jpeg",
-  ".png",
-  ".webp",
-  ".gif",
-  "video/mp4",
-  "video/webm",
-  "video/quicktime",
-  ".mp4",
-  ".webm",
-  ".mov",
-  "audio/mpeg",
-  "audio/mp4",
-  "audio/aac",
-  "audio/wav",
-  "audio/flac",
-  "audio/ogg",
-  "audio/*",
-  ".mp3",
-  ".m4a",
-  ".aac",
-  ".wav",
-  ".flac",
-  ".ogg",
-  ".oga",
-  ".opus",
-  ".pdf",
-  ".xml",
-  ".txt",
-  ".md",
-  ".text",
-  ".markdown",
-  "application/pdf",
-  "text/plain",
-  "text/markdown",
-  "application/xml",
-  "text/xml",
-].join(",");
+/**
+ * Accept attribute for the unified multi-file picker / Guion drop.
+ * Wildcard mime lets the OS picker show every file; ingest classifies each drop.
+ */
+export const UNIFIED_MEDIA_ACCEPT = "*/*";
 
 /** Accept attribute for the Guion Audio solapa picker. */
 export const AUDIO_MEDIA_ACCEPT = [

@@ -11,11 +11,16 @@ import { useLocale } from "../locale/LocaleContext";
  * or a short “remote LAN” badge when Control is already open on a phone.
  */
 export type LanRemoteHintProps = {
-  /** Session owner token — required for phone Control join after hardening. */
+  /** Session short code — preferred for shared projection pairing. */
+  code?: string | null;
+  /** Session owner token — fallback when code is missing. */
   accessToken?: string | null;
 };
 
-export function LanRemoteHint({ accessToken }: LanRemoteHintProps = {}) {
+export function LanRemoteHint({
+  code,
+  accessToken,
+}: LanRemoteHintProps = {}) {
   const { t } = useLocale();
   const [urls, setUrls] = useState<string[]>([]);
   const [copied, setCopied] = useState(false);
@@ -28,12 +33,12 @@ export function LanRemoteHint({ accessToken }: LanRemoteHintProps = {}) {
       if (cancelled || !health?.ok) return;
       const addrs = health.lanAddresses ?? [];
       if (addrs.length === 0) return;
-      setUrls(buildLanControlUrls(addrs, accessToken));
+      setUrls(buildLanControlUrls(addrs, { code, accessToken }));
     })();
     return () => {
       cancelled = true;
     };
-  }, [accessToken]);
+  }, [code, accessToken]);
 
   const primary = urls[0] ?? "";
 

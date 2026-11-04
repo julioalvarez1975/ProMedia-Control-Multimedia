@@ -5,7 +5,31 @@
       "songId": "619fa62b5e7cd1b00c63",
       "songTitle": "Vasijas Rotas",
       "source": "manual",
-      "updatedAt": "2026-10-29T03:38:03.357Z"
+      "updatedAt": "2026-11-04T00:22:15.223Z"
+    },
+    "yt:JGw1FRCpL94": {
+      "songId": "4d15bda3598ebaff4ed4",
+      "songTitle": "Dios ha sido fiel",
+      "source": "exact",
+      "updatedAt": "2026-11-03T04:04:50.801Z"
+    },
+    "yt:q1SxbBtXLkw": {
+      "songId": "aae652d9b7b193795cb6",
+      "songTitle": "digno",
+      "source": "manual",
+      "updatedAt": "2026-11-03T04:20:00.000Z"
+    },
+    "yt:qKp1f7Vn9dM": {
+      "songId": "6185ec43f6aeb231879e",
+      "songTitle": "Vida de Rico",
+      "source": "manual",
+      "updatedAt": "2026-11-04T03:05:13.072Z"
+    },
+    "yt:_RRoI9yrL78": {
+      "songId": "8a7065087eac1c0877a1",
+      "songTitle": "Yo te Busco",
+      "source": "manual",
+      "updatedAt": "2026-11-04T00:49:44.443Z"
     }
   },
   "byTitle": {
@@ -13,7 +37,49 @@
       "songId": "619fa62b5e7cd1b00c63",
       "songTitle": "Vasijas Rotas",
       "source": "manual",
-      "updatedAt": "2026-10-29T03:38:03.357Z"
+      "updatedAt": "2026-11-04T00:22:15.223Z"
+    },
+    "marcos witt dios ha sido fiel": {
+      "songId": "4d15bda3598ebaff4ed4",
+      "songTitle": "Dios ha sido fiel",
+      "source": "exact",
+      "updatedAt": "2026-11-03T04:04:50.801Z"
+    },
+    "digno marcos brunet": {
+      "songId": "aae652d9b7b193795cb6",
+      "songTitle": "digno",
+      "source": "manual",
+      "updatedAt": "2026-11-03T04:20:00.000Z"
+    },
+    "digno": {
+      "songId": "aae652d9b7b193795cb6",
+      "songTitle": "digno",
+      "source": "exact",
+      "updatedAt": "2026-11-03T04:20:00.000Z"
+    },
+    "camilo vida de rico": {
+      "songId": "6185ec43f6aeb231879e",
+      "songTitle": "Vida de Rico",
+      "source": "manual",
+      "updatedAt": "2026-11-04T03:05:13.072Z"
+    },
+    "vida de rico": {
+      "songId": "6185ec43f6aeb231879e",
+      "songTitle": "Vida de Rico",
+      "source": "manual",
+      "updatedAt": "2026-11-04T03:05:13.072Z"
+    },
+    "yo te busco": {
+      "songId": "8a7065087eac1c0877a1",
+      "songTitle": "Yo te Busco",
+      "source": "manual",
+      "updatedAt": "2026-11-04T00:49:44.443Z"
+    },
+    "marcos witt yo te busco": {
+      "songId": "8a7065087eac1c0877a1",
+      "songTitle": "Yo te Busco",
+      "source": "manual",
+      "updatedAt": "2026-11-04T00:49:44.443Z"
     }
   },
   "timingByMedia": {

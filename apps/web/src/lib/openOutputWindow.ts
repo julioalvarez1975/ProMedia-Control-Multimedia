@@ -1,15 +1,18 @@
 /**
- * Open / focus the Output window, prefer secondary display (Window Management API),
- * and ask the Output page to enter fullscreen when the browser allows it.
+ * Open / focus the Output window as a full-canvas on the secondary display
+ * (Window Management API), then ask Output to enter fullscreen.
  *
- * Limits: browsers block popup + cross-monitor placement without a user gesture /
- * permission; fullscreen almost always needs a gesture in the Output window.
+ * Limits: browsers need a user gesture for popup + screen permission;
+ * true fullscreen (no address bar) still needs a gesture in the Output window
+ * or successful `requestFullscreen({ screen })` after Window Management grant.
  */
 
 export const OUTPUT_WINDOW_NAME = "promedia-output";
 
 /** Same-origin Control ↔ Output bus (avoids window.open blank tabs on mobile). */
 export const OUTPUT_BROADCAST_CHANNEL = "promedia-output-bus";
+
+const PLACEMENT_CACHE_KEY = "promedia.output.placement.v1";
 
 /** Last Output window opened from this Control tab (may be null / closed). */
 let retainedOutputWindow: Window | null = null;
@@ -43,6 +46,10 @@ type ScreenDetailedLike = {
   availTop: number;
   availWidth: number;
   availHeight: number;
+  left?: number;
+  top?: number;
+  width?: number;
+  height?: number;
   isPrimary?: boolean;
 };
 
@@ -62,6 +69,69 @@ function screensApi():
     : null;
 }
 
+function readCachedPlacement(): OutputPlacement | null {
+  try {
+    const raw = window.sessionStorage.getItem(PLACEMENT_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as OutputPlacement;
+    if (
+      typeof parsed?.left !== "number" ||
+      typeof parsed?.top !== "number" ||
+      typeof parsed?.width !== "number" ||
+      typeof parsed?.height !== "number"
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function cachePlacement(placement: OutputPlacement): void {
+  try {
+    window.sessionStorage.setItem(
+      PLACEMENT_CACHE_KEY,
+      JSON.stringify(placement),
+    );
+  } catch {
+    // ignore
+  }
+}
+
+function placementFromScreen(
+  target: ScreenDetailedLike,
+  onSecondary: boolean,
+): OutputPlacement {
+  // Prefer full screen bounds (edge-to-edge canvas), not avail* (taskbar inset).
+  const left = Math.round(
+    typeof target.left === "number" ? target.left : target.availLeft,
+  );
+  const top = Math.round(
+    typeof target.top === "number" ? target.top : target.availTop,
+  );
+  const width = Math.max(
+    320,
+    Math.round(
+      typeof target.width === "number" ? target.width : target.availWidth,
+    ),
+  );
+  const height = Math.max(
+    240,
+    Math.round(
+      typeof target.height === "number" ? target.height : target.availHeight,
+    ),
+  );
+  return {
+    left,
+    top,
+    width,
+    height,
+    onSecondary,
+    usedScreenDetails: true,
+  };
+}
+
 /** Pick a screen that is not the one hosting Control, else any non-primary. */
 export function pickSecondaryScreen(
   details: ScreenDetailsLike,
@@ -79,8 +149,8 @@ export function pickSecondaryScreen(
 }
 
 /**
- * Resolve where to place Output. May prompt for Window Management permission (Chrome).
- * Call from a user-gesture handler when possible.
+ * Resolve where to place Output as a full-monitor canvas.
+ * May prompt for Window Management permission (Chrome).
  */
 export async function resolveOutputPlacement(): Promise<OutputPlacement | null> {
   const api = screensApi();
@@ -91,27 +161,58 @@ export async function resolveOutputPlacement(): Promise<OutputPlacement | null> 
     const details = await api.getScreenDetails();
     const secondary = pickSecondaryScreen(details);
     const target = secondary ?? details.currentScreen;
-    return {
-      left: Math.round(target.availLeft),
-      top: Math.round(target.availTop),
-      width: Math.max(320, Math.round(target.availWidth)),
-      height: Math.max(240, Math.round(target.availHeight)),
-      onSecondary: Boolean(secondary),
-      usedScreenDetails: true,
-    };
+    return placementFromScreen(target, Boolean(secondary));
   } catch {
     return null;
   }
 }
 
+/** Only call getScreenDetails when already allowed (keeps user gesture for open). */
+async function resolvePlacementIfGranted(): Promise<OutputPlacement | null> {
+  try {
+    const perms = navigator.permissions;
+    if (perms && typeof perms.query === "function") {
+      const status = await perms.query({
+        name: "window-management" as PermissionName,
+      });
+      if (status.state === "denied") {
+        return readCachedPlacement();
+      }
+      if (status.state === "granted") {
+        return (await resolveOutputPlacement()) ?? readCachedPlacement();
+      }
+    }
+  } catch {
+    // Permissions API may not know window-management.
+  }
+  return readCachedPlacement();
+}
+
+/** Minimal chrome + absolute geometry for a full-canvas projection window. */
+function projectionChromeFeatures(): string[] {
+  return [
+    "popup=yes",
+    "toolbar=no",
+    "location=no",
+    "menubar=no",
+    "status=no",
+    "scrollbars=no",
+  ];
+}
+
 function featuresFromPlacement(p: OutputPlacement): string {
   // Do NOT include noopener — we need the Window handle to navigate / resize.
   return [
+    ...projectionChromeFeatures(),
     `left=${p.left}`,
     `top=${p.top}`,
     `width=${p.width}`,
     `height=${p.height}`,
   ].join(",");
+}
+
+function defaultProjectionFeatures(): string {
+  return [...projectionChromeFeatures(), "width=1280", "height=720"].join(",");
 }
 
 export function codeOutputUrl(
@@ -151,6 +252,16 @@ function tryMoveResize(win: Window, p: OutputPlacement): void {
   }
 }
 
+function scheduleCanvasPlacement(win: Window, placement: OutputPlacement): void {
+  for (const ms of [0, 80, 200, 450, 900, 1600, 2800]) {
+    window.setTimeout(() => {
+      if (!win.closed) {
+        tryMoveResize(win, placement);
+      }
+    }, ms);
+  }
+}
+
 function postAutofullscreen(win: Window): void {
   try {
     win.postMessage(
@@ -159,6 +270,23 @@ function postAutofullscreen(win: Window): void {
     );
   } catch {
     // ignore
+  }
+  try {
+    const bus = new BroadcastChannel(OUTPUT_BROADCAST_CHANNEL);
+    bus.postMessage({ type: "promedia.requestFullscreen" });
+    bus.close();
+  } catch {
+    // ignore
+  }
+}
+
+function scheduleFullscreenNudges(win: Window): void {
+  for (const ms of [150, 400, 900, 1600, 2500, 4000]) {
+    window.setTimeout(() => {
+      if (!win.closed) {
+        postAutofullscreen(win);
+      }
+    }, ms);
   }
 }
 
@@ -187,14 +315,12 @@ export function postOutputUnmute(): void {
       retainedOutputWindow = null;
       return;
     }
-    // Only message a window that is actually on /output (never about:blank).
     try {
       const href = win.location.href;
       if (!href || href === "about:blank" || !href.includes("/output")) {
         return;
       }
     } catch {
-      // Cross-origin — skip
       return;
     }
     win.postMessage(message, window.location.origin);
@@ -203,14 +329,17 @@ export function postOutputUnmute(): void {
   }
 }
 
-function navigateAndFinish(
+function finishPlacedWindow(
   win: Window,
   url: string,
   placement: OutputPlacement | null,
+  autofullscreen: boolean,
   focusedExisting: boolean,
 ): OpenOutputResult {
   try {
-    win.location.replace(url);
+    if (win.location.href !== url) {
+      win.location.replace(url);
+    }
   } catch {
     try {
       win.location.href = url;
@@ -219,11 +348,11 @@ function navigateAndFinish(
     }
   }
   if (placement) {
-    tryMoveResize(win, placement);
-    window.setTimeout(() => tryMoveResize(win, placement), 300);
+    scheduleCanvasPlacement(win, placement);
   }
-  window.setTimeout(() => postAutofullscreen(win), 400);
-  window.setTimeout(() => postAutofullscreen(win), 1200);
+  if (autofullscreen) {
+    scheduleFullscreenNudges(win);
+  }
   try {
     win.focus();
   } catch {
@@ -239,8 +368,8 @@ function navigateAndFinish(
 }
 
 /**
- * Open or focus Output for a known session code.
- * Prefer calling from a click handler so popup + screen permission work.
+ * Open Output as a full-canvas on the secondary monitor when possible.
+ * Call from a click handler so popup + Window Management permission work.
  */
 export async function openOutputWindow(
   code: string,
@@ -250,32 +379,48 @@ export async function openOutputWindow(
   const preferSecondary = opts?.preferSecondary !== false;
   const url = codeOutputUrl(code, { autofullscreen });
 
-  // Open under the user gesture first — awaiting getScreenDetails() before
-  // window.open often loses transient activation and gets the popup blocked.
-  const win = window.open(url, OUTPUT_WINDOW_NAME, "width=1280,height=720");
+  // Prefer opening already sized to the 2nd screen (permission previously granted).
+  let placement = preferSecondary ? await resolvePlacementIfGranted() : null;
+  if (placement) {
+    cachePlacement(placement);
+  }
+
+  const features = placement
+    ? featuresFromPlacement(placement)
+    : defaultProjectionFeatures();
+
+  // Open under the user gesture with full-monitor geometry when known.
+  let win = window.open(url, OUTPUT_WINDOW_NAME, features);
   if (!win) {
     return {
       url,
       opened: false,
       focusedExisting: false,
-      placement: null,
+      placement,
       popupBlocked: true,
     };
   }
   rememberOutputWindow(win);
 
-  let placement: OutputPlacement | null = null;
   if (preferSecondary) {
-    placement = await resolveOutputPlacement();
+    try {
+      const fresh = await resolveOutputPlacement();
+      if (fresh) {
+        placement = fresh;
+        cachePlacement(fresh);
+        scheduleCanvasPlacement(win, fresh);
+      } else if (placement) {
+        scheduleCanvasPlacement(win, placement);
+      }
+    } catch {
+      if (placement) {
+        scheduleCanvasPlacement(win, placement);
+      }
+    }
   }
 
-  if (placement) {
-    tryMoveResize(win, placement);
-    window.setTimeout(() => tryMoveResize(win, placement), 300);
-  }
   if (autofullscreen) {
-    window.setTimeout(() => postAutofullscreen(win), 400);
-    window.setTimeout(() => postAutofullscreen(win), 1200);
+    scheduleFullscreenNudges(win);
   }
   try {
     win.focus();
@@ -293,15 +438,13 @@ export async function openOutputWindow(
 }
 
 /**
- * Primary CTA: ensure session, open Output on secondary screen when possible,
- * request autofullscreen. Opens `about:blank` first so `await ensureSession()`
- * does not lose the popup under the user gesture.
+ * Primary CTA: ensure session, open Output as full canvas on secondary screen,
+ * request autofullscreen.
  */
 export async function startProjection(opts: {
   existingCode: string | null;
   ensureSession: () => Promise<string>;
 }): Promise<OpenOutputResult & { code: string }> {
-  // Session already known — open/focus Output directly (still under the click).
   if (opts.existingCode) {
     const result = await openOutputWindow(opts.existingCode, {
       autofullscreen: true,
@@ -310,26 +453,34 @@ export async function startProjection(opts: {
     return { code: opts.existingCode, ...result };
   }
 
-  // 1) Reserve the named window synchronously under the user gesture
-  //    (before await createSession — otherwise the popup is blocked).
-  const popup = window.open(
-    "about:blank",
-    OUTPUT_WINDOW_NAME,
-    "width=1280,height=720",
-  );
+  // 1) Reserve named window under the gesture (with cached full-canvas size).
+  const prePlacement = await resolvePlacementIfGranted();
+  if (prePlacement) {
+    cachePlacement(prePlacement);
+  }
+  const openFeatures = prePlacement
+    ? featuresFromPlacement(prePlacement)
+    : defaultProjectionFeatures();
+  const popup = window.open("about:blank", OUTPUT_WINDOW_NAME, openFeatures);
 
-  // 2) Window Management API (may prompt). Still often allowed after open.
-  let placement: OutputPlacement | null = null;
+  // 2) Resolve / prompt Window Management, then fill the secondary monitor.
+  let placement: OutputPlacement | null = prePlacement;
   try {
-    placement = await resolveOutputPlacement();
+    const fresh = await resolveOutputPlacement();
+    if (fresh) {
+      placement = fresh;
+      cachePlacement(fresh);
+    }
   } catch {
-    placement = null;
+    // keep prePlacement
   }
 
-  // 3) Create/resume session.
+  // 3) Create/resume session and navigate the canvas window.
   const code = await opts.ensureSession();
   const url = codeOutputUrl(code, { autofullscreen: true });
-  const features = placement ? featuresFromPlacement(placement) : undefined;
+  const features = placement
+    ? featuresFromPlacement(placement)
+    : defaultProjectionFeatures();
 
   if (!popup) {
     const retry = window.open(url, OUTPUT_WINDOW_NAME, features);
@@ -344,9 +495,15 @@ export async function startProjection(opts: {
       };
     }
     rememberOutputWindow(retry);
-    return { code, ...navigateAndFinish(retry, url, placement, false) };
+    return {
+      code,
+      ...finishPlacedWindow(retry, url, placement, true, false),
+    };
   }
 
   rememberOutputWindow(popup);
-  return { code, ...navigateAndFinish(popup, url, placement, false) };
+  return {
+    code,
+    ...finishPlacedWindow(popup, url, placement, true, false),
+  };
 }

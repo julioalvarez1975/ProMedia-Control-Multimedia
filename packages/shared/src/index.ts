@@ -684,6 +684,11 @@ export type SessionLiveState = {
    * Null = no custom logo yet — Output falls back to the default SVG.
    */
   logoUpdatedAt: string | null;
+  /**
+   * Corner watermark: show branding logo top-right over live content.
+   * Independent of sceneMode (works with "normal"; hidden under full logo/black).
+   */
+  watermarkEnabled: boolean;
 };
 
 export type SessionSnapshot = {
@@ -839,6 +844,11 @@ export type LiveSetSceneModeMessage = {
   payload: { sceneMode: SceneMode };
 };
 
+export type LiveSetWatermarkMessage = {
+  type: "live.setWatermark";
+  payload: { enabled: boolean };
+};
+
 export type LiveSetThemeMessage = {
   type: "live.setTheme";
   payload: {
@@ -865,6 +875,7 @@ export type ClientToHubMessage =
   | LiveSubtitleAgentTeachMessage
   | LiveSubtitleAgentNudgeMessage
   | LiveSetSceneModeMessage
+  | LiveSetWatermarkMessage
   | LiveSetThemeMessage;
 
 export type CreateSessionRequest = {
@@ -911,12 +922,20 @@ export function emptyLiveState(): SessionLiveState {
     mediaClock: null,
     subtitleAgent: emptySubtitleAgentState(),
     logoUpdatedAt: null,
+    watermarkEnabled: false,
   };
 }
 
 export function emptyPlaylist(): SessionPlaylist {
   return { items: [] };
 }
+
+/**
+ * Stop wall-clock extrapolation when the hub has not heard from the player.
+ * Otherwise Go Live races karaoke cues ahead while YouTube is still mounting —
+ * sync only looks right after the operator rewinds.
+ */
+export const MEDIA_CLOCK_EXTRAPOLATION_MAX_AGE_MS = 500;
 
 export function effectiveMediaClockPositionMs(
   clock: MediaClock,
@@ -929,8 +948,13 @@ export function effectiveMediaClockPositionMs(
   if (!Number.isFinite(updated)) {
     return clock.positionMs;
   }
+  const age = nowMs - updated;
+  // Freeze at last reported player time until the next heartbeat.
+  if (age > MEDIA_CLOCK_EXTRAPOLATION_MAX_AGE_MS) {
+    return clock.positionMs;
+  }
   const rate = clock.rate ?? 1;
-  return Math.max(0, clock.positionMs + (nowMs - updated) * rate);
+  return Math.max(0, clock.positionMs + age * rate);
 }
 
 export function itemLabel(item: PlaylistItem): string {

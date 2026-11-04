@@ -28,7 +28,64 @@ function extOf(name: string): string {
 
 export function isSupportedTextImport(file: File): boolean {
   const ext = extOf(file.name);
+  // PDF is classified as presentation for Guion drops; still allowed here
+  // for explicit text-import callers.
   return TEXT_EXTS.has(ext) || XML_EXTS.has(ext) || PDF_EXTS.has(ext);
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * Best-effort: decode small files as UTF-8 text; otherwise a reference slide
+ * so any dropped file still lands in Guion.
+ */
+export async function fileToGuionTextPayload(file: File): Promise<{
+  title: string;
+  align: "center";
+  slides: TextSlide[];
+  usedBinaryStub: boolean;
+}> {
+  const title = file.name.replace(/\.[^.]+$/, "") || file.name;
+  const maxProbe = 1.5 * 1024 * 1024;
+  if (file.size > 0 && file.size <= maxProbe) {
+    try {
+      const buf = await file.arrayBuffer();
+      const text = new TextDecoder("utf-8", { fatal: false }).decode(buf);
+      const nullRatio =
+        text.length === 0
+          ? 1
+          : (text.match(/\u0000/g)?.length ?? 0) / text.length;
+      const printable = text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
+      if (nullRatio < 0.02 && printable.trim().length >= 8) {
+        const { slides, truncated } = chunkTextToSlides(printable, {
+          maxSlides: TEXT_IMPORT_MAX_SLIDES,
+        });
+        void truncated;
+        return { title, align: "center", slides, usedBinaryStub: false };
+      }
+    } catch {
+      // fall through to stub
+    }
+  }
+  return {
+    title: file.name,
+    align: "center",
+    slides: [
+      {
+        id: cryptoRandomId(),
+        lines: [
+          file.name,
+          formatBytes(file.size),
+          "(archivo añadido al guion — no es un medio proyectable)",
+        ],
+      },
+    ],
+    usedBinaryStub: true,
+  };
 }
 
 /** Split plain text into slide-sized chunks (paragraphs, then length). */

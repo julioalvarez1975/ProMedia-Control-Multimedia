@@ -1,4 +1,4 @@
-/** Persist last Control session code so a refresh can resume (same browser tab). */
+/** Persist last Control session so refresh / phone can resume the same hub session. */
 
 const KEY = "promedia.control.session.v1";
 
@@ -8,9 +8,9 @@ export type PersistedControlSession = {
   savedAt: number;
 };
 
-export function loadPersistedControlSession(): PersistedControlSession | null {
+function readStore(storage: Storage): PersistedControlSession | null {
   try {
-    const raw = sessionStorage.getItem(KEY);
+    const raw = storage.getItem(KEY);
     if (!raw) {
       return null;
     }
@@ -24,25 +24,59 @@ export function loadPersistedControlSession(): PersistedControlSession | null {
   }
 }
 
-export function savePersistedControlSession(opts: {
-  code: string;
-  accessToken?: string;
-}): void {
+function writeStore(storage: Storage, payload: PersistedControlSession): void {
   try {
-    const payload: PersistedControlSession = {
-      code: opts.code,
-      accessToken: opts.accessToken,
-      savedAt: Date.now(),
-    };
-    sessionStorage.setItem(KEY, JSON.stringify(payload));
+    storage.setItem(KEY, JSON.stringify(payload));
   } catch {
     // private mode / quota
   }
 }
 
+export function loadPersistedControlSession(): PersistedControlSession | null {
+  // Prefer localStorage (survives tab close; shared across Control tabs).
+  const local = readStore(window.localStorage);
+  if (local) {
+    return local;
+  }
+  // Migrate legacy sessionStorage entries once.
+  const legacy = readStore(window.sessionStorage);
+  if (legacy) {
+    writeStore(window.localStorage, legacy);
+    try {
+      window.sessionStorage.removeItem(KEY);
+    } catch {
+      // ignore
+    }
+    return legacy;
+  }
+  return null;
+}
+
+export function savePersistedControlSession(opts: {
+  code: string;
+  accessToken?: string;
+}): void {
+  const payload: PersistedControlSession = {
+    code: opts.code,
+    accessToken: opts.accessToken,
+    savedAt: Date.now(),
+  };
+  writeStore(window.localStorage, payload);
+  try {
+    window.sessionStorage.setItem(KEY, JSON.stringify(payload));
+  } catch {
+    // ignore
+  }
+}
+
 export function clearPersistedControlSession(): void {
   try {
-    sessionStorage.removeItem(KEY);
+    window.localStorage.removeItem(KEY);
+  } catch {
+    // ignore
+  }
+  try {
+    window.sessionStorage.removeItem(KEY);
   } catch {
     // ignore
   }

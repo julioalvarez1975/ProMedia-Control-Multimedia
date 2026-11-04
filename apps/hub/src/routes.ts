@@ -151,10 +151,13 @@ export function createApiRoutes(): Hono {
     const role =
       body.role === "control" || body.role === "output" ? body.role : "output";
 
-    // Short join code is Output-only — guessing a 4-char code must not
-    // grant Guion control on the LAN.
+    // Cloud: short code stays Output-only. LAN/portable: phone Control may
+    // join by the same 4-char code shown on the projector (rate-limited below).
     if (role === "control" && hasCode && !hasToken) {
-      return c.json({ error: "control_requires_token" }, 403);
+      const mode = (process.env.PROMEDIA_MODE ?? "lan").toLowerCase();
+      if (mode !== "lan" && mode !== "portable") {
+        return c.json({ error: "control_requires_token" }, 403);
+      }
     }
 
     const ip = clientIpFromHeaders((n) => c.req.header(n));

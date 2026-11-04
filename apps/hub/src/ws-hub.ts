@@ -22,6 +22,7 @@ import {
 } from "@promedia/shared";
 import {
   maybeRefreshSubtitleAgent,
+  maybeStartKaraokeOnGuionItem,
   nudgeSubtitleCancionero,
   setSubtitleAgent,
   teachSubtitleCancionero,
@@ -266,6 +267,13 @@ function parseClientMessage(raw: string): ClientToHubMessage | null {
       }
       return { type: "live.setSceneMode", payload: { sceneMode } };
     }
+    if (type === "live.setWatermark") {
+      const enabled = (payload as { enabled?: unknown } | undefined)?.enabled;
+      if (typeof enabled !== "boolean") {
+        return null;
+      }
+      return { type: "live.setWatermark", payload: { enabled } };
+    }
     if (type === "live.setTheme") {
       const p = payload as {
         themeId?: unknown;
@@ -478,7 +486,20 @@ export class WsHub {
       return;
     }
 
+    // The Output window owns the real player (YouTube iframe / <video>). It must
+    // be able to report its playback time, otherwise the hub clock stays at the
+    // Go Live anchor and karaoke cues never advance (or stay stuck on cue 0).
+    if (msg.type === "live.mediaClock.set" && conn.role === "output") {
+      this.applyResult(
+        conn,
+        session,
+        sessionStore.setMediaClock(session, msg.payload),
+      );
+      return;
+    }
+
     if (!this.requireControl(conn, session)) {
+      console.warn(`[hub] rejected ${msg.type} from role=${conn.role}`);
       return;
     }
 
@@ -486,9 +507,15 @@ export class WsHub {
       case "session.touch":
         this.applyResult(conn, session, sessionStore.touch(session, msg.payload?.note));
         return;
-      case "playlist.itemAdd":
-        this.applyResult(conn, session, sessionStore.addItem(session, msg.payload.item));
+      case "playlist.itemAdd": {
+        const addResult = sessionStore.addItem(session, msg.payload.item);
+        this.applyResult(conn, session, addResult);
+        if (!("error" in addResult)) {
+          // YouTube / audio in Guion → download, silence scan, cancionero cues.
+          maybeStartKaraokeOnGuionItem(session, msg.payload.item);
+        }
         return;
+      }
       case "playlist.itemUpdate":
         this.applyResult(
           conn,
@@ -511,6 +538,9 @@ export class WsHub {
         );
         return;
       case "live.go": {
+        console.log(
+          `[hub] live.go item=${msg.payload.itemId} from=${conn.role} was=${session.live.currentItemId ?? "-"}`,
+        );
         const goResult = sessionStore.goLive(session, msg.payload.itemId);
         this.applyResult(conn, session, goResult);
         if (!("error" in goResult)) {
@@ -519,6 +549,9 @@ export class WsHub {
         return;
       }
       case "live.clear":
+        console.log(
+          `[hub] live.clear from=${conn.role} was=${session.live.currentItemId ?? "-"}`,
+        );
         this.applyResult(conn, session, sessionStore.clearLive(session));
         return;
       case "live.setSlide":
@@ -561,6 +594,13 @@ export class WsHub {
           conn,
           session,
           sessionStore.setSceneMode(session, msg.payload.sceneMode),
+        );
+        return;
+      case "live.setWatermark":
+        this.applyResult(
+          conn,
+          session,
+          sessionStore.setWatermark(session, msg.payload.enabled),
         );
         return;
       case "live.setTheme":

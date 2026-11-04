@@ -234,10 +234,14 @@ export function applyRememberedCueStarts<
   }
   return cues.map((c, i) => {
     const startMs = starts[i]!;
-    const endMs =
-      i === n - 1
-        ? Math.max(startMs + 800, c.endMs)
-        : Math.max(startMs + 500, starts[i + 1]!);
+    const nextStart = i + 1 < n ? starts[i + 1]! : startMs + Math.max(800, c.endMs - c.startMs);
+    // Keep last-word end when present; else hold until just before next line.
+    let endMs =
+      Number.isFinite(c.endMs) && c.endMs > startMs + 400
+        ? Math.round(c.endMs)
+        : nextStart - 40;
+    endMs = Math.max(startMs + 500, endMs);
+    if (i + 1 < n) endMs = Math.min(endMs, Math.max(startMs + 500, nextStart - 40));
     return { ...c, startMs, endMs };
   });
 }

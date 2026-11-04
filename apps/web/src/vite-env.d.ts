@@ -34,3 +34,9 @@ interface ScreenDetails {
 interface Window {
   getScreenDetails?: () => Promise<ScreenDetails>;
 }
+
+/** Chrome Fullscreen + Window Management: target a specific screen. */
+interface FullscreenOptions {
+  navigationUI?: "auto" | "hide" | "show";
+  screen?: Screen | ScreenDetailed;
+}

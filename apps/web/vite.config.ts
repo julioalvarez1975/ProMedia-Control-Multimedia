@@ -1,7 +1,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-const hubUrl = process.env.VITE_HUB_URL ?? "http://localhost:8787";
+// Pin IPv4 — `localhost` can resolve to ::1 while the hub binds 0.0.0.0 only.
+const hubUrl = process.env.VITE_HUB_URL ?? "http://127.0.0.1:8787";
 
 export default defineConfig({
   plugins: [react()],
@@ -12,7 +13,7 @@ export default defineConfig({
     // IPv4 LAN hosts are already allowed by Vite; keep true for hostname LAN too.
     allowedHosts: true,
     proxy: {
-      // REST: same-origin `/api` + `/health` → hub (proxy targets localhost on the PC).
+      // REST: same-origin `/api` + `/health` → hub (proxy targets 127.0.0.1).
       // WS: the web client connects directly to hub :8787 in DEV (see hubWsBase),
       // using window.location.hostname so a phone hits ws://<lan-ip>:8787.
       // Keep ws:true as a fallback if VITE_HUB_WS_URL forces proxy path.

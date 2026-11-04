@@ -16,12 +16,10 @@ async function main(): Promise<void> {
   const data = subtitleDataRoot();
   console.log("promediaRoot:", root);
   console.log("subtitleDataRoot:", data);
-  if (!root.endsWith(`${path.sep}promedia`) && !root.endsWith("/promedia")) {
-    // Allow trailing slash variants
-    if (!/[/\\]promedia[/\\]?$/.test(root)) {
-      throw new Error(`unexpected promediaRoot: ${root}`);
-    }
-  }
+  // Repo checkout may be named ProMedia/promedia/anything — check the marker.
+  await access(path.join(root, "pnpm-workspace.yaml")).catch(() => {
+    throw new Error(`unexpected promediaRoot (no pnpm-workspace.yaml): ${root}`);
+  });
 
   const dirs = await ensureSubtitleDirs();
   console.log("youtubeCache:", dirs.youtubeCache);

@@ -399,3 +399,89 @@ export function IconSubtitles(props: IconProps) {
     </svg>
   );
 }
+
+/** Scene: permanent venue logo. */
+export function IconSceneLogo(props: IconProps) {
+  return (
+    <svg {...svgProps({ ...props, size: props.size ?? 18 })}>
+      <rect
+        x="3"
+        y="5"
+        width="18"
+        height="14"
+        rx="2"
+        stroke="currentColor"
+        strokeWidth="1.6"
+      />
+      <circle cx="12" cy="11" r="3.2" stroke="currentColor" strokeWidth="1.5" />
+      <path
+        d="M8.5 16.5c.9-1.4 2.1-2.1 3.5-2.1s2.6.7 3.5 2.1"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+/** Corner watermark mark. */
+export function IconWatermark(props: IconProps) {
+  return (
+    <svg {...svgProps({ ...props, size: props.size ?? 18 })}>
+      <rect
+        x="3"
+        y="4"
+        width="18"
+        height="16"
+        rx="2"
+        stroke="currentColor"
+        strokeWidth="1.6"
+      />
+      <rect
+        x="13.5"
+        y="5.5"
+        width="6"
+        height="4.5"
+        rx="0.8"
+        stroke="currentColor"
+        strokeWidth="1.4"
+      />
+    </svg>
+  );
+}
+
+/** Dot pattern darkening overlay. */
+export function IconDotsOverlay(props: IconProps) {
+  return (
+    <svg {...svgProps({ ...props, size: props.size ?? 18 })}>
+      <circle cx="7" cy="7" r="1.35" fill="currentColor" />
+      <circle cx="12" cy="7" r="1.35" fill="currentColor" />
+      <circle cx="17" cy="7" r="1.35" fill="currentColor" />
+      <circle cx="7" cy="12" r="1.35" fill="currentColor" />
+      <circle cx="12" cy="12" r="1.35" fill="currentColor" />
+      <circle cx="17" cy="12" r="1.35" fill="currentColor" />
+      <circle cx="7" cy="17" r="1.35" fill="currentColor" />
+      <circle cx="12" cy="17" r="1.35" fill="currentColor" />
+      <circle cx="17" cy="17" r="1.35" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** Empty / black scene. */
+export function IconSceneEmpty(props: IconProps) {
+  return (
+    <svg {...svgProps({ ...props, size: props.size ?? 18 })}>
+      <rect
+        x="4"
+        y="5"
+        width="16"
+        height="14"
+        rx="2"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        fill="currentColor"
+        fillOpacity="0.22"
+      />
+    </svg>
+  );
+}

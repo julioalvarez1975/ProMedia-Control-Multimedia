@@ -46,18 +46,37 @@ import {
   rememberCancioneroTiming,
 } from "./cancionero-memory.js";
 import {
+  alignCancioneroLinesToSilence,
   alignCancioneroLinesToTiming,
+  anchorFirstCueToVoiceOnset,
+  blankCuesAtPhraseSilence,
   buildKaraokeAlignPrompt,
+  ensureCancioneroCueTexts,
   findCancioneroSongCandidates,
   packKaraokeDisplayCues,
   probeMediaDurationMs,
   resolveCancioneroSongById,
+  resolveFirstVoiceOnsetMs,
   scoreSongLyricOverlap,
+  scoreSongMatch,
   songCancioneroLines,
   songToSubtitleCues,
   titleFromAudioFilename,
   type CancioneroMatchHit,
 } from "./subtitle-cancionero.js";
+import {
+  detectSpeechOnsetsFromSilence,
+  SILENCE_AIR_ANTICIPATION_MS,
+} from "./subtitle-silence.js";
+import {
+  alignLyricsWithWhisperx,
+  whisperxAvailable,
+} from "./subtitle-whisperx.js";
+import { findLrclibSong, type LrclibSong } from "./subtitle-lrclib.js";
+import {
+  forgetReadyAgent,
+  recallReadyAgent,
+} from "./subtitle-ready-cache.js";
 import {
   ensureYoutubeAudio,
   expandCaptionPreferLangs,
@@ -307,7 +326,12 @@ async function finishWithCues(options: {
     preserveLyricsSource,
     nativeTrack,
   } = options;
-  const speech = filterSpeechCues(options.cues);
+  const speech = filterSpeechCues(options.cues).filter(
+    (c) =>
+      Number.isFinite(c.startMs) &&
+      Number.isFinite(c.endMs) &&
+      c.endMs > c.startMs,
+  );
   let cues = nativeTrack
     ? preserveNativeCaptionCues(speech)
     : shapeLyricLikeCues(speech);
@@ -449,23 +473,85 @@ function isStickyHardYoutube(
   );
 }
 
-/** Cancionero miss is intentional — do not fall through to Whisper on Go Live. */
-function isStickyCancioneroMiss(
-  agent: SubtitleAgentState | null | undefined,
-): boolean {
-  return Boolean(
-    agent &&
-      agent.status === "error" &&
-      (agent.hint === "cancionero_no_match" ||
-        agent.hint === "cancionero_empty" ||
-        agent.hint === "cancionero_no_songs"),
-  );
-}
-
 /**
  * Timing-only probe for karaoke forced align. Captions/ASR clocks decide
  * *when* to reveal each Biblioteca line — never rewrite the text.
  */
+/**
+ * Temp-download (YouTube) / open local media → examine real silence → speech onsets.
+ */
+async function fetchSilenceSpeechOnsets(options: {
+  sessionId: string;
+  gen: number;
+  resolved: ResolveOk;
+  onStatus?: (
+    status: "downloading" | "extracting" | "transcribing",
+    hint: string,
+  ) => void;
+}): Promise<{
+  onsetsMs: number[];
+  silences: import("./subtitle-silence.js").SilenceRegion[];
+  durationMs: number;
+  assetId: string;
+  mediaPath: string;
+} | null> {
+  const { sessionId, gen, resolved } = options;
+  let mediaPath = resolved.mediaPath;
+  let assetId = resolved.assetId;
+
+  if (resolved.youtube) {
+    const haveLocal = mediaPath ? await mediaFileExists(mediaPath) : false;
+    if (!haveLocal) {
+      options.onStatus?.("downloading", "silence_scan");
+      try {
+        const yt = await ensureYoutubeAudio({
+          videoId: resolved.youtube.videoId,
+          sourceUrl: resolved.youtube.sourceUrl,
+        });
+        if (!isCurrent(sessionId, gen)) return null;
+        mediaPath = yt.mediaPath;
+        assetId = yt.assetId;
+      } catch (err) {
+        console.warn(
+          "[subtitle] silence-scan YT download failed:",
+          err instanceof Error ? err.message : err,
+        );
+        return null;
+      }
+    }
+  }
+
+  if (!mediaPath) return null;
+  const exists = await mediaFileExists(mediaPath);
+  if (!exists) return null;
+
+  options.onStatus?.("extracting", "silence_scan");
+  try {
+    const analysis = await detectSpeechOnsetsFromSilence(mediaPath);
+    if (!isCurrent(sessionId, gen)) return null;
+    let durationMs = analysis.durationMs;
+    if (durationMs <= 0) {
+      durationMs = await probeMediaDurationMs(mediaPath);
+    }
+    console.log(
+      `[subtitle] silence-scan onsets=${analysis.speechOnsetsMs.length} silences=${analysis.silences.length} airMs=${SILENCE_AIR_ANTICIPATION_MS}`,
+    );
+    return {
+      onsetsMs: analysis.speechOnsetsMs,
+      silences: analysis.silences,
+      durationMs,
+      assetId,
+      mediaPath,
+    };
+  } catch (err) {
+    console.warn(
+      "[subtitle] silence-scan failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+}
+
 async function fetchCancioneroTimingCues(options: {
   sessionId: string;
   gen: number;
@@ -583,9 +669,8 @@ async function fetchCancioneroTimingCues(options: {
 
 /**
  * Guion Audio + YouTube — karaoke when the Biblioteca cancionero matches.
- * Audio miss → sticky modal (no Whisper-as-lyrics for songs).
- * YouTube miss → return false so captions / Whisper handle general videos.
- * Returns true when the job should stop (karaoke hit or sticky Audio miss).
+ * Miss / empty lyrics → return false so captions / Whisper auto-generate text.
+ * Returns true when the job should stop (karaoke cues ready).
  */
 async function tryCancioneroLyricPath(options: {
   sessionId: string;
@@ -654,6 +739,8 @@ async function tryCancioneroLyricPath(options: {
 
   // 1) Operator teach → memory → fuzzy title match.
   let match: CancioneroMatchHit | null = null;
+  /** Set when the lyrics came from LRCLIB (not a Biblioteca song). */
+  let lrclib: LrclibSong | null = null;
   let learnSource: "exact" | "lyric" | "fuzzy" | "manual" = "fuzzy";
   if (teachSongId?.trim()) {
     const taught = await resolveCancioneroSongById(teachSongId.trim());
@@ -672,11 +759,27 @@ async function tryCancioneroLyricPath(options: {
     if (remembered) {
       const hit = await resolveCancioneroSongById(remembered.songId);
       if (hit) {
-        match = hit;
-        learnSource = remembered.source;
-        console.log(
-          `[subtitle] karaoke memory hit key=${mediaKey ?? "title"} song="${hit.song.title}" source=${remembered.source}`,
+        // Fuzzy memory once mapped "Dios ha sido fiel" → "Dios ha sido bueno".
+        // Manual/exact memory wins; fuzzy must still agree with the media title.
+        const titleScore = Math.max(
+          0,
+          ...titles.map((t) => scoreSongMatch(hit.song, t)),
         );
+        const trustMemory =
+          remembered.source === "manual" ||
+          remembered.source === "exact" ||
+          titleScore >= 70;
+        if (trustMemory) {
+          match = hit;
+          learnSource = remembered.source;
+          console.log(
+            `[subtitle] karaoke memory hit key=${mediaKey ?? "title"} song="${hit.song.title}" source=${remembered.source} titleScore=${titleScore}`,
+          );
+        } else {
+          console.warn(
+            `[subtitle] karaoke memory rejected song="${hit.song.title}" source=${remembered.source} titleScore=${titleScore} — rematch by title`,
+          );
+        }
       }
     }
   }
@@ -688,41 +791,48 @@ async function tryCancioneroLyricPath(options: {
   if (!isCurrent(sessionId, gen)) return true;
 
   if (!match) {
-    const strong = listed.candidates.filter((c) => c.score >= 55);
+    // Require a firmer title hit so near-miss hymns (fiel/bueno) do not stick.
+    const strong = listed.candidates.filter((c) => c.score >= 70);
     if (strong.length === 0) {
-      if (isYoutube) {
-        console.warn(
-          `[subtitle] cancionero miss for YouTube (${listed.reason ?? "no_match"}) — captions/Whisper fallback tried=${JSON.stringify(listed.tried)}`,
-        );
-        return false;
-      }
-      const live = sessionStore.get(sessionId);
-      if (!live?.live.subtitleAgent?.enabled) return true;
-      const hint =
-        listed.reason === "no_songs"
-          ? "cancionero_no_songs"
-          : listed.reason === "no_query"
-            ? "cancionero_no_match"
-            : "cancionero_no_match";
       console.warn(
         `[subtitle] cancionero miss (${listed.reason ?? "no_match"}) tried=${JSON.stringify(listed.tried)}`,
       );
-      patchAndBroadcast(live, {
-        enabled: true,
-        targetLang,
-        status: "error",
-        itemId: item.id,
-        assetId: resolved.assetId,
-        cues: [],
-        translated: false,
-        sourceLang: null,
-        hint,
-        timingMode: "exact",
-      });
-      return true;
+      // Biblioteca has no such song: try the open LRCLIB database for the real
+      // lyrics before falling back to captions / Whisper's (often wrong) text.
+      const lr = await findLrclibSong({ titles, artists, durationMs });
+      if (!isCurrent(sessionId, gen)) return true;
+      if (!lr) {
+        console.warn(
+          "[subtitle] lrclib miss — auto-generate lyrics via captions/Whisper",
+        );
+        // Continue runSubtitleJob → YouTube captions or Whisper ASR as lyric text.
+        return false;
+      }
+      lrclib = lr;
+      const now = new Date().toISOString();
+      match = {
+        ok: true,
+        item: {
+          id: lr.id,
+          category: "canciones",
+          title: lr.song.title,
+          createdAt: now,
+          updatedAt: now,
+          song: lr.song,
+        },
+        song: lr.song,
+        score: lr.score,
+        matchedQuery: lr.matchedQuery,
+      };
+      // Like an operator-taught song: never swapped for a Biblioteca near-miss.
+      learnSource = "manual";
+      console.log(
+        `[subtitle] lrclib hit "${lr.song.title}" by ${lr.song.artist ?? "?"} lines=${songCancioneroLines(lr.song).length} synced=${lr.syncedCues != null} score=${lr.score}`,
+      );
+    } else {
+      match = strong[0]!;
+      learnSource = match.score >= 100 ? "exact" : "fuzzy";
     }
-    match = strong[0]!;
-    learnSource = match.score >= 100 ? "exact" : "fuzzy";
   }
 
   // Merge memory + title candidates for lyric learning / disambiguation.
@@ -741,143 +851,353 @@ async function tryCancioneroLyricPath(options: {
     (match.score < 95 ||
       (pool[1] != null && pool[1].score >= match.score - 25));
 
-  // Karaoke forced align: captions/ASR clocks only — Biblioteca text exact.
+  // Karaoke phrase model: words until the singer breathes → blank on silence →
+  // next Biblioteca renglón appears early (air) before the voice returns.
   const liveSync = sessionStore.get(sessionId);
   if (!liveSync?.live.subtitleAgent?.enabled) return true;
 
   let lines = songCancioneroLines(match.song);
   if (!lines.length) {
-    const live = sessionStore.get(sessionId);
-    if (!live?.live.subtitleAgent?.enabled) return true;
-    patchAndBroadcast(live, {
-      enabled: true,
-      targetLang,
-      status: "error",
-      itemId: item.id,
-      assetId: resolved.assetId,
-      cues: [],
-      translated: false,
-      sourceLang: null,
-      hint: "cancionero_empty",
-      timingMode: "exact",
-    });
-    return true;
+    console.warn(
+      `[subtitle] cancionero empty lyrics for "${match.song.title}" — auto-generate via captions/Whisper`,
+    );
+    return false;
   }
 
-  let alignPrompt = buildKaraokeAlignPrompt(lines);
-  const timing = await fetchCancioneroTimingCues({
-    sessionId,
-    gen,
-    targetLang,
-    resolved,
-    alignPrompt,
-    onStatus: (status, hint) => {
-      if (!isCurrent(sessionId, gen)) return;
-      const live = sessionStore.get(sessionId);
-      if (!live?.live.subtitleAgent?.enabled) return;
-      patchAndBroadcast(live, {
-        status,
-        hint,
-        itemId: item.id,
-        assetId: resolved.assetId,
-        cues: [],
-        translated: false,
-        sourceLang: null,
-      });
-    },
-  });
-  if (!isCurrent(sessionId, gen)) return true;
+  const statusPatch = (
+    status: "downloading" | "extracting" | "transcribing",
+    hint: string,
+  ) => {
+    if (!isCurrent(sessionId, gen)) return;
+    const live = sessionStore.get(sessionId);
+    if (!live?.live.subtitleAgent?.enabled) return;
+    // Do NOT clear cues here — wiping them left Output blank while WhisperX ran.
+    patchAndBroadcast(live, {
+      status,
+      hint,
+      itemId: item.id,
+      assetId: resolved.assetId,
+    });
+  };
 
-  // 2) Learn from captions/ASR: pick the cancionero whose words match the voice track.
-  // Skip when the operator explicitly taught a song.
-  if (
-    learnSource !== "manual" &&
-    timing &&
-    timing.cues.length > 0 &&
-    (ambiguous || pool.length > 1)
-  ) {
-    const timingTexts = timing.cues.map((c) => c.text);
-    let bestLyric: { hit: CancioneroMatchHit; lyric: number; combined: number } | null =
-      null;
-    for (const cand of pool) {
-      const lyric = scoreSongLyricOverlap(cand.song, timingTexts);
-      const combined = Math.round(cand.score * 0.35 + lyric * 0.65);
-      if (
-        !bestLyric ||
-        combined > bestLyric.combined ||
-        (combined === bestLyric.combined && lyric > bestLyric.lyric)
-      ) {
-        bestLyric = { hit: cand, lyric, combined };
+  // Ensure local audio exists (YouTube download) before WhisperX / silence blank.
+  let mediaPath = resolved.mediaPath;
+  let assetId = resolved.assetId;
+  if (resolved.youtube) {
+    const haveLocal = mediaPath ? await mediaFileExists(mediaPath) : false;
+    if (!haveLocal) {
+      statusPatch("downloading", "whisperx_align");
+      try {
+        const yt = await ensureYoutubeAudio({
+          videoId: resolved.youtube.videoId,
+          sourceUrl: resolved.youtube.sourceUrl,
+        });
+        if (!isCurrent(sessionId, gen)) return true;
+        mediaPath = yt.mediaPath;
+        assetId = yt.assetId;
+      } catch (err) {
+        console.warn(
+          "[subtitle] karaoke YT download failed:",
+          err instanceof Error ? err.message : err,
+        );
       }
     }
-    if (
-      bestLyric &&
-      bestLyric.lyric >= 12 &&
-      bestLyric.hit.item.id !== match.item.id
-    ) {
-      console.log(
-        `[subtitle] karaoke lyric-learn switch "${match.song.title}" → "${bestLyric.hit.song.title}" lyric=${bestLyric.lyric} combined=${bestLyric.combined}`,
-      );
-      match = bestLyric.hit;
-      learnSource = "lyric";
-      lines = songCancioneroLines(match.song);
-      alignPrompt = buildKaraokeAlignPrompt(lines);
-    } else if (bestLyric && bestLyric.lyric >= 18) {
-      learnSource = learnSource === "exact" ? "exact" : "lyric";
-    }
   }
+  if (mediaPath) {
+    const probed = await probeMediaDurationMs(mediaPath);
+    if (probed > 0) durationMs = Math.max(durationMs, probed);
+  }
+  if (!isCurrent(sessionId, gen)) return true;
 
-  if (!lines.length) {
-    const live = sessionStore.get(sessionId);
-    if (!live?.live.subtitleAgent?.enabled) return true;
-    patchAndBroadcast(live, {
-      enabled: true,
-      targetLang,
-      status: "error",
+  let lineCues = lrclib?.syncedCues
+    ? lrclib.syncedCues.map((c) => ({ ...c }))
+    : songToSubtitleCues(match.song, durationMs);
+  let synced = false;
+  /** Lyric-confirmed clocks (captions / WhisperX). */
+  let textSynced = false;
+  let timingModeHint = "cancionero_match";
+  let published = false;
+
+  const publishKaraokeCues = async (
+    nextLineCues: SubtitleCue[],
+    hint: string,
+  ): Promise<boolean> => {
+    // One cue = one full Biblioteca renglón (never caption fragments).
+    let nextCues = packKaraokeDisplayCues(
+      ensureCancioneroCueTexts(nextLineCues, lines),
+      1,
+      1,
+    );
+    const taughtTiming = await recallCancioneroTiming(mediaKey);
+    if (taughtTiming?.cueStarts?.length) {
+      nextCues = applyRememberedCueStarts(nextCues, taughtTiming.cueStarts);
+    }
+    if (!nextCues.length) return false;
+    const okPub = await finishWithCues({
+      sessionId,
+      gen,
       itemId: item.id,
-      assetId: resolved.assetId,
-      cues: [],
-      translated: false,
-      sourceLang: null,
-      hint: "cancionero_empty",
+      assetId,
+      cues: nextCues,
+      sourceLang: targetLang,
+      targetLang,
+      alreadyEnglish: targetLang === "en",
+      nativeTrack: true,
+      preserveLyricsSource: true,
       timingMode: "exact",
+      hint,
+      leadMs: CANCIONERO_DEFAULT_LEAD_MS,
+    });
+    if (okPub) return true;
+    if (!isCurrent(sessionId, gen)) return false;
+    const liveForce = sessionStore.get(sessionId);
+    if (!liveForce?.live.subtitleAgent?.enabled) return false;
+    patchAndBroadcast(liveForce, {
+      status: "ready",
+      cues: nextCues,
+      sourceLang: targetLang,
+      translated: false,
+      timingMode: "exact",
+      hint: hint || "cancionero_match_force",
+      itemId: item.id,
+      assetId,
+      cueIndex: null,
+      leadMs: CANCIONERO_DEFAULT_LEAD_MS,
     });
     return true;
+  };
+
+  // Silence map runs in parallel with captions — used ONLY to blank at phrase end.
+  const silencePromise = fetchSilenceSpeechOnsets({
+    sessionId,
+    gen,
+    resolved: { ...resolved, mediaPath, assetId },
+    onStatus: statusPatch,
+  });
+
+  // Do NOT publish equal-time placeholders. They look "ready" on first Go Live
+  // with wrong clocks; after rewind the real captions already won and it
+  // seemed to only work the second time. Keep status busy until real sync.
+  statusPatch("extracting", "cancionero_align");
+  if (!isCurrent(sessionId, gen)) return true;
+
+  // 1) Captions/ASR clocks (YouTube official tracks are best for pop videos).
+  let timing:
+    | { cues: import("@promedia/shared").SubtitleCue[]; assetId: string }
+    | null = null;
+  {
+    const alignPrompt = buildKaraokeAlignPrompt(lines);
+    timing = await fetchCancioneroTimingCues({
+      sessionId,
+      gen,
+      targetLang,
+      resolved: { ...resolved, mediaPath, assetId },
+      alignPrompt,
+      onStatus: statusPatch,
+    });
+    if (!isCurrent(sessionId, gen)) return true;
   }
 
-  let lineCues = songToSubtitleCues(match.song, durationMs);
-  let synced = false;
-  let assetId = resolved.assetId;
+  const silence = await silencePromise;
+  if (!isCurrent(sessionId, gen)) return true;
+  if (silence && silence.durationMs > 0) {
+    durationMs = Math.max(durationMs, silence.durationMs);
+    assetId = silence.assetId || assetId;
+    mediaPath = silence.mediaPath || mediaPath;
+  }
+  const phraseSilences = silence?.silences ?? [];
+  const timingSpeech = timing ? filterSpeechCues(timing.cues) : [];
+  const firstVoiceMs = resolveFirstVoiceOnsetMs(
+    phraseSilences,
+    silence?.onsetsMs ?? [],
+    timingSpeech[0]?.startMs ?? null,
+  );
+
+  const withVoiceAndBlank = (cues: SubtitleCue[]): SubtitleCue[] =>
+    blankCuesAtPhraseSilence(
+      anchorFirstCueToVoiceOnset(cues, firstVoiceMs),
+      phraseSilences,
+      durationMs,
+      SILENCE_AIR_ANTICIPATION_MS,
+    );
+
   if (timing && timing.cues.length > 0) {
-    const aligned = alignCancioneroLinesToTiming(
+    const textAligned = alignCancioneroLinesToTiming(
       lines,
       timing.cues,
       durationMs,
     );
-    lineCues = aligned.cues;
-    synced = aligned.synced;
-    assetId = timing.assetId;
+    if (textAligned.cues.length > 0) {
+      // Caption clocks + first line on voice; silence only blanks after last word.
+      lineCues = withVoiceAndBlank(textAligned.cues);
+      textSynced = textAligned.synced;
+      synced = textAligned.synced;
+      assetId = timing.assetId || assetId;
+      timingModeHint = synced
+        ? "cancionero_match_captions"
+        : "cancionero_match_captions_partial";
+      console.log(
+        `[subtitle] karaoke captions synced=${synced} aligned=${textAligned.alignedCount}/${lines.length} voice0=${firstVoiceMs ?? "n/a"} silenceBlank=${phraseSilences.length > 0}`,
+      );
+      published =
+        (await publishKaraokeCues(lineCues, timingModeHint)) || published;
+    }
+  }
+
+  // LRCLIB line clocks (community-timed to this audio, duration-checked).
+  // On dense music wav2vec2 forced alignment can drift by 10+ s, so these
+  // clocks win over WhisperX; silence only blanks at the breath.
+  if (lrclib?.syncedCues && !textSynced) {
+    lineCues = blankCuesAtPhraseSilence(
+      lrclib.syncedCues,
+      phraseSilences,
+      durationMs,
+      SILENCE_AIR_ANTICIPATION_MS,
+    );
+    textSynced = true;
+    synced = true;
+    timingModeHint = "cancionero_lrclib_synced";
     console.log(
-      `[subtitle] karaoke align synced=${synced} aligned=${aligned.alignedCount}/${lines.length}`,
+      `[subtitle] karaoke lrclib clocks lines=${lineCues.length} first=${lineCues[0]?.startMs ?? "n/a"} silenceBlank=${phraseSilences.length > 0}`,
+    );
+    published =
+      (await publishKaraokeCues(lineCues, timingModeHint)) || published;
+  }
+
+  // 2) WhisperX when captions did not lyric-confirm.
+  const canWhisperx = mediaPath ? await whisperxAvailable() : false;
+  if (!textSynced && canWhisperx && mediaPath) {
+    const wx = await alignLyricsWithWhisperx({
+      mediaPath,
+      assetId,
+      lines,
+      language: targetLang === "en" ? "en" : "es",
+      durationMs,
+      // Air is applied once, by blankCuesAtPhraseSilence below.
+      airMs: 0,
+      onStatus: (st) => statusPatch(st, "whisperx_align"),
+    });
+    if (!isCurrent(sessionId, gen)) return true;
+    if (wx && wx.cues.length > 0) {
+      // Prefer WhisperX first-word clock when silence has no leading quiet.
+      const wxVoice =
+        resolveFirstVoiceOnsetMs(
+          phraseSilences,
+          silence?.onsetsMs ?? [],
+          wx.cues[0]?.startMs ?? null,
+        ) ?? firstVoiceMs;
+      lineCues = blankCuesAtPhraseSilence(
+        anchorFirstCueToVoiceOnset(wx.cues, wxVoice),
+        phraseSilences,
+        durationMs,
+        SILENCE_AIR_ANTICIPATION_MS,
+      );
+      synced = wx.cues.length >= Math.max(1, Math.ceil(lines.length * 0.5));
+      textSynced = synced;
+      if (wx.durationMs > 0) durationMs = Math.max(durationMs, wx.durationMs);
+      timingModeHint = synced
+        ? "cancionero_match_whisperx"
+        : "cancionero_match_whisperx_partial";
+      console.log(
+        `[subtitle] karaoke whisperx synced=${synced} lines=${wx.cues.length}/${lines.length} voice0=${wxVoice ?? "n/a"} silenceBlank=${phraseSilences.length > 0}`,
+      );
+      published =
+        (await publishKaraokeCues(lineCues, timingModeHint)) || published;
+    }
+  } else if (!textSynced && !canWhisperx) {
+    console.warn(
+      "[subtitle] whisperx not installed — using caption karaoke align",
     );
   }
 
-  // Two cancionero phrases per cue (2 large lines); gaps between packs stay blank.
-  let cues = packKaraokeDisplayCues(lineCues);
-
-  // Apply operator-taught ←/→ timing from a previous session, if any.
-  const taughtTiming = await recallCancioneroTiming(mediaKey);
-  if (taughtTiming?.cueStarts?.length) {
-    const applied = applyRememberedCueStarts(cues, taughtTiming.cueStarts);
-    if (applied !== cues) {
-      console.log(
-        `[subtitle] karaoke timing memory applied n=${taughtTiming.cueStarts.length}`,
-      );
+  // 3) Lyric disambiguation when several cancionero candidates compete.
+  if (timing && (!textSynced || (ambiguous && learnSource !== "manual"))) {
+    if (
+      learnSource !== "manual" &&
+      timing &&
+      timing.cues.length > 0 &&
+      (ambiguous || pool.length > 1)
+    ) {
+      const timingTexts = timing.cues.map((c) => c.text);
+      let bestLyric: {
+        hit: CancioneroMatchHit;
+        lyric: number;
+        combined: number;
+      } | null = null;
+      for (const cand of pool) {
+        const lyric = scoreSongLyricOverlap(cand.song, timingTexts);
+        const combined = Math.round(cand.score * 0.35 + lyric * 0.65);
+        if (
+          !bestLyric ||
+          combined > bestLyric.combined ||
+          (combined === bestLyric.combined && lyric > bestLyric.lyric)
+        ) {
+          bestLyric = { hit: cand, lyric, combined };
+        }
+      }
+      if (
+        bestLyric &&
+        bestLyric.lyric >= 12 &&
+        bestLyric.hit.item.id !== match.item.id
+      ) {
+        console.log(
+          `[subtitle] karaoke lyric-learn switch "${match.song.title}" → "${bestLyric.hit.song.title}" lyric=${bestLyric.lyric} combined=${bestLyric.combined}`,
+        );
+        match = bestLyric.hit;
+        learnSource = "lyric";
+        lines = songCancioneroLines(match.song);
+        const realigned = alignCancioneroLinesToTiming(
+          lines,
+          timing.cues,
+          durationMs,
+        );
+        lineCues = withVoiceAndBlank(
+          realigned.cues.length > 0
+            ? realigned.cues
+            : songToSubtitleCues(match.song, durationMs),
+        );
+        textSynced = realigned.synced;
+        synced = realigned.synced;
+      } else if (bestLyric && bestLyric.lyric >= 18) {
+        learnSource = learnSource === "exact" ? "exact" : "lyric";
+      }
     }
-    cues = applied;
+
+    if (!lines.length) {
+      console.warn(
+        "[subtitle] cancionero lines cleared after lyric-learn — auto-generate via captions/Whisper",
+      );
+      return false;
+    }
+
+    if (!textSynced && timing && timing.cues.length > 0) {
+      const aligned = alignCancioneroLinesToTiming(
+        lines,
+        timing.cues,
+        durationMs,
+      );
+      lineCues = withVoiceAndBlank(aligned.cues);
+      textSynced = aligned.synced;
+      synced = aligned.synced;
+      assetId = timing.assetId || assetId;
+      timingModeHint = synced
+        ? "cancionero_match_captions"
+        : "cancionero_match_captions_partial";
+    }
   }
 
-  if (!cues.length) {
+  // Equal-time fallback: still open on first voice, blank on phrase-end silence.
+  if (!textSynced && lineCues.length > 0) {
+    lineCues = withVoiceAndBlank(lineCues);
+  }
+
+  // Final publish if ASR/lyric-learn improved clocks after the baseline.
+  if (lineCues.length > 0) {
+    published =
+      (await publishKaraokeCues(lineCues, timingModeHint)) || published;
+  }
+
+  if (!published && !lineCues.length) {
     const live = sessionStore.get(sessionId);
     if (!live?.live.subtitleAgent?.enabled) return true;
     patchAndBroadcast(live, {
@@ -896,41 +1216,32 @@ async function tryCancioneroLyricPath(options: {
   }
 
   console.log(
-    `[subtitle] karaoke match score=${match.score} q="${match.matchedQuery}" song="${match.song.title}" learn=${learnSource} lines=${lineCues.length} cues=${cues.length} synced=${synced}`,
+    `[subtitle] karaoke match score=${match.score} q="${match.matchedQuery}" song="${match.song.title}" learn=${learnSource} lines=${lineCues.length} synced=${synced} published=${published}`,
   );
 
-  // 3) Remember for next time (same video / same primary title).
-  void rememberCancioneroMatch({
-    mediaKey,
-    titles,
-    songId: match.item.id,
-    songTitle: match.song.title,
-    source: learnSource,
-  }).catch((err) => {
-    console.warn(
-      "[subtitle] cancionero memory save failed:",
-      err instanceof Error ? err.message : err,
-    );
-  });
+  // Remember for next time — never persist weak fuzzy near-misses.
+  const rememberOk =
+    learnSource === "manual" ||
+    learnSource === "exact" ||
+    learnSource === "lyric" ||
+    match.score >= 85;
+  // LRCLIB songs are not in the Biblioteca — their ids would not resolve later.
+  if (rememberOk && !lrclib) {
+    void rememberCancioneroMatch({
+      mediaKey,
+      titles,
+      songId: match.item.id,
+      songTitle: match.song.title,
+      source: learnSource,
+    }).catch((err) => {
+      console.warn(
+        "[subtitle] cancionero memory save failed:",
+        err instanceof Error ? err.message : err,
+      );
+    });
+  }
 
-  const ok = await finishWithCues({
-    sessionId,
-    gen,
-    itemId: item.id,
-    assetId,
-    cues,
-    sourceLang: targetLang,
-    targetLang,
-    alreadyEnglish: targetLang === "en",
-    // Exact Biblioteca text; exact timingMode so we wait for the voice
-    // (no intro-hold race). Default lead 0 — sync with onset (Adelante optional).
-    nativeTrack: true,
-    preserveLyricsSource: true,
-    timingMode: "exact",
-    hint: synced ? "cancionero_match_synced" : "cancionero_match",
-    leadMs: CANCIONERO_DEFAULT_LEAD_MS,
-  });
-  return ok || true;
+  return published || lineCues.length > 0;
 }
 
 async function missingBinStillAbsent(hint: string): Promise<boolean> {
@@ -972,9 +1283,11 @@ export function teachSubtitleCancionero(
     updatedAt: new Date().toISOString(),
   };
   const message = sessionStore.touchSubtitleAgent(session);
+  forgetReadyAgent(session.id, itemId ?? session.live.currentItemId ?? undefined);
   void runSubtitleJob(session.id, itemId ?? session.live.currentItemId ?? undefined, {
     force: true,
     teachSongId: songId,
+    source: "teach",
   });
   return message;
 }
@@ -1114,13 +1427,10 @@ export function setSubtitleAgent(
     return sessionStore.touchSubtitleAgent(session);
   }
 
-  // Keep missing-binary / hard YT / cancionero-miss visible when focus/lang
-  // changes; only clear on toggle-on (wasOff) so Control shows the hint
-  // instead of retry spam (and never invents lyrics via Whisper after a miss).
+  // Keep missing-binary / hard YT visible when focus/lang changes; only clear
+  // on toggle-on (wasOff). Cancionero miss falls through to auto ASR lyrics.
   const stickyHardYt = isStickyHardYoutube(prev);
-  const stickyCancionero = isStickyCancioneroMiss(prev);
-  const keepSticky =
-    (stickyMissing || stickyHardYt || stickyCancionero) && !wasOff;
+  const keepSticky = (stickyMissing || stickyHardYt) && !wasOff;
   if (wasOff) {
     clearYtHardFail(session.id);
   }
@@ -1144,7 +1454,10 @@ export function setSubtitleAgent(
 
   // Fire-and-forget local job (does not block WS).
   // force=true only when enabling from off (user toggle) — retries missing bins / YT.
-  void runSubtitleJob(session.id, patch.itemId, { force: wasOff });
+  void runSubtitleJob(session.id, patch.itemId, {
+    force: wasOff,
+    source: "toggle_or_set",
+  });
 
   return message;
 }
@@ -1153,16 +1466,235 @@ export function setSubtitleAgent(
 export function maybeRefreshSubtitleAgent(session: SessionRecord): void {
   const agent = session.live.subtitleAgent;
   if (!agent?.enabled) return;
-  // Missing yt-dlp/ffmpeg: do not tight-loop; quiet re-check inside the job.
-  void runSubtitleJob(session.id, session.live.currentItemId ?? undefined, {
-    force: false,
+  const nextItemId = session.live.currentItemId ?? undefined;
+  const resolved = nextItemId
+    ? resolveMediaSource(session, nextItemId)
+    : null;
+  const nextAssetId = resolved?.ok ? resolved.assetId : null;
+  const itemChanged =
+    Boolean(nextItemId) &&
+    (agent.itemId !== nextItemId ||
+      (nextAssetId != null && agent.assetId !== nextAssetId));
+
+  // Already aligned earlier: runSubtitleJob restores it right away, no blank gap.
+  const cached =
+    itemChanged && resolved?.ok
+      ? recallReadyAgent(
+          session.id,
+          resolved.item.id,
+          resolved.assetId,
+          agent.targetLang,
+        )
+      : null;
+
+  // Drop the previous theme's lyrics immediately — otherwise Output keeps
+  // showing the old cancionero until (or instead of) the new align.
+  if (itemChanged && !cached) {
+    session.live.subtitleAgent = {
+      ...agent,
+      status: "downloading",
+      itemId: nextItemId ?? null,
+      assetId: nextAssetId,
+      cues: [],
+      cueIndex: null,
+      hint: "cancionero_align",
+      sourceLang: null,
+      translated: false,
+      updatedAt: new Date().toISOString(),
+    };
+    broadcastSession(
+      session.id,
+      sessionStore.touchSubtitleAgent(session),
+    );
+  }
+
+  // Force on theme change so sticky-ready / YT backoff cannot skip the new song.
+  if (itemChanged) {
+    clearYtHardFail(session.id);
+  }
+  void runSubtitleJob(session.id, nextItemId, {
+    force: itemChanged,
+    source: "go_live",
   });
 }
 
+/**
+ * When a YouTube (or audio) link lands in Guion: enable karaoke and examine
+ * the downloaded media (silence → cancionero cues). Fire-and-forget.
+ */
+export function maybeStartKaraokeOnGuionItem(
+  session: SessionRecord,
+  item: PlaylistItem,
+): void {
+  const isYoutube =
+    item.type === "video" && item.payload.sourceKind === "youtube";
+  const isAudio = item.type === "audio";
+  if (!isYoutube && !isAudio) return;
+
+  // Another item is projecting: starting here would overwrite the agent state
+  // (cues cleared) and blank the live karaoke. It is aligned on its own Go Live
+  // (or restored from the per-item cache if it was already processed).
+  const liveId = session.live.currentItemId;
+  if (liveId && liveId !== item.id) {
+    console.log(
+      `[subtitle] skip prefetch item=${item.id} (live item ${liveId} is projecting)`,
+    );
+    return;
+  }
+
+  const prev = session.live.subtitleAgent ?? emptySubtitleAgentState();
+  const targetLang = prev.targetLang ?? "es";
+  session.live.subtitleAgent = {
+    ...prev,
+    enabled: true,
+    targetLang,
+    status: "idle",
+    itemId: item.id,
+    hint: isYoutube ? "silence_scan" : prev.hint,
+    cues: prev.itemId === item.id ? prev.cues : [],
+    updatedAt: new Date().toISOString(),
+  };
+  const message = sessionStore.touchSubtitleAgent(session);
+  broadcastSession(session.id, message);
+  void runSubtitleJob(session.id, item.id, { force: true, source: "guion_add" });
+}
+
+/** In-flight job per session — lets non-forced triggers join instead of restart. */
+const inflightJobs = new Map<string, { key: string; at: number }>();
+const INFLIGHT_MAX_AGE_MS = 5 * 60_000;
+/** Guion adds waiting for the running job to finish (per session). */
+const pendingAdds = new Map<string, string[]>();
+
+type JobSource =
+  | "guion_add"
+  | "toggle_or_set"
+  | "go_live"
+  | "teach"
+  | "other";
+
+/**
+ * Entry point for every trigger (Guion add, toggle, Go Live, teach).
+ * A non-forced trigger for the SAME item+asset+lang that is already being
+ * processed is dropped: restarting would supersede the running job, wipe the
+ * cues and redo the (slow) download / silence scan / alignment from scratch.
+ */
 async function runSubtitleJob(
   sessionId: string,
   preferredItemId?: string,
-  options?: { force?: boolean; teachSongId?: string },
+  options?: {
+    force?: boolean;
+    teachSongId?: string;
+    source?: JobSource;
+  },
+): Promise<void> {
+  const source = options?.source ?? "other";
+  const peekSession = sessionStore.get(sessionId);
+  const peekAgent = peekSession?.live.subtitleAgent;
+  const peekResolved = peekSession
+    ? resolveMediaSource(peekSession, preferredItemId)
+    : null;
+  const key =
+    peekResolved?.ok && peekAgent
+      ? `${peekResolved.item.id}|${peekResolved.assetId}|${peekAgent.targetLang}`
+      : null;
+  console.log(
+    `[subtitle] job trigger src=${source} force=${options?.force === true} item=${preferredItemId ?? "-"} prev=${peekAgent?.status ?? "-"}/${peekAgent?.itemId ?? "-"} inflight=${inflightJobs.has(sessionId)}`,
+  );
+
+  // Instant switch: this item was already aligned in this session.
+  if (
+    peekSession &&
+    peekAgent &&
+    peekResolved?.ok &&
+    !options?.teachSongId &&
+    (source === "go_live" ||
+      (source === "toggle_or_set" && options?.force !== true))
+  ) {
+    const shown =
+      peekAgent.status === "ready" &&
+      peekAgent.itemId === peekResolved.item.id &&
+      peekAgent.assetId === peekResolved.assetId;
+    const hit = shown
+      ? null
+      : recallReadyAgent(
+          sessionId,
+          peekResolved.item.id,
+          peekResolved.assetId,
+          peekAgent.targetLang,
+        );
+    if (hit) {
+      bumpJob(sessionId); // cancel any in-flight job for another item
+      inflightJobs.delete(sessionId);
+      pendingAdds.delete(sessionId);
+      peekSession.live.subtitleAgent = {
+        ...hit,
+        enabled: true,
+        fontSize: peekAgent.fontSize,
+        leadMs: peekAgent.leadMs,
+        cueIndex: null,
+        updatedAt: new Date().toISOString(),
+      };
+      broadcastSession(sessionId, sessionStore.touchSubtitleAgent(peekSession));
+      console.log(
+        `[subtitle] restored cached cues item=${peekResolved.item.id} cues=${hit.cues.length}`,
+      );
+      return;
+    }
+  }
+
+  const running = inflightJobs.get(sessionId);
+
+  // Guion adds while another item is being processed wait their turn instead
+  // of superseding (and discarding) the running job.
+  if (
+    source === "guion_add" &&
+    key &&
+    running &&
+    running.key !== key &&
+    Date.now() - running.at < INFLIGHT_MAX_AGE_MS &&
+    preferredItemId
+  ) {
+    const q = pendingAdds.get(sessionId) ?? [];
+    if (!q.includes(preferredItemId)) q.push(preferredItemId);
+    pendingAdds.set(sessionId, q);
+    console.log(`[subtitle] job queued item=${preferredItemId} (another item is running)`);
+    return;
+  }
+
+  if (
+    key &&
+    running?.key === key &&
+    Date.now() - running.at < INFLIGHT_MAX_AGE_MS &&
+    options?.force !== true &&
+    !options?.teachSongId
+  ) {
+    console.log(`[subtitle] job already running for this item — not restarting`);
+    return;
+  }
+
+  const token = { key: key ?? "", at: Date.now() };
+  if (key) inflightJobs.set(sessionId, token);
+  try {
+    await runSubtitleJobInner(sessionId, preferredItemId, options);
+  } finally {
+    if (inflightJobs.get(sessionId) === token) {
+      inflightJobs.delete(sessionId);
+      // Still the current job (not superseded): start the next queued add.
+      const next = pendingAdds.get(sessionId)?.shift();
+      if (next) {
+        void runSubtitleJob(sessionId, next, {
+          force: true,
+          source: "guion_add",
+        });
+      }
+    }
+  }
+}
+
+async function runSubtitleJobInner(
+  sessionId: string,
+  preferredItemId?: string,
+  options?: { force?: boolean; teachSongId?: string; source?: JobSource },
 ): Promise<void> {
   const force = options?.force === true;
   const teachSongId = options?.teachSongId?.trim() || undefined;
@@ -1187,11 +1719,6 @@ async function runSubtitleJob(
     // Same hard YT failure — wait for backoff or user toggle-on.
     return;
   }
-  if (!force && agentPeek && isStickyCancioneroMiss(agentPeek)) {
-    // Cancionero miss — wait for toggle-on or library update (no Whisper).
-    return;
-  }
-
   const gen = bumpJob(sessionId);
   const session = sessionStore.get(sessionId);
   if (!session) return;
@@ -1218,19 +1745,46 @@ async function runSubtitleJob(
     return;
   }
 
-  // Same asset already ready for this target — keep cues
+  // Same item+asset already ready for this target — keep cues
   // (unless operator is teaching a different cancionero song).
+  // Reject corrupt clocks (NaN/undefined from short onset maps) so we rebuild.
+  const cuesHealthy =
+    agent.cues.length > 0 &&
+    agent.cues.every(
+      (c) =>
+        Number.isFinite(c.startMs) &&
+        Number.isFinite(c.endMs) &&
+        c.endMs > c.startMs &&
+        Boolean(String(c.text ?? "").trim()),
+    );
   if (
     !teachSongId &&
+    !force &&
     agent.status === "ready" &&
+    agent.itemId === resolved.item.id &&
     agent.assetId === resolved.assetId &&
     agent.targetLang === targetLang &&
-    agent.cues.length > 0
+    cuesHealthy
   ) {
-    if (agent.itemId !== resolved.item.id) {
-      patchAndBroadcast(session, { itemId: resolved.item.id });
-    }
     return;
+  }
+
+  // New theme / asset: never leave the previous song's cues on screen.
+  if (
+    agent.itemId !== resolved.item.id ||
+    agent.assetId !== resolved.assetId ||
+    (agent.status === "ready" && agent.cues.length > 0 && force)
+  ) {
+    patchAndBroadcast(session, {
+      status: "downloading",
+      itemId: resolved.item.id,
+      assetId: resolved.assetId,
+      cues: [],
+      cueIndex: null,
+      hint: "cancionero_align",
+      sourceLang: null,
+      translated: false,
+    });
   }
 
   let mediaPath: string | null = resolved.mediaPath;
@@ -1241,7 +1795,7 @@ async function runSubtitleJob(
     if (!isCurrent(sessionId, gen)) return;
 
     // Karaoke when cancionero matches (Audio / YouTube).
-    // Audio miss → sticky modal. YouTube miss → captions/Whisper below.
+    // Miss → captions / Whisper auto-generate subtitle text below.
     // Local file video skips this path and uses sidecar / Whisper.
     const cancioneroDone = await tryCancioneroLyricPath({
       sessionId,
@@ -1444,20 +1998,158 @@ async function runSubtitleJob(
     const liveAfterAsr = sessionStore.get(sessionId);
     if (!liveAfterAsr?.live.subtitleAgent?.enabled) return;
 
+    // Cancionero miss: Whisper types the lyrics, then empty spaces (silence)
+    // pick where each sentence starts (same clock as karaoke, no air).
+    // Drop stray ASR crumbs ("Y") — they would be held on screen for seconds.
+    const shapedAsr = shapeLyricLikeCues(filterSpeechCues(asr.cues)).filter(
+      (c) => c.text.trim().length >= 3,
+    );
+    const asrLines = shapedAsr.map((c) => c.text).filter(Boolean);
+    const silenceAuto = await fetchSilenceSpeechOnsets({
+      sessionId,
+      gen,
+      resolved: {
+        ...resolved,
+        mediaPath,
+        assetId,
+      },
+      onStatus: (st, hint) => {
+        if (!isCurrent(sessionId, gen)) return;
+        const live = sessionStore.get(sessionId);
+        if (!live?.live.subtitleAgent?.enabled) return;
+        patchAndBroadcast(live, {
+          status: st,
+          hint: hint ?? "silence_scan",
+        });
+      },
+    });
+    if (!isCurrent(sessionId, gen)) return;
+
+    // Silence can only place a line per onset. With far fewer onsets than ASR
+    // lines (e.g. 10 onsets / 28 lines) it would squash the lyric chart, so
+    // keep Whisper's own clocks and use silence only to blank at the breath.
+    const silenceCoversLines =
+      silenceAuto != null &&
+      silenceAuto.onsetsMs.length >= Math.ceil(asrLines.length * 0.7);
+
+    // whisper.cpp (base) segment times on music are unreliable — often snapped
+    // to 30 s windows and tens of seconds early. Forced alignment of the ASR
+    // text against the audio (WhisperX/wav2vec2) gives acoustic word clocks.
+    let asrClockCues: SubtitleCue[] = shapedAsr;
+    let wxRefined = false;
+    const asrTextCues = shapedAsr.filter((c) => c.text.trim());
+    if (
+      asrTextCues.length > 0 &&
+      asrTextCues.length === shapedAsr.length &&
+      mediaPath &&
+      (await whisperxAvailable())
+    ) {
+      const wx = await alignLyricsWithWhisperx({
+        mediaPath,
+        assetId,
+        lines: asrLines,
+        language:
+          asr.whisperTranslatedToEn || asr.sourceLang === "en" ? "en" : "es",
+        durationMs: silenceAuto?.durationMs ?? 0,
+        // Air is applied once, by blankCuesAtPhraseSilence below.
+        airMs: 0,
+        onStatus: (st) => {
+          if (!isCurrent(sessionId, gen)) return;
+          const live = sessionStore.get(sessionId);
+          if (!live?.live.subtitleAgent?.enabled) return;
+          patchAndBroadcast(live, { status: st, hint: "whisperx_align" });
+        },
+      });
+      if (!isCurrent(sessionId, gen)) return;
+      if (wx && wx.cues.length === asrLines.length) {
+        asrClockCues = wx.cues;
+        wxRefined = true;
+      }
+    }
+
+    if (
+      !wxRefined &&
+      silenceAuto &&
+      silenceAuto.onsetsMs.length > 0 &&
+      asrLines.length > 0 &&
+      silenceCoversLines
+    ) {
+      const aligned = alignCancioneroLinesToSilence(
+        asrLines,
+        silenceAuto.onsetsMs,
+        silenceAuto.durationMs,
+        SILENCE_AIR_ANTICIPATION_MS,
+        silenceAuto.silences,
+      );
+      const packed = packKaraokeDisplayCues(aligned.cues, 1, 1);
+      console.log(
+        `[subtitle] ASR silence-align synced=${aligned.synced} lines=${asrLines.length} onsets=${silenceAuto.onsetsMs.length} airMs=${SILENCE_AIR_ANTICIPATION_MS}`,
+      );
+      const okSilence = await finishWithCues({
+        sessionId,
+        gen,
+        itemId: resolved.item.id,
+        assetId: silenceAuto.assetId || assetId,
+        cues: packed,
+        sourceLang:
+          asr.sourceLang ?? (asr.whisperTranslatedToEn ? "en" : targetLang),
+        targetLang,
+        alreadyEnglish: asr.whisperTranslatedToEn,
+        // Keep silence clocks — do not reshape timings again.
+        nativeTrack: true,
+        preserveLyricsSource: true,
+        timingMode: "exact",
+        hint: aligned.synced ? "asr_silence_aligned" : "asr_silence_partial",
+      });
+      if (okSilence) return;
+    }
+
+    if (shapedAsr.length > 0 && (wxRefined || (silenceAuto && !silenceCoversLines))) {
+      const blanked = packKaraokeDisplayCues(
+        blankCuesAtPhraseSilence(
+          asrClockCues,
+          silenceAuto?.silences ?? [],
+          silenceAuto?.durationMs ?? 0,
+          SILENCE_AIR_ANTICIPATION_MS,
+        ),
+        1,
+        1,
+      );
+      console.log(
+        `[subtitle] ASR clocks${wxRefined ? " (whisperx)" : ""} + silence blank lines=${shapedAsr.length} onsets=${silenceAuto?.onsetsMs.length ?? 0} silences=${silenceAuto?.silences.length ?? 0} airMs=${SILENCE_AIR_ANTICIPATION_MS}`,
+      );
+      const okClocks = await finishWithCues({
+        sessionId,
+        gen,
+        itemId: resolved.item.id,
+        assetId: silenceAuto?.assetId || assetId,
+        cues: blanked,
+        sourceLang:
+          asr.sourceLang ?? (asr.whisperTranslatedToEn ? "en" : targetLang),
+        targetLang,
+        alreadyEnglish: asr.whisperTranslatedToEn,
+        nativeTrack: true,
+        preserveLyricsSource: true,
+        timingMode: "exact",
+        hint: wxRefined ? "asr_whisperx_blank" : "asr_clocks_blank",
+      });
+      if (okClocks) return;
+    }
+
     const okAsr = await finishWithCues({
       sessionId,
       gen,
       itemId: resolved.item.id,
       assetId,
-      cues: asr.cues,
+      cues: shapedAsr.length > 0 ? shapedAsr : asr.cues,
       sourceLang: asr.sourceLang ?? (asr.whisperTranslatedToEn ? "en" : targetLang),
       targetLang,
       alreadyEnglish: asr.whisperTranslatedToEn,
-      // ASR fallback: shape + assisted intro-hold; skip Marian when same lang.
+      // Silence scan unavailable — shape + assisted timing fallback.
       nativeTrack: false,
       preserveLyricsSource: false,
       timingMode: "assisted",
-      hint: "asr_fallback",
+      hint: "asr_auto_lyrics",
     });
     if (okAsr) return;
 

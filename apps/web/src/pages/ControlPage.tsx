@@ -50,7 +50,15 @@ import {
 import { StatusTip } from "../components/StatusTip";
 import { SubtitleOverlay } from "../components/SubtitleOverlay";
 import { TextItemEditor } from "../components/TextItemEditor";
-import { IconGoLive, IconNext, IconPrev } from "../components/UiIcons";
+import {
+  IconDotsOverlay,
+  IconGoLive,
+  IconNext,
+  IconPrev,
+  IconSceneEmpty,
+  IconSceneLogo,
+  IconWatermark,
+} from "../components/UiIcons";
 import { useLocale } from "../locale/LocaleContext";
 import { useControlShortcuts } from "../hooks/useControlShortcuts";
 import { useSessionConnection } from "../hooks/useSessionConnection";
@@ -70,7 +78,12 @@ import {
   loadPersistedControlSession,
   savePersistedControlSession,
 } from "../lib/controlSessionPersist";
-import { createLibrarySong } from "../lib/library";
+import {
+  addLibraryItemToSession,
+  createLibrarySong,
+  uploadLibraryFile,
+} from "../lib/library";
+import { isLoopbackPageHost } from "../lib/hub";
 import {
   openOutputWindow,
   postOutputUnmute,
@@ -79,6 +92,7 @@ import {
 import {
   TEXT_IMPORT_MAX_BYTES,
   TEXT_IMPORT_MAX_SLIDES,
+  fileToGuionTextPayload,
   importFileToTextSlides,
 } from "../lib/textImport";
 import { themeSurfaceStyle } from "../lib/theme";
@@ -140,12 +154,18 @@ export function ControlPage() {
   const [songError, setSongError] = useState<string | null>(null);
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [loadDialogOpen, setLoadDialogOpen] = useState(false);
-  /** Soft hints retained for setters (upload / playlist); message log panel removed. */
-  const [, setUploadHint] = useState<string | null>(null);
+  /** Soft action hints (pair / upload / remote Control). */
+  const [uploadHint, setUploadHint] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadingBackground, setUploadingBackground] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const logoFileInputRef = useRef<HTMLInputElement>(null);
+  /** Phone/LAN opened /control without token — wait for code/token pair. */
+  const [needsRemotePair, setNeedsRemotePair] = useState(false);
+  const [pairCode, setPairCode] = useState("");
+  const [pairBusy, setPairBusy] = useState(false);
+  const [pairError, setPairError] = useState<string | null>(null);
+  const onPhoneLan = !isLoopbackPageHost();
   /** Uploaded stage backgrounds listed in the Theme dropdown (this session). */
   const [themeBackgroundAssets, setThemeBackgroundAssets] = useState<
     Array<{
@@ -160,7 +180,6 @@ export function ControlPage() {
   const [cancioneroTeachBusy, setCancioneroTeachBusy] = useState(false);
   /** Local Preview playhead (ms) before Go Live — karaoke overlay + ←/→ teach. */
   const [previewLocalPositionMs, setPreviewLocalPositionMs] = useState(0);
-  const cancioneroWarnShownFor = useRef<string | null>(null);
   /** YouTube items already probed for oEmbed title (avoid repeat fetches). */
   const youtubeTitleTried = useRef<Set<string>>(new Set());
   /** Remember video durations (preview metadata) for remaining-time / scrub max. */
@@ -247,6 +266,12 @@ export function ControlPage() {
         return t("control.subtitleAgentDownloadingAudio");
       }
       if (
+        (st === "downloading" || st === "extracting") &&
+        (hint === "silence_scan" || hint === "cancionero_sync")
+      ) {
+        return t("control.subtitleAgentSilenceScan");
+      }
+      if (
         st === "downloading" ||
         st === "extracting" ||
         st === "transcribing" ||
@@ -260,11 +285,15 @@ export function ControlPage() {
           return t("control.subtitleAgentSourceOnly");
         }
         if (
-          hint === "cancionero_match_synced"
+          hint === "cancionero_match_synced" ||
+          hint === "cancionero_match_silence"
         ) {
           return t("control.subtitleAgentCancioneroSynced");
         }
-        if (hint === "cancionero_match") {
+        if (
+          hint === "cancionero_match" ||
+          hint === "cancionero_match_silence_partial"
+        ) {
           return t("control.subtitleAgentCancioneroReady");
         }
         if (
@@ -276,8 +305,8 @@ export function ControlPage() {
         if (hint === "local_sidecar" || hint === "local_embedded") {
           return t("control.subtitleAgentLocalTracksReady");
         }
-        if (hint === "asr_fallback") {
-          return t("control.subtitleAgentAsrReady");
+        if (hint === "asr_fallback" || hint === "asr_auto_lyrics") {
+          return t("control.subtitleAgentAsrAutoLyrics");
         }
         return t("control.subtitleAgentReady");
       }
@@ -287,7 +316,8 @@ export function ControlPage() {
           hint === "cancionero_no_songs" ||
           hint === "cancionero_empty"
         ) {
-          return t("control.cancioneroNoMatchTitle");
+          // Should be rare now (auto-ASR); keep a short status if it appears.
+          return t("control.subtitleAgentAsrAutoLyrics");
         }
         if (hint === "no_speech") {
           return t("control.subtitleAgentNoSpeech");
@@ -429,52 +459,8 @@ export function ControlPage() {
   /** Playlist chrome needs a session; mutations need WS (auto-reconnects if down). */
   const canMutate = sessionReady && wsReady;
 
-  // Modal when Subtítulos finds no cancionero match for Guion Audio / YouTube.
-  useEffect(() => {
-    if (!subtitleAgent.enabled) {
-      cancioneroWarnShownFor.current = null;
-      return;
-    }
-    if (subtitleAgent.status !== "error") {
-      return;
-    }
-    const hint = subtitleAgent.hint ?? "";
-    if (
-      hint !== "cancionero_no_match" &&
-      hint !== "cancionero_no_songs" &&
-      hint !== "cancionero_empty"
-    ) {
-      return;
-    }
-    const key = `${subtitleAgent.itemId ?? ""}:${hint}`;
-    if (cancioneroWarnShownFor.current === key) {
-      return;
-    }
-    cancioneroWarnShownFor.current = key;
-    setCancioneroNoMatchOpen(true);
-  }, [
-    subtitleAgent.enabled,
-    subtitleAgent.status,
-    subtitleAgent.hint,
-    subtitleAgent.itemId,
-  ]);
-
-  // Karaoke agent always uses the dots pattern for lyric contrast on video.
-  useEffect(() => {
-    if (!subtitleAgent.enabled || !canMutate) {
-      return;
-    }
-    if (themeBackground.dotsOverlay === true) {
-      return;
-    }
-    session.setTheme({
-      themeBackground: normalizeThemeBackground({
-        ...themeBackground,
-        dotsOverlay: true,
-      }),
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subtitleAgent.enabled, canMutate, themeBackground.dotsOverlay]);
+  // Cancionero miss no longer opens a blocking modal — Whisper/captions
+  // auto-generate subtitle text. Teach UI remains available from the toolbar.
 
   // When agent is on, re-target ASR if focus item changed (live preferred).
   useEffect(() => {
@@ -531,7 +517,8 @@ export function ControlPage() {
         selectedItem.type === "image" ||
         selectedItem.type === "video" ||
         selectedItem.type === "audio" ||
-        selectedItem.type === "bible") &&
+        selectedItem.type === "bible" ||
+        selectedItem.type === "presentation") &&
       canMutate,
   );
 
@@ -546,6 +533,8 @@ export function ControlPage() {
 
   // After hub is healthy: create or resume session so Control WS is ready.
   // Opening Output still needs a click ("Iniciar proyección") — browsers block popups.
+  // Phone/LAN without token must NOT auto-create — that orphaned a 2nd session
+  // and En vivo never reached the projector Output.
   useEffect(() => {
     if (autoSessionStarted.current) {
       return;
@@ -555,6 +544,7 @@ export function ControlPage() {
     }
     if (session.hasSession) {
       autoSessionStarted.current = true;
+      setNeedsRemotePair(false);
       if (session.code) {
         persistSession(session.code, session.accessToken || undefined);
       }
@@ -569,19 +559,48 @@ export function ControlPage() {
           params.get("accessToken") ??
           ""
         ).trim();
+        const urlCode = (params.get("code") ?? "").trim().toUpperCase();
         const saved = loadPersistedControlSession();
         const token = urlToken || saved?.accessToken?.trim() || "";
         if (token) {
           try {
             const res = await joinRef.current({ accessToken: token });
             persistSession(res.code, token);
+            setNeedsRemotePair(false);
             return;
           } catch {
-            // Stale token after hub restart — create a fresh session.
+            // Stale token after hub restart.
           }
+        }
+        if (urlCode) {
+          try {
+            const res = await joinRef.current({ code: urlCode });
+            persistSession(res.code, saved?.accessToken);
+            setNeedsRemotePair(false);
+            return;
+          } catch {
+            // invalid code
+          }
+        }
+        // Resume last session by code on phone (same Wi‑Fi as projector).
+        if (onPhoneLan && saved?.code) {
+          try {
+            const res = await joinRef.current({ code: saved.code });
+            persistSession(res.code, saved.accessToken);
+            setNeedsRemotePair(false);
+            return;
+          } catch {
+            // stale
+          }
+        }
+        if (onPhoneLan) {
+          // Wait for operator to enter the projector session code.
+          setNeedsRemotePair(true);
+          return;
         }
         const res = await createRef.current();
         persistSession(res.code, res.accessToken);
+        setNeedsRemotePair(false);
       } catch {
         // Allow manual CTA / retry after failure (hub flap).
         autoSessionStarted.current = false;
@@ -593,7 +612,39 @@ export function ControlPage() {
     session.hasSession,
     session.code,
     session.accessToken,
+    onPhoneLan,
   ]);
+
+  const pairWithProjector = () => {
+    const code = pairCode.trim().toUpperCase();
+    if (!code || pairBusy) {
+      return;
+    }
+    setPairBusy(true);
+    setPairError(null);
+    void (async () => {
+      try {
+        const res = await session.join({ code });
+        persistSession(res.code);
+        setNeedsRemotePair(false);
+        setPairCode("");
+        // Keep ?code= in URL so refresh re-joins the same projector session.
+        try {
+          const u = new URL(window.location.href);
+          u.searchParams.set("code", res.code);
+          u.searchParams.delete("token");
+          u.searchParams.delete("accessToken");
+          window.history.replaceState({}, "", u.toString());
+        } catch {
+          // ignore
+        }
+      } catch {
+        setPairError(t("control.pairFailed"));
+      } finally {
+        setPairBusy(false);
+      }
+    })();
+  };
 
   /** Existing "Abrir salida" — open/focus Output for current session (no create). */
   const openOutput = () => {
@@ -614,12 +665,17 @@ export function ControlPage() {
   };
 
   /**
-   * Primary CTA: create/resume session → open Output (secondary screen when
-   * Window Management API allows) → request fullscreen (gesture / Chrome).
+   * PC only: open Output on the projector screen.
+   * Phone never opens Output — it joins this session and En vivo drives the PC.
    */
   const onStartProjection = () => {
     if (session.hubUnreachable) {
       void session.checkHubHealth();
+      return;
+    }
+    if (onPhoneLan) {
+      // Phone is remote Control only — projection lives on the PC Output.
+      setUploadHint(t("control.phoneControlsPcHint"));
       return;
     }
     setProjectionBusy(true);
@@ -1029,9 +1085,67 @@ export function ControlPage() {
     order: number,
   ): Promise<{ ok: boolean; itemId?: string; hint?: string }> => {
     const kind = classifyMediaFile(file);
-    if (kind === "unsupported") {
-      return { ok: false, hint: t("text.importUnsupported") };
+
+    // Presentations (PPTX/PDF/…) → Biblioteca import → Guion slides.
+    if (kind === "presentation") {
+      if (!session.sessionId || !session.wsTicket) {
+        return { ok: false, hint: t("control.wsDisconnectedHint") };
+      }
+      try {
+        const libItem = await uploadLibraryFile(file);
+        const playlistItem = await addLibraryItemToSession({
+          sessionId: session.sessionId,
+          credential: session.wsTicket,
+          libraryItemId: libItem.id,
+        });
+        return {
+          ok: true,
+          itemId: playlistItem.id,
+          hint: t("playlist.presentationAdded"),
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          hint: err instanceof Error ? err.message : String(err),
+        };
+      }
     }
+
+    // Unknown / other types: still add to Guion (text if readable, else stub).
+    if (kind === "unsupported") {
+      try {
+        const payload = await fileToGuionTextPayload(file);
+        const item: PlaylistItem = {
+          id: cryptoRandomId(),
+          type: "text",
+          order,
+          payload: {
+            title: payload.title,
+            align: payload.align,
+            slides: payload.slides,
+          },
+        };
+        if (!session.addItem(item)) {
+          return { ok: false, hint: t("control.wsDisconnectedHint") };
+        }
+        return {
+          ok: true,
+          itemId: item.id,
+          hint: payload.usedBinaryStub
+            ? t("playlist.genericFileAdded")
+            : t("text.importAdded").replace(
+                "{n}",
+                String(payload.slides.length),
+              ),
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          hint: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
     if (kind === "text") {
       if (file.size > TEXT_IMPORT_MAX_BYTES) {
         return { ok: false, hint: t("text.importTooLarge") };
@@ -1294,6 +1408,28 @@ export function ControlPage() {
       return;
     }
     session.setSceneMode("logo");
+  };
+
+  const watermarkEnabled =
+    session.snapshot?.live.watermarkEnabled === true;
+
+  const toggleWatermark = () => {
+    if (!ensureWsOrHint()) {
+      return;
+    }
+    session.setWatermark(!watermarkEnabled);
+  };
+
+  const toggleDotsOverlay = () => {
+    if (!ensureWsOrHint()) {
+      return;
+    }
+    session.setTheme({
+      themeBackground: normalizeThemeBackground({
+        ...themeBackground,
+        dotsOverlay: !dotsOverlay,
+      }),
+    });
   };
 
   const openLogoFilePicker = () => {
@@ -1679,6 +1815,70 @@ export function ControlPage() {
           >
             {t("control.openOutput")}
           </a>
+        </div>
+      ) : null}
+
+      {uploadHint ? (
+        <div className="control-banner control-banner-compact" role="status">
+          <StatusTip
+            tone="info"
+            label={t("control.statusTipInfo")}
+            message={uploadHint}
+          />
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => setUploadHint(null)}
+          >
+            {t("control.dismissHint")}
+          </button>
+        </div>
+      ) : null}
+
+      {needsRemotePair && !session.hasSession && !session.hubUnreachable ? (
+        <div
+          className="control-banner control-banner-pair"
+          role="dialog"
+          aria-label={t("control.pairTitle")}
+        >
+          <StatusTip
+            tone="info"
+            label={t("control.statusTipInfo")}
+            message={t("control.pairBody")}
+          />
+          <form
+            className="control-pair-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              pairWithProjector();
+            }}
+          >
+            <label className="control-pair-label">
+              {t("control.pairCodeLabel")}
+              <input
+                value={pairCode}
+                onChange={(e) =>
+                  setPairCode(e.target.value.toUpperCase().slice(0, 8))
+                }
+                placeholder="AB12"
+                maxLength={8}
+                autoCapitalize="characters"
+                autoCorrect="off"
+                spellCheck={false}
+                autoFocus
+              />
+            </label>
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={pairBusy || pairCode.trim().length < 3}
+            >
+              {pairBusy ? t("control.pairBusy") : t("control.pairSubmit")}
+            </button>
+          </form>
+          {pairError ? (
+            <p className="control-banner-error-text">{pairError}</p>
+          ) : null}
         </div>
       ) : null}
 
@@ -2073,9 +2273,56 @@ export function ControlPage() {
                   openLogoFilePicker();
                 }}
               >
-                {uploadingLogo
-                  ? t("control.sceneLogoUploading")
-                  : t("control.sceneLogo")}
+                <span className="preview-tb-scene-glyph" aria-hidden>
+                  <IconSceneLogo />
+                </span>
+                <span className="preview-tb-scene-label">
+                  {uploadingLogo
+                    ? t("control.sceneLogoUploading")
+                    : t("control.sceneLogo")}
+                </span>
+              </button>
+              <button
+                type="button"
+                className={[
+                  "btn preview-tb-btn preview-tb-scene",
+                  watermarkEnabled ? "is-active" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                disabled={!canMutate}
+                title={t("control.sceneWatermarkHint")}
+                aria-label={t("control.sceneWatermark")}
+                aria-pressed={watermarkEnabled}
+                onClick={toggleWatermark}
+              >
+                <span className="preview-tb-scene-glyph" aria-hidden>
+                  <IconWatermark />
+                </span>
+                <span className="preview-tb-scene-label">
+                  {t("control.sceneWatermark")}
+                </span>
+              </button>
+              <button
+                type="button"
+                className={[
+                  "btn preview-tb-btn preview-tb-scene",
+                  dotsOverlay ? "is-active" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                disabled={!canMutate}
+                title={t("control.dotsOverlayHint")}
+                aria-label={t("control.dotsOverlay")}
+                aria-pressed={dotsOverlay}
+                onClick={toggleDotsOverlay}
+              >
+                <span className="preview-tb-scene-glyph" aria-hidden>
+                  <IconDotsOverlay />
+                </span>
+                <span className="preview-tb-scene-label">
+                  {t("control.dotsOverlay")}
+                </span>
               </button>
               <button
                 type="button"
@@ -2091,7 +2338,12 @@ export function ControlPage() {
                 aria-pressed={sceneMode === "black"}
                 onClick={showEmptyScene}
               >
-                {t("control.sceneEmpty")}
+                <span className="preview-tb-scene-glyph" aria-hidden>
+                  <IconSceneEmpty />
+                </span>
+                <span className="preview-tb-scene-label">
+                  {t("control.sceneEmpty")}
+                </span>
               </button>
               <span className="preview-tb-spacer" />
               <StatusTip
@@ -2208,7 +2460,21 @@ export function ControlPage() {
         </span>
         <span className="footer-sep">·</span>
         <span>seq {session.lastSeq >= 0 ? session.lastSeq : "—"}</span>
-        <LanRemoteHint accessToken={session.accessToken || null} />
+        {session.code ? (
+          <>
+            <span className="footer-sep">·</span>
+            <span
+              className="footer-session-code"
+              title={t("control.sessionCodeHint")}
+            >
+              {t("control.sessionCode")}: <strong>{session.code}</strong>
+            </span>
+          </>
+        ) : null}
+        <LanRemoteHint
+          code={session.code || null}
+          accessToken={session.accessToken || null}
+        />
         {uploading ? (
           <>
             <span className="footer-sep">·</span>
