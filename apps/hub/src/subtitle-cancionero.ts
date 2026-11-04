@@ -182,6 +182,9 @@ export function scoreSongMatch(
   const qArtist = normalizeMatchTitle(queryArtist ?? "");
 
   let score = 0;
+  // Whole-title prefix/suffix of the query ("… | Official Lyric Video"):
+  // the extra words are noise, not a different last word of the title.
+  let wholeTitleMatch = false;
 
   if (songTitle === q) {
     score = 100;
@@ -191,6 +194,7 @@ export function scoreSongMatch(
     songTitle.length >= 4
   ) {
     score = 96;
+    wholeTitleMatch = true;
   } else if (songTitle.includes(q) || q.includes(songTitle)) {
     const shorter = Math.min(songTitle.length, q.length);
     const longer = Math.max(songTitle.length, q.length);
@@ -222,7 +226,7 @@ export function scoreSongMatch(
   // different last word) — that put the wrong cancionero on YouTube karaoke.
   const qTokens = [...tokenSet(q)];
   const sTokens = [...tokenSet(songTitle)];
-  if (qTokens.length >= 3 && sTokens.length >= 3) {
+  if (!wholeTitleMatch && qTokens.length >= 3 && sTokens.length >= 3) {
     const qLast = qTokens[qTokens.length - 1]!;
     const sLast = sTokens[sTokens.length - 1]!;
     if (qLast !== sLast) {
