@@ -674,13 +674,18 @@ export async function listYoutubeCaptionTracks(options: {
   }
   const out: YoutubeCaptionTrackInfo[] = [];
   const seen = new Set<string>();
-  for (const lang of Object.keys(data.subtitles || {})) {
+  // `live_chat` (stream/premiere chat replay) shows up under `subtitles` but is
+  // a multi-MB JSON, not a caption track — picking it fails ("file is empty").
+  const isRealCaptionLang = (lang: string) => lang.toLowerCase() !== "live_chat";
+  for (const lang of Object.keys(data.subtitles || {}).filter(isRealCaptionLang)) {
     const key = `manual:${lang.toLowerCase()}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push({ lang: lang.toLowerCase(), kind: "manual" });
   }
-  for (const lang of Object.keys(data.automatic_captions || {})) {
+  for (const lang of Object.keys(data.automatic_captions || {}).filter(
+    isRealCaptionLang,
+  )) {
     const key = `auto:${lang.toLowerCase()}`;
     if (seen.has(key)) continue;
     seen.add(key);
