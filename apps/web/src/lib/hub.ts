@@ -20,6 +20,24 @@ export function hubHttpBase(): string {
 }
 
 /**
+ * Hub binds IPv4 (`0.0.0.0:8787`), not IPv6. Browsers that resolve
+ * `localhost` to `::1` first fail WS/health unless we pin loopback to IPv4.
+ */
+export function hubDevHostname(pageHostname?: string): string {
+  const host = (pageHostname ?? "").toLowerCase();
+  if (
+    !host ||
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "[::1]" ||
+    host === "::1"
+  ) {
+    return "127.0.0.1";
+  }
+  return pageHostname ?? "127.0.0.1";
+}
+
+/**
  * WebSocket base URL.
  *
  * Prefer a direct hub WS in Vite dev — proxying `/api` WebSockets through Vite
@@ -39,7 +57,7 @@ export function hubWsBase(): string {
   }
   if (import.meta.env.DEV) {
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
-    const host = window.location.hostname || "localhost";
+    const host = hubDevHostname(window.location.hostname);
     return `${proto}://${host}:${HUB_DEV_PORT}`;
   }
   const proto = window.location.protocol === "https:" ? "wss" : "ws";
