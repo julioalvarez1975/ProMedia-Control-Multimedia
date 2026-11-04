@@ -1,8 +1,14 @@
 /**
  * Karaoke path for Guion Audio + YouTube:
  * Biblioteca / cancionero is the ONLY text source.
- * Preferred clocks: analyze audio (Whisper/captions + silence) → each
- * cancionero line on the sung phrase (no air) — never rewrite words.
+ *
+ * Phrase model:
+ * - A phrase is words sung until the singer breathes.
+ * - Breath (silence) → blank the caption.
+ * - Before voice returns → show the next renglón early (air anticipation).
+ *
+ * Captions / WhisperX supply word clocks; silence is only breath → blank and
+ * the cue to pull the next letter forward — never a snap of every line onto onsets.
  */
 import { spawn } from "node:child_process";
 import type {
@@ -405,6 +411,21 @@ export function songCancioneroLines(song: LibrarySongPayload): string[] {
   return out;
 }
 
+/**
+ * Force cue `.text` to the exact Biblioteca renglón (never caption/ASR fragments).
+ */
+export function ensureCancioneroCueTexts(
+  cues: readonly SubtitleCue[],
+  lines: readonly string[],
+): SubtitleCue[] {
+  const exact = lines.map((l) => String(l).trim()).filter(Boolean);
+  if (cues.length === 0 || exact.length === 0) return cues.map((c) => ({ ...c }));
+  return cues.map((c, i) => ({
+    ...c,
+    text: exact[i] ?? String(c.text ?? "").trim(),
+  }));
+}
+
 /** @deprecated Prefer songCancioneroLines — same exact-line semantics. */
 export function songLyricPhrases(song: LibrarySongPayload): string[] {
   return songCancioneroLines(song);
@@ -748,31 +769,210 @@ export function alignCancioneroLinesToSilence(
   const starts: number[] = picked.map((onset) =>
     cueStartWithAirMs(onset, airMs),
   );
-  const voiceEnds = picked.map((onset, i) => {
-    const nextOnset =
-      i + 1 < picked.length ? picked[i + 1]! : total;
-    let end = nextOnset - 80;
-    for (const s of silences) {
-      const silenceStart = Math.max(0, Math.round(s.startMs));
-      if (silenceStart > onset + 250 && silenceStart < nextOnset) {
-        end = silenceStart;
-        break;
-      }
-    }
-    return Math.max(onset + 700, end);
-  });
+  const voiceEnds = picked.map((onset, i) =>
+    phraseVoiceEndMs(onset, i + 1 < picked.length ? picked[i + 1]! : total, silences),
+  );
   const cues = cuesFromVoiceStarts(exactLines, starts, total, voiceEnds);
 
+  // Silence has no lyric confirmation — never claim text-synced.
+  // (Claiming synced here skipped WhisperX and froze bad mid-phrase cuts.)
   const alignedCount = Math.min(exactLines.length, onsets.length, picked.length);
-  const synced =
-    alignedCount >= Math.max(2, Math.ceil(exactLines.length * 0.35));
-  return { cues, alignedCount, synced };
+  return { cues, alignedCount, synced: false };
+}
+
+/**
+ * Phrase end without word clocks: only the breath that leads into the NEXT
+ * onset. Mid-phrase music dips must NOT blank the line while still singing.
+ */
+function phraseVoiceEndMs(
+  onsetMs: number,
+  nextOnsetMs: number,
+  silences: readonly SilenceRegion[],
+): number {
+  const onset = Math.max(0, Math.round(onsetMs));
+  const next = Math.max(onset + 700, Math.round(nextOnsetMs));
+  // Default: hold through the sung phrase; tiny blank before next line.
+  let end = next - 100;
+  let bestBreath = -1;
+  for (const s of silences) {
+    const sStart = Math.max(0, Math.round(s.startMs));
+    const sEnd = Math.max(sStart, Math.round(s.endMs));
+    // Silence that ends at the next voice onset = gap after last word.
+    if (Math.abs(sEnd - next) <= 180 && sStart > onset + 500) {
+      bestBreath = Math.max(bestBreath, sStart);
+    }
+  }
+  if (bestBreath > 0) end = bestBreath;
+  return Math.max(onset + 700, end);
+}
+
+/** Small pad so exclusive endMs (`t < end`) does not clip the last syllable. */
+const LAST_WORD_HOLD_PAD_MS = 120;
+
+/**
+ * When singing actually begins — for the FIRST caption only.
+ * Never starts during a leading quiet; prefers caption/ASR first-word clock
+ * once audio has begun (true voz, not the music bed after silence).
+ */
+export function resolveFirstVoiceOnsetMs(
+  silences: readonly SilenceRegion[],
+  speechOnsetsMs: readonly number[] = [],
+  timingHintMs?: number | null,
+): number | null {
+  const leading = [...silences]
+    .map((s) => ({
+      startMs: Math.max(0, Math.round(s.startMs)),
+      endMs: Math.max(0, Math.round(s.endMs)),
+    }))
+    .find((s) => s.startMs <= 200 && s.endMs > s.startMs + 400);
+  const leadEnd = leading ? leading.endMs : null;
+  const hint =
+    typeof timingHintMs === "number" && Number.isFinite(timingHintMs)
+      ? Math.max(0, Math.round(timingHintMs))
+      : null;
+
+  if (leadEnd != null) {
+    // Still in the opening quiet → open when that quiet ends (voz/audio in).
+    if (hint == null || hint < leadEnd - 100) return leadEnd;
+    // Caption already points at the first sung word after the quiet.
+    return hint;
+  }
+
+  if (hint != null) return hint;
+
+  for (const raw of speechOnsetsMs) {
+    if (typeof raw !== "number" || !Number.isFinite(raw)) continue;
+    const t = Math.max(0, Math.round(raw));
+    if (t <= 40 && speechOnsetsMs.some((x) => Number(x) > 2_000)) continue;
+    return t;
+  }
+  return null;
+}
+
+/**
+ * Shift the whole lyric chart so cue[0] starts when the voice appears.
+ * Relative gaps between lines stay the same.
+ */
+export function anchorFirstCueToVoiceOnset(
+  cues: readonly SubtitleCue[],
+  voiceOnsetMs: number | null | undefined,
+): SubtitleCue[] {
+  if (
+    cues.length === 0 ||
+    voiceOnsetMs == null ||
+    !Number.isFinite(voiceOnsetMs)
+  ) {
+    return cues.map((c) => ({ ...c }));
+  }
+  const voice = Math.max(0, Math.round(voiceOnsetMs));
+  const first = Math.max(0, Math.round(cues[0]!.startMs));
+  const delta = voice - first;
+  if (Math.abs(delta) < 100) return cues.map((c) => ({ ...c }));
+  // Guard against a wild silence false-positive yanking the chart.
+  if (Math.abs(delta) > 90_000) return cues.map((c) => ({ ...c }));
+  return cues.map((c) => {
+    const startMs = Math.max(0, Math.round(c.startMs) + delta);
+    const endMs = Math.max(startMs + 500, Math.round(c.endMs) + delta);
+    return { ...c, startMs, endMs };
+  });
+}
+
+/**
+ * Breath + anticipation on caption/WhisperX word clocks.
+ *
+ * 1) Keep first-word clocks from the aligner (not silence onsets).
+ * 2) Blank when the singer breathes (first silence after the last word).
+ * 3) Pull each start earlier by airMs so the next renglón is already on
+ *    screen before the voice returns after that breath.
+ */
+export function blankCuesAtPhraseSilence(
+  cues: readonly SubtitleCue[],
+  silences: readonly SilenceRegion[],
+  durationMs = 0,
+  airMs: number = SILENCE_AIR_ANTICIPATION_MS,
+): SubtitleCue[] {
+  if (cues.length === 0) return [];
+
+  const air = Math.max(0, Math.round(airMs));
+  const sorted = [...silences].sort(
+    (a, b) => Math.round(a.startMs) - Math.round(b.startMs),
+  );
+
+  // Voice clocks (first word / last word) before anticipation.
+  const voiceStarts = cues.map((c) => Math.max(0, Math.round(c.startMs)));
+  const lastWords = cues.map((c, i) =>
+    Math.max(voiceStarts[i]! + 500, Math.round(c.endMs)),
+  );
+
+  const breathStarts: number[] = cues.map((_, i) => {
+    const voiceStart = voiceStarts[i]!;
+    const lastWord = lastWords[i]!;
+    const nextVoice =
+      i + 1 < cues.length
+        ? voiceStarts[i + 1]!
+        : Math.max(
+            lastWord + 500,
+            durationMs > 0 ? durationMs : lastWord + 2_000,
+          );
+    if (!sorted.length) return -1;
+    const searchFrom = Math.max(voiceStart + 700, lastWord - 60);
+    for (const s of sorted) {
+      const sStart = Math.max(0, Math.round(s.startMs));
+      if (sStart < searchFrom) continue;
+      if (sStart >= nextVoice - 40) break;
+      // Breath after the sung words of this phrase.
+      return sStart;
+    }
+    return -1;
+  });
+
+  const out: SubtitleCue[] = [];
+  for (let i = 0; i < cues.length; i++) {
+    const voiceStart = voiceStarts[i]!;
+    const lastWord = lastWords[i]!;
+    const nextVoice =
+      i + 1 < cues.length
+        ? voiceStarts[i + 1]!
+        : Math.max(
+            lastWord + 500,
+            durationMs > 0 ? durationMs : lastWord + 2_000,
+          );
+
+    // Anticipate: letter appears before the first word of the phrase.
+    let startMs = cueStartWithAirMs(voiceStart, air);
+    if (i > 0) {
+      // After previous breath blank — never overlap the prior renglón.
+      startMs = Math.max(startMs, out[i - 1]!.endMs);
+    }
+
+    const breathAt = breathStarts[i]!;
+    // Hold through last word (or breath). Do NOT cut early for next-line air —
+    // anticipation only pulls the NEXT startMs forward.
+    let endMs =
+      breathAt > 0
+        ? breathAt + LAST_WORD_HOLD_PAD_MS
+        : lastWord + LAST_WORD_HOLD_PAD_MS;
+    if (i + 1 < cues.length) {
+      endMs = Math.min(endMs, Math.max(startMs + 500, nextVoice));
+    } else if (durationMs > 0) {
+      endMs = Math.min(endMs, Math.max(startMs + 500, durationMs));
+    }
+    endMs = Math.max(startMs + 500, endMs);
+
+    out.push({
+      ...cues[i]!,
+      id: cues[i]!.id || `cancionero_${i}`,
+      startMs,
+      endMs,
+    });
+  }
+  return out;
 }
 
 /**
  * Build display cues from voice clocks (starts already −airMs).
- * Keep each phrase on screen until that phrase's last sung word ends —
- * then blank until the next phrase's air start.
+ * Keep each phrase/line on screen until its last sung word ends —
+ * then blank until the next phrase starts.
  */
 function cuesFromVoiceStarts(
   lines: readonly string[],
@@ -805,16 +1005,16 @@ function cuesFromVoiceStarts(
     const rawEnd = voiceEndsIn[index];
     let endMs =
       typeof rawEnd === "number" && Number.isFinite(rawEnd)
-        ? Math.round(rawEnd)
+        ? Math.round(rawEnd) + LAST_WORD_HOLD_PAD_MS
         : startMs +
           Math.max(
             MIN_PHRASE_MS,
-            Math.floor((nextStart - startMs) * 0.78),
+            Math.floor((nextStart - startMs) * 0.9),
           );
-    // Hold through last word only — never stretch into the next phrase.
+    // Hold through last word of this line — blank before the next lyric line.
     endMs = Math.max(startMs + 500, endMs);
     if (index + 1 < lines.length) {
-      endMs = Math.min(endMs, nextStart);
+      endMs = Math.min(endMs, Math.max(startMs + 500, nextStart - 40));
     } else if (durationMs > 0) {
       endMs = Math.min(endMs, Math.max(startMs + 500, durationMs));
     }
@@ -983,28 +1183,21 @@ export function snapAlignedCuesToSilenceOnsets(
   const startsBuilt = voiceOnsets.map((onset) =>
     cueStartWithAirMs(onset, airMs),
   );
-  // Prefer caption/ASR last-word ends; else first silence after each onset.
+  // Prefer caption/ASR last-word ends; else breath before the next onset.
   const asrEnds = alignedCues.map((c) => Math.max(0, Math.round(c.endMs)));
   const voiceEnds = voiceOnsets.map((onset, i) => {
+    const nextOnset =
+      i + 1 < voiceOnsets.length ? voiceOnsets[i + 1]! : total;
     const asrEnd = asrEnds[i];
     if (
       typeof asrEnd === "number" &&
       Number.isFinite(asrEnd) &&
       asrEnd > onset + 400
     ) {
-      return asrEnd;
+      // Keep last-word clock even if silence snap moved the start slightly.
+      return Math.min(Math.max(asrEnd, onset + 700), nextOnset);
     }
-    const nextOnset =
-      i + 1 < voiceOnsets.length ? voiceOnsets[i + 1]! : total;
-    let end = nextOnset - 80;
-    for (const s of silences) {
-      const silenceStart = Math.max(0, Math.round(s.startMs));
-      if (silenceStart > onset + 250 && silenceStart < nextOnset) {
-        end = silenceStart;
-        break;
-      }
-    }
-    return Math.max(onset + 700, end);
+    return phraseVoiceEndMs(onset, nextOnset, silences);
   });
   const cues = cuesFromVoiceStarts(exactLines, startsBuilt, total, voiceEnds);
   const alignedCount = Math.min(
@@ -1012,8 +1205,8 @@ export function snapAlignedCuesToSilenceOnsets(
     onsets.length,
     voiceOnsets.length,
   );
-  const synced =
-    alignedCount >= Math.max(2, Math.ceil(exactLines.length * 0.35));
+  // Snap without lyric confirmation is not text-synced (WhisperX may still run).
+  const synced = asrTrusted && alignedCount >= Math.max(2, Math.ceil(exactLines.length * 0.35));
   return { cues, alignedCount, synced };
 }
 
@@ -1059,47 +1252,102 @@ export function alignCancioneroLinesToTiming(
   const MIN_LINE_GAP_MS = 850;
   const MIN_PHRASE_MS = 1_200;
 
+  const lineCoverage: number[] = new Array(exactLines.length).fill(0);
+
   for (let li = 0; li < exactLines.length; li++) {
     const lineTok = alignTokens(exactLines[li]!);
     if (lineTok.length === 0) continue;
 
     let bestScore = 0;
     let bestStart = -1;
+    let bestStartIdx = -1;
     let bestEndMs = -1;
     let bestEndCursor = cursor;
+    let bestCoverage = 0;
 
-    // Primary: sequential token-stream match (karaoke-gen forced align).
+    // Primary: sequential token-stream match — take the FULL renglón.
     if (stream.length > 0) {
       const need = Math.max(1, lineTok.length);
       const searchEnd = Math.min(
         stream.length,
         cursor + Math.max(TOKEN_SEARCH_AHEAD, need * 8),
       );
+      // Stay near the previous lock — do not leap to a later chorus repeat.
+      const prevLockMs = li > 0 && starts[li - 1]! >= 0 ? starts[li - 1]! : -1;
+      const earliestMs =
+        prevLockMs >= 0
+          ? prevLockMs + 400
+          : stream[cursor]?.startMs ?? 0;
+      const latestMs = earliestMs + Math.max(18_000, need * 1_800);
+
       for (let i = cursor; i < searchEnd; i++) {
-        const maxJ = Math.min(stream.length, i + need + 3);
+        const onset = stream[i]!.startMs;
+        if (onset < earliestMs - 200) continue;
+        if (onset > latestMs) break;
+        // Window must be able to hold every word of the Biblioteca line.
+        const maxJ = Math.min(stream.length, i + need + 12);
         for (let j = i; j < maxJ; j++) {
+          const windowLen = j - i + 1;
+          // Skip tiny windows that can only cover a fragment of a long line.
+          if (need >= 4 && windowLen < Math.ceil(need * 0.6)) continue;
           const windowToks = stream.slice(i, j + 1).map((t) => t.token);
-          const windowText = windowToks.join(" ");
-          const score = lineTimingScore(lineTok, windowText);
-          // Prefer stronger text match. On near-ties keep the LATER onset —
-          // picking earlier pulled worship tracks into the intro/credits.
+          const coverage = tokenCoverage(lineTok, windowToks);
+          if (coverage < 0.5) continue;
+          const score = lineTimingScore(lineTok, windowToks.join(" "));
           if (score < 0.4) continue;
+          // Sequential karaoke: full coverage first, then earlier onset
+          // (same lyric repeats later — never jump forward on a tie).
+          // Once coverage is full, prefer the SHORTEST window (true last word).
           const better =
             bestStart < 0 ||
-            score > bestScore + 0.02 ||
-            (score >= bestScore - 0.01 &&
-              stream[i]!.startMs > bestStart);
+            coverage > bestCoverage + 0.04 ||
+            (coverage >= bestCoverage - 0.02 && score > bestScore + 0.03) ||
+            (coverage >= bestCoverage - 0.02 &&
+              score >= bestScore - 0.02 &&
+              onset < bestStart - 40) ||
+            (coverage >= 0.95 &&
+              bestCoverage >= 0.95 &&
+              Math.abs(onset - bestStart) <= 80 &&
+              stream[j]!.endMs < bestEndMs) ||
+            (coverage < 0.95 &&
+              coverage >= bestCoverage - 0.02 &&
+              score >= bestScore - 0.02 &&
+              Math.abs(onset - bestStart) <= 80 &&
+              stream[j]!.endMs > bestEndMs);
           if (better) {
             bestScore = score;
-            bestStart = stream[i]!.startMs;
+            bestCoverage = coverage;
+            bestStart = onset;
+            bestStartIdx = i;
             bestEndMs = stream[j]!.endMs;
             bestEndCursor = j + 1;
           }
+          // Full renglón found at this onset — stop growing the window.
+          if (coverage >= 0.95 && windowLen >= need) break;
+        }
+      }
+
+      // Stretch only while coverage of THIS renglón still improves.
+      if (bestStartIdx >= 0 && bestCoverage < 0.95) {
+        const i = bestStartIdx;
+        const extendTo = Math.min(stream.length, i + need + 10);
+        for (let j = bestEndCursor; j < extendTo; j++) {
+          const windowToks = stream.slice(i, j + 1).map((t) => t.token);
+          const coverage = tokenCoverage(lineTok, windowToks);
+          if (coverage <= bestCoverage + 0.005) break;
+          bestCoverage = coverage;
+          bestEndMs = stream[j]!.endMs;
+          bestEndCursor = j + 1;
+          bestScore = Math.max(
+            bestScore,
+            lineTimingScore(lineTok, windowToks.join(" ")),
+          );
+          if (bestCoverage >= 0.98) break;
         }
       }
     }
 
-    // Fallback: multi-cue windows on the raw speech list.
+    // Fallback: multi-cue windows on the raw speech list (still full line).
     if (bestStart < 0) {
       const cueCursor = Math.min(
         speech.length - 1,
@@ -1114,18 +1362,22 @@ export function alignCancioneroLinesToTiming(
       );
       for (let i = Math.max(0, cueCursor); i < searchEnd; i++) {
         let window = "";
-        for (let j = i; j < Math.min(speech.length, i + 4); j++) {
+        for (let j = i; j < Math.min(speech.length, i + 8); j++) {
           window = window ? `${window} ${speech[j]!.text}` : speech[j]!.text;
+          const windowToks = alignTokens(window);
+          const coverage = tokenCoverage(lineTok, windowToks);
+          if (coverage < 0.5) continue;
           const score = lineTimingScore(lineTok, window);
-          if (
-            score >= 0.45 &&
-            (score > bestScore + 0.02 ||
-              (score >= bestScore && bestStart < 0))
-          ) {
+          if (score < 0.45) continue;
+          const better =
+            bestStart < 0 ||
+            coverage > bestCoverage + 0.04 ||
+            (coverage >= bestCoverage - 0.02 && score > bestScore + 0.02);
+          if (better) {
             bestScore = score;
+            bestCoverage = coverage;
             bestStart = speech[i]!.startMs;
             bestEndMs = speech[j]!.endMs;
-            // Advance token cursor past this cue's tokens.
             const cueEnd = speech[j]!.endMs;
             let tokEnd = cursor;
             while (
@@ -1140,12 +1392,18 @@ export function alignCancioneroLinesToTiming(
       }
     }
 
-    if (bestStart >= 0 && bestScore >= 0.4) {
+    // Lock only when we covered most of the renglón (or a strong full match).
+    if (
+      bestStart >= 0 &&
+      bestScore >= 0.4 &&
+      (bestCoverage >= 0.7 || bestScore >= 0.62)
+    ) {
       starts[li] = bestStart;
       ends[li] = Math.max(
         bestStart + MIN_PHRASE_MS,
         bestEndMs > bestStart ? bestEndMs : bestStart + MIN_PHRASE_MS,
       );
+      lineCoverage[li] = bestCoverage;
       cursor = Math.max(cursor + 1, bestEndCursor);
       alignedCount += 1;
     }
@@ -1242,24 +1500,36 @@ export function alignCancioneroLinesToTiming(
       index + 1 < exactLines.length
         ? Math.round(starts[index + 1]!)
         : paddedTotal;
-    // End when THIS phrase's last word finishes — then blank until next air.
-    const voiceEnd =
-      ends[index]! > startMs
-        ? Math.round(ends[index]!)
+    const words = Math.max(1, alignTokens(text).length);
+    // Full renglón floor: ~300ms/word so fragment matches don't cut mid-line.
+    const minByWords = startMs + Math.min(words * 300, nextStart - startMs);
+    const matchedEnd = ends[index]! > startMs ? Math.round(ends[index]!) : -1;
+    const coverage = lineCoverage[index] ?? 0;
+    let voiceEnd =
+      matchedEnd > startMs
+        ? matchedEnd + LAST_WORD_HOLD_PAD_MS
         : startMs +
           Math.max(
             MIN_PHRASE_MS,
-            Math.floor((nextStart - startMs) * 0.78),
+            Math.floor((nextStart - startMs) * 0.9),
           );
+    // Incomplete line match → hold through a full-line duration estimate.
+    if (matchedEnd > startMs && (coverage < 0.85 || matchedEnd + 200 < minByWords)) {
+      voiceEnd = Math.max(voiceEnd, minByWords);
+    }
     let endMs = Math.max(startMs + 500, voiceEnd);
     if (index + 1 < exactLines.length) {
-      endMs = Math.min(endMs, nextStart);
+      // Never spill into the next lyric line (blank until it starts).
+      endMs = Math.min(endMs, Math.max(startMs + 500, nextStart - 40));
+    } else if (durationMs > 0) {
+      endMs = Math.min(endMs, Math.max(startMs + 500, durationMs));
     }
     endMs = Math.max(startMs + 500, endMs);
     return {
       id: `cancionero_${index}`,
       startMs,
       endMs,
+      // Always the exact Biblioteca renglón — never a caption fragment.
       text,
     };
   });

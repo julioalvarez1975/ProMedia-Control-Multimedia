@@ -175,8 +175,8 @@ function applyAirToCues(
       i + 1 < cues.length
         ? cueStartWithAirMs(cues[i + 1]!.startMs, airMs)
         : null;
-    // End = last sung word of THIS phrase (WhisperX/caption end). Blank after.
-    let endMs = Math.max(startMs + 500, Math.round(c.endMs));
+    // End = last sung word of THIS line (+ small pad). Blank after — no stretch.
+    let endMs = Math.max(startMs + 500, Math.round(c.endMs) + 120);
     if (nextDisplayStart != null) {
       endMs = Math.min(endMs, nextDisplayStart);
     }
@@ -299,7 +299,8 @@ export async function alignLyricsWithWhisperx(options: {
         Math.round(Number(c.startMs) || 0) + 500,
         Math.round(Number(c.endMs) || 0),
       ),
-      text: String(c.text ?? lines[i] ?? "").trim(),
+      // Always the full cancionero renglón — WhisperX only supplies clocks.
+      text: String(lines[i] ?? c.text ?? "").trim(),
     })),
     air,
   );

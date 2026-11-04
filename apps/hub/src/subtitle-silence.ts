@@ -9,8 +9,12 @@ import {
   resolveFfmpegBin,
 } from "./subtitle-bins.js";
 
-/** Air before the sung phrase after audio analysis (0 = on the voice). */
-export const SILENCE_AIR_ANTICIPATION_MS = 0;
+/**
+ * Show the next phrase lyric this many ms before the voice returns after a
+ * breath. Phrases are words until the singer breathes; during the silence the
+ * overlay blanks, then the following Biblioteca line appears early.
+ */
+export const SILENCE_AIR_ANTICIPATION_MS = 400;
 
 /** Minimum quiet stretch to count as a real phrase break. */
 export const MIN_REAL_SILENCE_MS = 280;

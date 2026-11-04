@@ -5,7 +5,7 @@
       "songId": "619fa62b5e7cd1b00c63",
       "songTitle": "Vasijas Rotas",
       "source": "manual",
-      "updatedAt": "2026-10-29T03:38:03.357Z"
+      "updatedAt": "2026-11-04T00:22:15.223Z"
     },
     "yt:JGw1FRCpL94": {
       "songId": "4d15bda3598ebaff4ed4",
@@ -23,7 +23,13 @@
       "songId": "6185ec43f6aeb231879e",
       "songTitle": "Vida de Rico",
       "source": "manual",
-      "updatedAt": "2026-11-03T14:29:50.449Z"
+      "updatedAt": "2026-11-03T15:14:51.905Z"
+    },
+    "yt:_RRoI9yrL78": {
+      "songId": "8a7065087eac1c0877a1",
+      "songTitle": "Yo te Busco",
+      "source": "manual",
+      "updatedAt": "2026-11-04T00:49:44.443Z"
     }
   },
   "byTitle": {
@@ -31,7 +37,7 @@
       "songId": "619fa62b5e7cd1b00c63",
       "songTitle": "Vasijas Rotas",
       "source": "manual",
-      "updatedAt": "2026-10-29T03:38:03.357Z"
+      "updatedAt": "2026-11-04T00:22:15.223Z"
     },
     "marcos witt dios ha sido fiel": {
       "songId": "4d15bda3598ebaff4ed4",
@@ -55,13 +61,25 @@
       "songId": "6185ec43f6aeb231879e",
       "songTitle": "Vida de Rico",
       "source": "manual",
-      "updatedAt": "2026-11-03T14:29:50.449Z"
+      "updatedAt": "2026-11-03T15:14:51.905Z"
     },
     "vida de rico": {
       "songId": "6185ec43f6aeb231879e",
       "songTitle": "Vida de Rico",
       "source": "manual",
       "updatedAt": "2026-11-03T14:29:50.449Z"
+    },
+    "yo te busco": {
+      "songId": "8a7065087eac1c0877a1",
+      "songTitle": "Yo te Busco",
+      "source": "manual",
+      "updatedAt": "2026-11-04T00:49:44.443Z"
+    },
+    "marcos witt yo te busco": {
+      "songId": "8a7065087eac1c0877a1",
+      "songTitle": "Yo te Busco",
+      "source": "manual",
+      "updatedAt": "2026-11-04T00:49:44.443Z"
     }
   },
   "timingByMedia": {
