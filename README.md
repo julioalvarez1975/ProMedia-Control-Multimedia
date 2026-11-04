@@ -232,10 +232,36 @@ También: `node scripts/import-bibles.mjs` (crea `bibles/import` si falta y llam
 - Preview ≠ live hasta **En vivo**
 - Transporte de vídeo: play/pausa, ±10 s, inicio/fin, scrubber (tiempos en overlay); mute opcional en preview
 - Con **Agente karaoke** activo, las cues sincronizadas con `mediaClock` se ven en **Vista previa**, **En vivo** y **Output**
+- **En vivo** (botón, doble clic o `G`) es un **interruptor**: si el ítem ya está en vivo, volver a pulsarlo para la proyección y deja Output en negro
 
-### Agente karaoke (cancionero + align — por defecto)
+### Agente karaoke (cancionero + LRCLIB + align — por defecto)
 
-**Nuevo agente** (reemplaza el stack Whisper+Marian parcheado): captions oficiales / SRT-VTT **tal cual** (tiempos y letra), sin Marian ni reloj artificial. 100 % local. YouTube: `yt-dlp` pide la pista del idioma de Control (manual ≫ auto); si faltan, audio + Whisper **`-l <idioma>`** (p. ej. `-l es`). El iframe de YouTube sigue solo en Output.
+El agente pone la **letra** en pantalla sincronizada con la canción (audio del Guion y YouTube). Casi todo corre **en local** (`yt-dlp`, `ffmpeg`, Whisper, WhisperX); la única consulta a internet es la búsqueda opcional de letras en **LRCLIB** (se apaga con `PROMEDIA_LRCLIB=0`). El iframe de YouTube sigue solo en Output.
+
+#### Cómo decide la letra y los tiempos
+
+**Letra** (en este orden; la primera que exista):
+
+1. **Cancionero** (Biblioteca → Canciones): por canción enseñada a mano, memoria de coincidencias previas o título. La letra proyectada es **siempre** la del cancionero, nunca la de un reconocedor de voz.
+2. **LRCLIB** ([lrclib.net](https://lrclib.net), base comunitaria abierta): si el cancionero no tiene la canción, el hub busca por artista, título y duración (±6 s) y usa esa letra. Si trae tiempos por línea, también los usa.
+3. **Subtítulos de YouTube o Whisper:** como último recurso transcribe la letra (`whisper.cpp`) y la alinea con WhisperX. La letra transcrita puede traer errores de oído.
+
+**Tiempos** (de más a menos fiable):
+
+1. Subtítulos oficiales de YouTube o pistas locales `.srt` / `.vtt`.
+2. Relojes de **LRCLIB**, cuando la letra los trae línea a línea.
+3. **WhisperX** (alineación forzada con wav2vec2): pone cada línea sobre el audio.
+4. Reparto uniforme como último recurso.
+
+El **silencio** del audio solo sirve para **blanquear** la pantalla cuando el cantante respira, y la siguiente línea aparece **400 ms antes** de que vuelva la voz. Una frase dura mientras haya palabras cantadas.
+
+**Rendimiento y cambio de canción**
+
+- Cada canción procesada queda en un **caché por canción** en el hub: al volver a ponerla **En vivo** las líneas se restauran al instante (≈0,1 s) sin recalcular.
+- Si añadís varias canciones al Guion seguidas, se procesan **en cola** una tras otra.
+- Añadir algo al Guion mientras otra canción se proyecta **no** borra su letra; la nueva se alinea al ponerla En vivo.
+- Un mismo disparo repetido (Go Live, `set` de Control) **no reinicia** un trabajo que ya está corriendo.
+- El caché vive en la memoria del hub: al reiniciarlo se pierde y hay que recargar Control.
 
 **Dependencias en el PATH (Mac)**
 
@@ -246,6 +272,15 @@ brew install yt-dlp ffmpeg whisper-cpp
 Reiniciá el hub tras instalar. Overrides: `FFMPEG_PATH`, `YT_DLP_PATH`, `WHISPER_CPP_PATH`.
 
 En **macOS** (y en cualquier host) el hub usa **whisper.cpp exclusivamente** cuando `whisper-cli` está en el PATH. **No carga** Xenova/ONNX en el modo por defecto (`SUBTITLE_ASR_BACKEND=auto`). Sin `whisper-cli`, falla con `whisper_cpp_missing` — salvo que haya **pistas locales** (abajo) o captions de YouTube.
+
+**WhisperX (opcional, alineación acústica)**
+
+Pone cada línea de la letra sobre el audio con un modelo wav2vec2. Se usa cuando no hay subtítulos oficiales ni tiempos de LRCLIB.
+
+- El hub lo busca en un entorno Python (3.12) en `data/models/whisperx-venv/` (o `apps/hub/.venv-whisperx/`). Otro intérprete: `SUBTITLE_WHISPERX_PYTHON=/ruta/a/python`.
+- El modelo de alineación en español (`jonatasgrosman/wav2vec2-large-xlsr-53-spanish`, ~2,4 GB) se descarga **una vez** en `data/models/`.
+- En CPU una canción tarda del orden de **medio minuto o más**. Ajustes: `SUBTITLE_WHISPERX_DEVICE` (default `auto`), `SUBTITLE_WHISPERX_ALIGN_MODEL`, `SUBTITLE_WHISPERX_TIMEOUT_MS` (default 180 000).
+- Sin WhisperX, el karaoke funciona igual con los tiempos de LRCLIB o de los subtítulos; el hub avisa en el log (`whisperx unavailable`).
 
 #### Agente alternativo local (recomendado si Whisper falla en Mac)
 
@@ -263,11 +298,11 @@ YouTube con captions oficiales en el idioma de Control es el camino de referenci
 1. Arrancá ProMedia (`pnpm dev` / launcher) y abrí **Control**
 2. Añadí un **vídeo/audio local** (pestaña Audio del Guion incluida) o un **YouTube** público al Guion
 3. Pulsá **Agente karaoke** en la barra (junto a **Proyectar** / **Idioma**; queda activo). El idioma **sigue el selector Idioma** de Control (ES / EN / PT / FR / ZH)
-4. Poné el ítem **En vivo**. Prioridad **letra real**:
-   - **Audio (Guion) y YouTube (karaoke-gen / Lyricsync):** busca en el **cancionero** (Biblioteca → Canciones). Match → letra **exacta** + forced align a captions/Whisper (reloj únicamente; Whisper recibe `-prompt` de la letra). Overlay en grupos de **2 líneas** (máx. **3**); **Adelante −1 s**. Sin match → **modal** (no inventa letra).
+4. El agente empieza a procesar **al añadir** el ítem al Guion (descarga, lectura de silencios, letra y alineación). Esperá a que termine y poné el ítem **En vivo** **una sola vez**: el botón es un interruptor y, si ya está en vivo, volver a pulsarlo **para la proyección** y deja Output en negro. Letra y tiempos según la sección anterior.
    - Vídeo local (archivo): captions sidecar SRT/VTT o softsubs → si faltan, Whisper `-l <idioma de Control>`
-   - Se filtran etiquetas no-speech (`[MUSIC]`, `[MÚSICA]`, etc.); un job vacío → hint `no_speech`
-5. Overlay: tipografía grande estilo karaoke/IG Reel (`FittedTextStage`), centrada H+V, **1–2 líneas** (máx. **2**), entrada fluida (fade + leve subida). Captions nativos: **Adelante = 0** + `timingMode=exact`. Cancionero: **−1 s** + `exact` (espera la voz; sin intro-hold que se adelanta; respeta renglones del cancionero). ASR fallback: assisted + intro-hold. Tamaño por defecto **XL** (SM–XL junto al botón).
+   - Se filtran etiquetas no-speech (`[MUSIC]`, `[MÚSICA]`, etc.) y fragmentos de menos de 3 caracteres; un job vacío → hint `no_speech`
+   - **Ya no hay modal** si la canción no está en el cancionero: se busca en LRCLIB y, si tampoco está, se transcribe.
+5. Overlay: tipografía grande estilo karaoke/IG Reel (`FittedTextStage`), centrada H+V, **1–2 líneas** (máx. **2**), entrada fluida (fade + leve subida). **Adelante = 0** por defecto (ajustable entre −3 s y 0) y `timingMode=exact`; el ASR de último recurso usa assisted + intro-hold. Tamaño por defecto **XL** (SM–XL junto al botón).
 
 **Primera ejecución (descarga de modelos)**
 
@@ -288,6 +323,8 @@ YouTube con captions oficiales en el idioma de Control es el camino de referenci
 - Vídeos con restricción de edad / privados / bloqueados: error claro en el tooltip (sin cloud STT)
 - Canciones de Biblioteca **solo texto** (sin pista de audio): el agente no hace STT (aviso)
 - Primera transcripción puede tardar (descarga + CPU); las siguientes del mismo archivo / videoId usan caché
+- **LRCLIB** es una base **comunitaria**: la calidad varía (errores, versiones en vivo con otros tiempos) y el **uso público de la letra** (derechos de autor / licencia como CCLI) es **responsabilidad del operador**. Las letras de LRCLIB **no se guardan** en la Biblioteca; si querés fijar una, creala en Biblioteca → Canciones
+- Sin internet o con LRCLIB caído, el agente sigue con subtítulos de YouTube o Whisper
 
 Env útiles: `SUBTITLE_MODELS_ROOT`, `SUBTITLE_DATA_ROOT`, `SUBTITLE_ASR_BACKEND`, `SUBTITLE_WHISPER_CPP_MODEL`, `SUBTITLE_WHISPER_CPP_MODEL_URL`, `SUBTITLE_WHISPER_CPP_MIN_BYTES`, `SUBTITLE_WHISPER_MODEL`, `SUBTITLE_WHISPER_REVISION`, `FFMPEG_PATH`, `YT_DLP_PATH`, `WHISPER_CPP_PATH`
 
@@ -336,7 +373,7 @@ En desarrollo el **WebSocket** va directo al hub (`ws://<host>:8787`); REST por 
 
 - Pantalla completa en el proyector / 2.º display
 - Sincroniza reproducción con **`mediaClock`** del hub (play/pausa/seek desde Control)
-- **YouTube / Audio:** Output reporta el `currentTime` real al hub (~250 ms) para que cancionero/cues sigan la voz (no el reloj de pared de En vivo); seek solo en scrub / Go Live
+- **YouTube / Audio:** Output reporta el `currentTime` real al hub (~250 ms) para que cancionero/cues sigan la voz (no el reloj de pared de En vivo); seek solo en scrub / Go Live. Es el **único** mensaje que el hub acepta de Output (que por lo demás no puede modificar la sesión). Si el hub deja de recibirlo (>0,5 s), la posición se **congela** en vez de adelantarse
 - **YouTube:** una sola iframe en Output (Preview/En vivo muestran thumb + transporte; no segundo embed)
 - **Subtítulos** (agente activo): overlay inferior sincronizado con `mediaClock` (mismo instante que Vista previa)
 - Escenas Logo / Negro / Clear son overlays (no cortan el reloj de medios)
@@ -364,6 +401,10 @@ Ver `.env.example`. Las más relevantes:
 | `SUBTITLE_WHISPER_REVISION` | Revisión HF del modelo (default `main`) |
 | `FFMPEG_PATH` | Binario ffmpeg para extraer audio (default `ffmpeg`) |
 | `YT_DLP_PATH` | Binario yt-dlp para audio de YouTube (default `yt-dlp`) |
+| `PROMEDIA_LRCLIB` | `0` apaga la búsqueda de letras en LRCLIB (default: activa) |
+| `SUBTITLE_WHISPERX_PYTHON` | Intérprete Python con WhisperX (default `data/models/whisperx-venv/bin/python`) |
+| `SUBTITLE_WHISPERX_DEVICE` / `SUBTITLE_WHISPERX_ALIGN_MODEL` | Dispositivo (`auto`) y modelo wav2vec2 de la alineación |
+| `SUBTITLE_WHISPERX_TIMEOUT_MS` | Tiempo máximo de una alineación (default 180 000) |
 
 Tamaños GAM del header: 970×90, 728×90, 320×50, 320×100 (+ fluid).
 
@@ -372,7 +413,7 @@ Tamaños GAM del header: 970×90, 728×90, 320×50, 320×100 (+ fluid).
 ## Actualizar y troubleshooting
 
 ```bash
-cd /ruta/a/AgentEvolver
+cd /ruta/a/ProMedia
 git pull
 # Si el launcher del Escritorio es copia vieja, volvé a copiar Abrir-ProMedia.*
 ```
@@ -383,6 +424,8 @@ git pull
 | Puerto ocupado | Matá el PID (tabla arriba) o cerrá la Terminal anterior |
 | Vite no es 5173 | Leé la URL `Local:` en la Terminal o el archivo `.promedia-ready-url` |
 | Hub caído | `curl -s http://localhost:8787/health` — debe ser JSON `ok: true` |
+| Se reinició el hub y Control "perdió" todo | La sesión vive en memoria: recargá Control y volvé a añadir el Guion (o cargá un guion guardado) |
+| Se ve el video pero no la letra | Esperá a que el agente termine antes de **En vivo** y pulsalo una sola vez; mirá el log `[hub] [subtitle]` (`lrclib hit`, `karaoke … published=true`) |
 | Segunda ventana del launcher | Esperado: lock; no mata Vite (fix SIGTERM 143) |
 | Popup bloqueado | Permití popups o usá el enlace **Abrir salida** / atajo `O` |
 
@@ -394,7 +437,7 @@ git pull
 - Guion multi-tipo con drag, multi-select, guardar/cargar
 - Texto: import PDF (hub), XML, `.txt`/`.md` → slides
 - Preview ≠ live; transporte vídeo + `mediaClock`
-- **Agente karaoke** (letra cancionero + forced align; captions/Whisper solo tiempos; modal si no hay match)
+- **Agente karaoke** (letra del cancionero; si falta, LRCLIB; tiempos por captions, LRCLIB o WhisperX; caché por canción)
 - Escenas, temas, transiciones 0,5 s en Output
 - i18n ES · EN · PT · FR · ZH
 - Banner GAM opcional en Control
