@@ -1798,7 +1798,19 @@ async function runSubtitleJob(
     });
     if (!isCurrent(sessionId, gen)) return;
 
-    if (silenceAuto && silenceAuto.onsetsMs.length > 0 && asrLines.length > 0) {
+    // Silence can only place a line per onset. With far fewer onsets than ASR
+    // lines (e.g. 10 onsets / 28 lines) it would squash the lyric chart, so
+    // keep Whisper's own clocks and use silence only to blank at the breath.
+    const silenceCoversLines =
+      silenceAuto != null &&
+      silenceAuto.onsetsMs.length >= Math.ceil(asrLines.length * 0.7);
+
+    if (
+      silenceAuto &&
+      silenceAuto.onsetsMs.length > 0 &&
+      asrLines.length > 0 &&
+      silenceCoversLines
+    ) {
       const aligned = alignCancioneroLinesToSilence(
         asrLines,
         silenceAuto.onsetsMs,
@@ -1827,6 +1839,38 @@ async function runSubtitleJob(
         hint: aligned.synced ? "asr_silence_aligned" : "asr_silence_partial",
       });
       if (okSilence) return;
+    }
+
+    if (silenceAuto && shapedAsr.length > 0 && !silenceCoversLines) {
+      const blanked = packKaraokeDisplayCues(
+        blankCuesAtPhraseSilence(
+          shapedAsr,
+          silenceAuto.silences,
+          silenceAuto.durationMs,
+          SILENCE_AIR_ANTICIPATION_MS,
+        ),
+        1,
+        1,
+      );
+      console.log(
+        `[subtitle] ASR clocks + silence blank lines=${shapedAsr.length} onsets=${silenceAuto.onsetsMs.length} silences=${silenceAuto.silences.length} airMs=${SILENCE_AIR_ANTICIPATION_MS}`,
+      );
+      const okClocks = await finishWithCues({
+        sessionId,
+        gen,
+        itemId: resolved.item.id,
+        assetId: silenceAuto.assetId || assetId,
+        cues: blanked,
+        sourceLang:
+          asr.sourceLang ?? (asr.whisperTranslatedToEn ? "en" : targetLang),
+        targetLang,
+        alreadyEnglish: asr.whisperTranslatedToEn,
+        nativeTrack: true,
+        preserveLyricsSource: true,
+        timingMode: "exact",
+        hint: "asr_clocks_blank",
+      });
+      if (okClocks) return;
     }
 
     const okAsr = await finishWithCues({

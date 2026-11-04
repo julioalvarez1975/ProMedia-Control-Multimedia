@@ -269,6 +269,7 @@ export async function findCancioneroSongCandidates(
   const titleSet = new Set<string>();
   for (const raw of query.titles) {
     for (const v of titleVariants(raw)) {
+      if (titleSet.has(v)) continue;
       titleSet.add(v);
       tried.push(v);
     }
