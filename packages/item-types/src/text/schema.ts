@@ -4,7 +4,10 @@ import type {
   TextPlaylistItem,
   TextSlide,
 } from "@promedia/shared";
-import { resolveProjectionTextSlides } from "@promedia/shared";
+import {
+  resolveLinesPerSlide,
+  resolveProjectionTextSlides,
+} from "@promedia/shared";
 
 const ALIGNS: ReadonlySet<TextAlign> = new Set(["left", "center", "right"]);
 
@@ -41,6 +44,12 @@ export function isTextPayload(value: unknown): value is TextPayload {
   if (p.chunkLines !== undefined && typeof p.chunkLines !== "boolean") {
     return false;
   }
+  if (
+    p.linesPerSlide !== undefined &&
+    (typeof p.linesPerSlide !== "number" || !Number.isFinite(p.linesPerSlide))
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -64,14 +73,22 @@ export function normalizeTextPayload(payload: TextPayload): TextPayload {
     id: slide.id,
     lines: slide.lines.map((line) => String(line)),
   }));
+  const title = payload.title?.trim() ? payload.title.trim() : undefined;
+  const align = payload.align ?? "center";
+  // Songs keep ONE lyric block (blank lines = phrase ends) and are paged at
+  // projection time by `linesPerSlide`.
+  if (payload.linesPerSlide !== undefined) {
+    return {
+      title,
+      align,
+      slides: mapped.length > 0 ? mapped : [{ id: "lyrics", lines: [""] }],
+      linesPerSlide: resolveLinesPerSlide(payload.linesPerSlide),
+    };
+  }
   // `chunkLines: false` (legacy songs) is dropped: slides are re-split into
   // one blank-line-separated phrase each.
   const slides = resolveProjectionTextSlides({ slides: mapped });
-  return {
-    title: payload.title?.trim() ? payload.title.trim() : undefined,
-    align: payload.align ?? "center",
-    slides,
-  };
+  return { title, align, slides };
 }
 
 export function createEmptyTextPayload(title = ""): TextPayload {
