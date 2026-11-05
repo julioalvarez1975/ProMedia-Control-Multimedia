@@ -1466,6 +1466,17 @@ body {
   letter-spacing: 0.02em;
 }
 
+.preview-tb-btn.preview-tb-logo-upload {
+  min-width: 1.9rem;
+  width: 1.9rem;
+  min-height: 2.7rem;
+  padding: 0.2rem;
+  margin-left: -0.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .preview-tb-scene {
   display: inline-flex;
   flex-direction: column;
@@ -2322,15 +2333,15 @@ body {
   animation: pm-scene-logo-in 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-/* Corner watermark — branding logo, top-right over live content */
+/* Corner watermark — branding logo, top-right: 10% of stage width, 5% margins */
 .scene-watermark {
   position: absolute;
-  top: clamp(0.6rem, 2.2vh, 1.4rem);
-  right: clamp(0.6rem, 2.2vw, 1.4rem);
+  top: 5vh;
+  right: 5vw;
   z-index: 40;
   pointer-events: none;
-  max-width: min(18vw, 7.5rem);
-  max-height: min(14vh, 5.5rem);
+  width: 10vw;
+  max-height: 10vh;
   display: flex;
   align-items: flex-start;
   justify-content: flex-end;
@@ -2338,18 +2349,18 @@ body {
 }
 
 .scene-watermark-img {
-  max-width: 100%;
-  max-height: min(14vh, 5.5rem);
-  width: auto;
+  width: 100%;
   height: auto;
+  max-height: 10vh;
   display: block;
   object-fit: contain;
+  object-position: right top;
   filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.45));
   opacity: 0.92;
 }
 
 .scene-watermark-fallback {
-  font-size: clamp(0.7rem, 1.4vw, 0.95rem);
+  font-size: clamp(0.7rem, 1.4vw, 1.1rem);
   color: rgba(232, 238, 246, 0.85);
   letter-spacing: 0.04em;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);

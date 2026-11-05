@@ -424,6 +424,27 @@ export function IconSceneLogo(props: IconProps) {
   );
 }
 
+/** Upload / replace the permanent logo image. */
+export function IconUploadLogo(props: IconProps) {
+  return (
+    <svg {...svgProps({ ...props, size: props.size ?? 16 })}>
+      <path
+        d="M12 15V4m0 0L8 8m4-4 4 4"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 /** Corner watermark mark. */
 export function IconWatermark(props: IconProps) {
   return (
