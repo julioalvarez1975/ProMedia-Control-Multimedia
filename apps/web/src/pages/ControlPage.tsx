@@ -58,6 +58,7 @@ import {
   IconSceneEmpty,
   IconSceneLogo,
   IconWatermark,
+  IconUploadLogo,
 } from "../components/UiIcons";
 import { useLocale } from "../locale/LocaleContext";
 import { useControlShortcuts } from "../hooks/useControlShortcuts";
@@ -1425,8 +1426,15 @@ export function ControlPage() {
     session.setSceneMode("black");
   };
 
+  const hasCustomLogo = Boolean(session.snapshot?.live.logoUpdatedAt);
+
   const showLogoScene = () => {
     if (!ensureWsOrHint()) {
+      return;
+    }
+    // No saved image yet → ask for one instead of projecting the default mark.
+    if (!hasCustomLogo) {
+      openLogoFilePicker();
       return;
     }
     session.setSceneMode("logo");
@@ -2312,6 +2320,16 @@ export function ControlPage() {
                     ? t("control.sceneLogoUploading")
                     : t("control.sceneLogo")}
                 </span>
+              </button>
+              <button
+                type="button"
+                className="btn preview-tb-btn preview-tb-logo-upload"
+                disabled={!canMutate || uploadingLogo}
+                title={t("control.sceneLogoUpload")}
+                aria-label={t("control.sceneLogoUpload")}
+                onClick={openLogoFilePicker}
+              >
+                <IconUploadLogo />
               </button>
               <button
                 type="button"
