@@ -35,6 +35,14 @@ export function TextItemEditor({ initial, onSave, onCancel }: TextItemEditorProp
       ? initial.slides.map((s) => ({ ...s, lines: [...s.lines] }))
       : [{ id: cryptoRandomId(), lines: [""] }],
   );
+  // Songs (linesPerSlide set) edit as ONE block; blank lines mark phrase ends.
+  const songBlock = initial.linesPerSlide !== undefined;
+  const [songText, setSongText] = useState(() =>
+    initial.slides.map((s) => s.lines.join("\n")).join("\n\n"),
+  );
+  const [songBlockId] = useState(
+    () => initial.slides[0]?.id || cryptoRandomId(),
+  );
   const [importHint, setImportHint] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -109,6 +117,15 @@ export function TextItemEditor({ initial, onSave, onCancel }: TextItemEditorProp
   };
 
   const save = () => {
+    if (songBlock) {
+      onSave({
+        title: title.trim() || undefined,
+        align,
+        slides: [{ id: songBlockId, lines: textToLines(songText) }],
+        linesPerSlide: initial.linesPerSlide,
+      });
+      return;
+    }
     onSave({
       title: title.trim() || undefined,
       align,
@@ -118,6 +135,42 @@ export function TextItemEditor({ initial, onSave, onCancel }: TextItemEditorProp
       ),
     });
   };
+
+  if (songBlock) {
+    return (
+      <div className="text-editor">
+        <label className="text-editor-field">
+          {t("text.editorTitle")}
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder={t("text.editorTitlePlaceholder")}
+          />
+        </label>
+        <p className="text-editor-import-hint">{t("text.songBlockHint")}</p>
+        <div className="text-editor-slides">
+          <div className="text-editor-slide">
+            <textarea
+              rows={16}
+              value={songText}
+              onChange={(e) => setSongText(e.target.value)}
+              placeholder={t("library.stanzaPlaceholder")}
+            />
+          </div>
+        </div>
+        <div className="text-editor-actions">
+          <div className="text-editor-actions-right">
+            <button type="button" className="btn" onClick={onCancel}>
+              {t("text.cancel")}
+            </button>
+            <button type="button" className="btn btn-primary" onClick={save}>
+              {t("text.save")}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="text-editor">

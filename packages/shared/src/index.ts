@@ -24,6 +24,12 @@ export type TextPayload = {
    * phrases split every 6 lines), so those legacy items still navigate.
    */
   chunkLines?: boolean;
+  /**
+   * Lines per projected slide. Unset = {@link TEXT_PROJECTION_LINES} (6).
+   * Songs set 2: the item stays one lyric block (blank lines mark phrase
+   * ends) and ←/→ step two lines at a time.
+   */
+  linesPerSlide?: number;
 };
 
 export type ImageFit = "contain" | "cover" | "fill";
@@ -1041,6 +1047,18 @@ export function itemHasSlides(item: PlaylistItem): boolean {
  */
 export const TEXT_PROJECTION_LINES = 6;
 
+/** Lines per page for songs added to the Guion (one block, 2 lines at a time). */
+export const SONG_LINES_PER_SLIDE = 2;
+
+/** Clamp a payload's `linesPerSlide` to 1…TEXT_PROJECTION_LINES (default 6). */
+export function resolveLinesPerSlide(value: unknown): number {
+  const n = Math.trunc(Number(value));
+  if (!Number.isFinite(n) || n < 1) {
+    return TEXT_PROJECTION_LINES;
+  }
+  return Math.min(n, TEXT_PROJECTION_LINES);
+}
+
 /**
  * Absolute max visual rows for karaoke projection (pack + soft-wrap).
  * Stage shows 2 large lyric lines at a time.
@@ -1244,12 +1262,19 @@ export function splitSlidesOnBlankLines(slides: TextSlide[]): TextSlide[] {
   return slides.flatMap((slide) => splitSlideOnBlankLines(slide));
 }
 
-/** Resolve slides for projection: one phrase per slide, ≤6 lines each. */
+/**
+ * Resolve slides for projection: pages of `linesPerSlide` lines (default 6);
+ * a blank line always ends a page so phrases never mix on one slide.
+ */
 export function resolveProjectionTextSlides(payload: {
   slides: TextSlide[];
   chunkLines?: boolean;
+  linesPerSlide?: number;
 }): TextSlide[] {
-  return projectionTextSlides(payload.slides);
+  return projectionTextSlides(
+    payload.slides,
+    resolveLinesPerSlide(payload.linesPerSlide),
+  );
 }
 
 /** Slide count used by ←/→ (text/bible after 6-line chunking; presentation = pages). */
@@ -1281,9 +1306,9 @@ export function flattenSongLyrics(song: LibrarySongPayload): LibrarySongPayload 
 }
 
 /**
- * Convert library song → text slides, one per phrase (blank lines in the
- * lyrics separate phrases). ←/→ steps phrase by phrase; a phrase longer than
- * 6 lines is split on projection.
+ * Convert library song → ONE lyric block (blank lines kept as phrase ends).
+ * Projection pages it 2 lines at a time (`linesPerSlide`); ←/→ step through
+ * the whole song and a blank line never lets two phrases share a page.
  */
 export function songToTextPayload(song: LibrarySongPayload): TextPayload {
   const flat = flattenSongLyrics(song);
@@ -1292,12 +1317,10 @@ export function songToTextPayload(song: LibrarySongPayload): TextPayload {
     stanza.lines.length > 0 ? stanza.lines.map((l) => String(l)) : [""];
   const title = flat.title.trim();
   const artist = flat.artist?.trim();
-  const slides = projectionTextSlides([
-    { id: stanza.id || "lyrics", lines },
-  ]);
   return {
     title: artist ? `${title} — ${artist}` : title || undefined,
     align: "center",
-    slides,
+    slides: [{ id: stanza.id || "lyrics", lines }],
+    linesPerSlide: SONG_LINES_PER_SLIDE,
   };
 }
