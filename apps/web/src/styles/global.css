@@ -2325,10 +2325,10 @@ body {
 }
 
 .scene-logo-img {
-  max-width: min(72vw, 28rem);
-  max-height: 40vh;
-  width: auto;
-  height: auto;
+  /* Fill the whole stage; whole image visible (letterboxed, never cropped). */
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
   display: block;
   animation: pm-scene-logo-in 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
