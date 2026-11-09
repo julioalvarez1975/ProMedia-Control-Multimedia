@@ -364,16 +364,6 @@ export async function importPresentationFile(opts: {
   };
 }
 
-export function isPresentationFileName(name: string): boolean {
-  const ext = extOf(name);
-  return (
-    ext === ".pdf" ||
-    ext === ".ppt" ||
-    OFFICE_ZIP_EXTS.has(ext) ||
-    MACRO_EXTS.has(ext)
-  );
-}
-
 export function isMacroPresentationName(name: string): boolean {
   return MACRO_EXTS.has(extOf(name));
 }
