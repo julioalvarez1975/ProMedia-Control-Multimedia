@@ -243,6 +243,7 @@
   "playlist.karaokeBusy": "正在准备卡拉OK（下载与对齐）",
   "playlist.karaokeStale": "卡拉OK 已暂停：其他项目占用了代理",
   "playlist.karaokeFailed": "无法准备卡拉OK",
+  "playlist.karaokePending": "卡拉OK 尚未准备（请使用“准备脚本”）",
   "playlist.dragReorder": "拖动以重新排序",
   "playlist.doubleClickLive": "双击：发送直播",
   "playlist.addMenu": "添加到日程",

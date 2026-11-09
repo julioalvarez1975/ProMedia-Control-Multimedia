@@ -65,20 +65,23 @@ function KaraokePercent({
   progress,
   t,
 }: {
-  progress: SubtitleItemProgress;
+  progress: SubtitleItemProgress & { pending?: boolean };
   t: (key: string) => string;
 }) {
   const state = progress.failed
     ? "failed"
     : progress.ready
       ? "ready"
-      : progress.stale
-        ? "stale"
-        : "busy";
+      : progress.pending
+        ? "pending"
+        : progress.stale
+          ? "stale"
+          : "busy";
   const titleKey = {
     failed: "playlist.karaokeFailed",
     ready: "playlist.karaokeReady",
     stale: "playlist.karaokeStale",
+    pending: "playlist.karaokePending",
     busy: "playlist.karaokeBusy",
   }[state];
   return (
@@ -483,9 +486,16 @@ export function SchedulePanel({
                       <span className="schedule-row-label">
                         {itemLabel(item)}
                       </span>
-                      {karaokeProgress?.[item.id] ? (
+                      {karaokeProgress &&
+                      (item.type === "video" || item.type === "audio") ? (
                         <KaraokePercent
-                          progress={karaokeProgress[item.id]!}
+                          progress={
+                            karaokeProgress[item.id] ?? {
+                              percent: 0,
+                              ready: false,
+                              pending: true,
+                            }
+                          }
                           t={t}
                         />
                       ) : null}

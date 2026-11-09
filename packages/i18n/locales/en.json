@@ -244,6 +244,7 @@
   "playlist.karaokeBusy": "Preparing karaoke (download and alignment)",
   "playlist.karaokeStale": "Karaoke paused: another item took the agent",
   "playlist.karaokeFailed": "Could not prepare the karaoke",
+  "playlist.karaokePending": "Karaoke not prepared yet (use “Preparar Guion”)",
   "playlist.dragReorder": "Drag to reorder",
   "playlist.doubleClickLive": "Double-click: go live",
   "playlist.addMenu": "Add to schedule",

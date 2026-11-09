@@ -244,6 +244,7 @@
   "playlist.karaokeBusy": "Preparando karaoke (descarga y alineación)",
   "playlist.karaokeStale": "Karaoke en pausa: otro elemento tomó el agente",
   "playlist.karaokeFailed": "No se pudo preparar el karaoke",
+  "playlist.karaokePending": "Karaoke sin preparar todavía (usa «Preparar Guion»)",
   "playlist.dragReorder": "Arrastrar para reordenar",
   "playlist.doubleClickLive": "Doble clic en guion = en vivo",
   "playlist.addMenu": "Añadir al guion",

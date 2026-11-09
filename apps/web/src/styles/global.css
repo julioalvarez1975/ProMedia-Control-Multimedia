@@ -4974,3 +4974,8 @@ body.output-route #root {
 .schedule-karaoke-pct.is-failed {
   color: #ff6b6b;
 }
+
+.schedule-karaoke-pct.is-pending {
+  color: #f5c542;
+  opacity: 0.45;
+}

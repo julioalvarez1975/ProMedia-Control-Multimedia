@@ -243,6 +243,7 @@
   "playlist.karaokeBusy": "Preparando karaokê (download e alinhamento)",
   "playlist.karaokeStale": "Karaokê em pausa: outro item assumiu o agente",
   "playlist.karaokeFailed": "Não foi possível preparar o karaokê",
+  "playlist.karaokePending": "Karaokê ainda não preparado (use «Preparar Guion»)",
   "playlist.dragReorder": "Arrastar para reordenar",
   "playlist.doubleClickLive": "Duplo clique: enviar ao vivo",
   "playlist.addMenu": "Adicionar ao roteiro",
