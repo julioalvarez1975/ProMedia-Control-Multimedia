@@ -430,6 +430,30 @@ export function createApiRoutes(): Hono {
     return c.json({ playlist: saved });
   });
 
+  /** Rename a saved playlist (control). */
+  api.patch("/playlists/:id", async (c) => {
+    const access = hubOperatorFromRequest(c);
+    if (!access.ok) {
+      return c.json({ error: access.error }, access.status);
+    }
+    let body: { name?: unknown } = {};
+    try {
+      body = (await c.req.json()) as { name?: unknown };
+    } catch {
+      return c.json({ error: "invalid_json" }, 400);
+    }
+    if (typeof body.name !== "string") {
+      return c.json({ error: "missing_name" }, 400);
+    }
+    const result = await playlistStore.rename(c.req.param("id"), body.name);
+    if ("error" in result) {
+      return c.json({ error: result.error }, result.error === "not_found" ? 404 : 400);
+    }
+    return c.json({
+      playlist: { id: result.id, name: result.name, updatedAt: result.updatedAt },
+    });
+  });
+
   /** Save current session playlist under a name (control). */
   api.post("/sessions/:sessionId/playlists", async (c) => {
     const sessionId = c.req.param("sessionId");
@@ -981,6 +1005,35 @@ export function createApiRoutes(): Hono {
       return c.json({ error: "file_missing" }, 404);
     }
   });
+
+  /**
+   * Copy a Biblioteca image into the session's assets (control) — used to pick
+   * a video cover from the library. Returns the new session asset id.
+   */
+  api.post(
+    "/sessions/:sessionId/library/:libraryItemId/copy-image",
+    async (c) => {
+      const sessionId = c.req.param("sessionId");
+      const credential =
+        bearerToken(c.req.header("authorization")) ??
+        c.req.query("credential");
+      const access = authorizeSessionAccess(sessionId, {
+        credential,
+        requireRole: "control",
+      });
+      if (!access.ok) {
+        return c.json({ error: access.error }, access.status);
+      }
+      const copied = await libraryStore.copyImageToSession({
+        sessionId,
+        libraryItemId: c.req.param("libraryItemId"),
+      });
+      if ("error" in copied) {
+        return c.json({ error: copied.error, message: copied.message }, 400);
+      }
+      return c.json({ assetId: copied.assetId }, 201);
+    },
+  );
 
   /**
    * Copy a library item into the live session playlist (control).
