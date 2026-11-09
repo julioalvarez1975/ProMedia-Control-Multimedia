@@ -1,0 +1,78 @@
+/**
+ * Per-item karaoke readiness for the Guion rows. Derived from the agent state
+ * on every broadcast (`SessionStore.touchSubtitleAgent`), so every path —
+ * live job, restore from cache/disk, error — feeds it without extra wiring.
+ *
+ * The map lives here (not on the agent object) because restores replace the
+ * whole agent state with an older snapshot; the map must survive that.
+ */
+import {
+  subtitleOverallPercent,
+  type SubtitleAgentState,
+  type SubtitleItemProgress,
+} from "@promedia/shared";
+
+const bySession = new Map<string, Map<string, SubtitleItemProgress>>();
+const lastItemBySession = new Map<string, string | null>();
+
+export function forgetItemProgress(sessionId: string): void {
+  bySession.delete(sessionId);
+  lastItemBySession.delete(sessionId);
+}
+
+/**
+ * Update the map from the agent state and return the object to expose.
+ * `playlistItemIds` drops rows that no longer exist in the Guion.
+ */
+export function deriveItemProgress(
+  sessionId: string,
+  agent: SubtitleAgentState,
+  playlistItemIds: readonly string[],
+): Record<string, SubtitleItemProgress> {
+  if (!agent.enabled || agent.status === "off") {
+    bySession.delete(sessionId);
+    lastItemBySession.delete(sessionId);
+    return {};
+  }
+  let map = bySession.get(sessionId);
+  if (!map) {
+    map = new Map();
+    bySession.set(sessionId, map);
+  }
+  const live = new Set(playlistItemIds);
+  for (const id of [...map.keys()]) {
+    if (!live.has(id)) map.delete(id);
+  }
+
+  const itemId = agent.itemId;
+  const prevItem = lastItemBySession.get(sessionId) ?? null;
+  // The agent moved to another item: the previous one, if unfinished, keeps
+  // its last percent but is flagged stale (its job may have been replaced).
+  if (prevItem && prevItem !== itemId) {
+    const prev = map.get(prevItem);
+    if (prev && !prev.ready && !prev.failed) {
+      map.set(prevItem, { ...prev, stale: true });
+    }
+  }
+  lastItemBySession.set(sessionId, itemId);
+
+  if (itemId && live.has(itemId) && agent.status !== "idle") {
+    const before = map.get(itemId);
+    if (agent.status === "ready" && agent.cues.length > 0) {
+      map.set(itemId, { percent: 100, ready: true });
+    } else if (agent.status === "error" || agent.status === "unsupported") {
+      map.set(itemId, { percent: before?.percent ?? 0, ready: false, failed: true });
+    } else {
+      const computed = subtitleOverallPercent(agent.status, agent.downloadPercent);
+      // Rising only; a finished item that is re-run restarts from its phase.
+      const base = before && !before.ready && !before.failed ? before.percent : 0;
+      map.set(itemId, {
+        percent: Math.max(computed, base),
+        ready: false,
+      });
+    }
+  } else if (itemId && live.has(itemId) && agent.status === "idle" && !map.has(itemId)) {
+    map.set(itemId, { percent: 0, ready: false });
+  }
+  return Object.fromEntries(map);
+}

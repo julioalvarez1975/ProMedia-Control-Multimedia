@@ -1,3 +1,4 @@
+import { deriveItemProgress } from "./subtitle-item-progress.js";
 import { persistReadyAgent } from "./subtitle-aligned-store.js";
 import { rememberReadyAgent } from "./subtitle-ready-cache.js";
 import type {
@@ -339,6 +340,14 @@ export class SessionStore {
     rememberReadyAgent(session.id, session.live.subtitleAgent);
     // …and on disk for YouTube videos, so a hub restart does not lose them.
     persistReadyAgent(session.live.subtitleAgent);
+    session.live.subtitleAgent = {
+      ...session.live.subtitleAgent,
+      itemProgress: deriveItemProgress(
+        session.id,
+        session.live.subtitleAgent,
+        session.playlist.items.map((i) => i.id),
+      ),
+    };
     return this.bumpUpdated(session);
   }
 

@@ -458,8 +458,52 @@ export type SubtitleAgentState = {
   lyricsSource?: "cancionero" | "lrclib" | null;
   /** "Preparar Guion" queue progress (hub-driven). */
   prepare?: SubtitlePrepareState | null;
+  /** Real yt-dlp download progress (0–100) of the item being processed. */
+  downloadPercent?: number | null;
+  /**
+   * Per-item readiness shown in the Guion rows: percent rising to 100 (green =
+   * ready to project). Hub-derived; see `subtitleOverallPercent`.
+   */
+  itemProgress?: Record<string, SubtitleItemProgress>;
   updatedAt: string | null;
 };
+
+/** One Guion row's karaoke readiness. */
+export type SubtitleItemProgress = {
+  /** 0–100. 100 only when the karaoke is ready to project. */
+  percent: number;
+  ready: boolean;
+  /** The job failed (hint explains why on the toolbar). */
+  failed?: boolean;
+  /** Another item took over the agent: percent is the last known value. */
+  stale?: boolean;
+};
+
+/**
+ * Overall readiness (0–100) from the agent phase. Only the download has a real
+ * percentage (0–40 band); later phases advance in fixed steps, never faked.
+ */
+export function subtitleOverallPercent(
+  status: SubtitleAgentStatus,
+  downloadPercent?: number | null,
+): number {
+  switch (status) {
+    case "downloading": {
+      const d = Math.max(0, Math.min(100, downloadPercent ?? 0));
+      return Math.round(d * 0.4);
+    }
+    case "extracting":
+      return 50;
+    case "transcribing":
+      return 70;
+    case "translating":
+      return 90;
+    case "ready":
+      return 100;
+    default:
+      return 0;
+  }
+}
 
 /** Batch pre-alignment of every A/V item in the Guion. */
 export type SubtitlePrepareState = {

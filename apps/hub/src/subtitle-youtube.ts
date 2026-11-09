@@ -53,6 +53,7 @@ function assertSafeVideoId(videoId: string): void {
 function runCmd(
   bin: string,
   args: string[],
+  onStdout?: (chunk: string) => void,
 ): Promise<{ code: number; stderr: string; stdout: string }> {
   ensureAugmentedPath();
   return new Promise((resolve, reject) => {
@@ -66,7 +67,9 @@ function runCmd(
       stderr += chunk.toString("utf8");
     });
     child.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
+      const text = chunk.toString("utf8");
+      stdout += text;
+      onStdout?.(text);
     });
     child.on("error", reject);
     child.on("close", (code) => {
@@ -280,18 +283,43 @@ async function invokeYtDlpBestaudio(options: {
   bin: string;
   cacheDir: string;
   url: string;
+  onProgress?: (percent: number) => void;
 }): Promise<{ code: number; stderr: string; stdout: string }> {
-  const { bin, cacheDir, url } = options;
+  const { bin, cacheDir, url, onProgress } = options;
   await mkdir(cacheDir, { recursive: true });
   return runCmd(bin, [
     "--no-playlist",
     "--no-warnings",
+    "--newline",
     "-f",
     "bestaudio/best",
     ...youtubeYtDlpOutputArgs(cacheDir),
     "--",
     url,
-  ]);
+  ], onProgress ? progressLineParser(onProgress) : undefined);
+}
+
+/** Parse yt-dlp `[download]  42.3% of …` lines (split across chunks). */
+export function parseYtDlpPercent(text: string): number | null {
+  let last: number | null = null;
+  for (const m of text.matchAll(/\[download\]\s+(\d+(?:\.\d+)?)%/g)) {
+    last = Number(m[1]);
+  }
+  return last;
+}
+
+function progressLineParser(
+  onProgress: (percent: number) => void,
+): (chunk: string) => void {
+  let tail = "";
+  return (chunk) => {
+    const text = tail + chunk;
+    const cut = text.lastIndexOf("\n");
+    const complete = cut >= 0 ? text.slice(0, cut) : "";
+    tail = cut >= 0 ? text.slice(cut + 1) : text;
+    const pct = parseYtDlpPercent(complete);
+    if (pct != null) onProgress(pct);
+  };
 }
 
 async function remuxCachedToWav(
@@ -333,8 +361,10 @@ async function remuxCachedToWav(
 export async function ensureYoutubeAudio(options: {
   videoId: string;
   sourceUrl: string;
+  /** Real download percent (0–100) while yt-dlp runs. */
+  onProgress?: (percent: number) => void;
 }): Promise<YoutubeAudioResult> {
-  const { videoId, sourceUrl } = options;
+  const { videoId, sourceUrl, onProgress } = options;
   assertSafeVideoId(videoId);
   const assetId = `yt_${videoId}`;
   const dirs = await ensureSubtitleDirs();
@@ -383,7 +413,8 @@ export async function ensureYoutubeAudio(options: {
 
     let result: { code: number; stderr: string; stdout: string };
     try {
-      result = await invokeYtDlpBestaudio({ bin, cacheDir, url });
+      onProgress?.(0);
+      result = await invokeYtDlpBestaudio({ bin, cacheDir, url, onProgress });
     } catch (err) {
       if (missingBinHintFromError(err, "yt_dlp")) {
         throw new Error("yt_dlp_missing");

@@ -2239,6 +2239,9 @@ export function ControlPage() {
         {/* Left column: Guion list (full height). Live goes via Output / En vivo. */}
         <div className="control-guion-column">
           <SchedulePanel
+            karaokeProgress={
+              subtitleAgent.enabled ? subtitleAgent.itemProgress : undefined
+            }
             items={items}
             selectedItemId={selectedItemId}
             liveItemId={liveItemId}

@@ -1,3 +1,4 @@
+import { forgetItemProgress } from "./subtitle-item-progress.js";
 import type {
   AudioPlaylistItem,
   HubMessage,
@@ -143,6 +144,7 @@ export function disposeSubtitleSession(sessionId: string): void {
   inflightJobs.delete(sessionId);
   pendingAdds.delete(sessionId);
   forgetReadyAgent(sessionId);
+  forgetItemProgress(sessionId);
 }
 
 function bumpJob(sessionId: string): number {
@@ -178,6 +180,25 @@ function ytHardFailInBackoff(sessionId: string): boolean {
     return false;
   }
   return true;
+}
+
+/**
+ * yt-dlp download percent → agent state (drives the Guion row percentage).
+ * Throttled to whole-percent changes; ignored once the job is superseded.
+ */
+function ytDownloadProgress(
+  sessionId: string,
+  gen: number,
+): (percent: number) => void {
+  let last = -1;
+  return (percent) => {
+    const pct = Math.max(0, Math.min(100, Math.round(percent)));
+    if (pct === last || !isCurrent(sessionId, gen)) return;
+    last = pct;
+    const live = sessionStore.get(sessionId);
+    if (!live?.live.subtitleAgent?.enabled) return;
+    patchAndBroadcast(live, { downloadPercent: pct });
+  };
 }
 
 function patchAndBroadcast(
@@ -534,6 +555,7 @@ async function fetchSilenceSpeechOnsets(options: {
         const yt = await ensureYoutubeAudio({
           videoId: resolved.youtube.videoId,
           sourceUrl: resolved.youtube.sourceUrl,
+          onProgress: ytDownloadProgress(sessionId, gen),
         });
         if (!isCurrent(sessionId, gen)) return null;
         mediaPath = yt.mediaPath;
@@ -626,6 +648,7 @@ async function fetchCancioneroTimingCues(options: {
       const yt = await ensureYoutubeAudio({
         videoId: resolved.youtube.videoId,
         sourceUrl: resolved.youtube.sourceUrl,
+        onProgress: ytDownloadProgress(sessionId, gen),
       });
       if (!isCurrent(sessionId, gen)) return null;
       mediaPath = yt.mediaPath;
@@ -918,6 +941,7 @@ async function tryCancioneroLyricPath(options: {
         const yt = await ensureYoutubeAudio({
           videoId: resolved.youtube.videoId,
           sourceUrl: resolved.youtube.sourceUrl,
+          onProgress: ytDownloadProgress(sessionId, gen),
         });
         if (!isCurrent(sessionId, gen)) return true;
         mediaPath = yt.mediaPath;
@@ -2236,6 +2260,7 @@ async function runSubtitleJobInner(
       const yt = await ensureYoutubeAudio({
         videoId: resolved.youtube.videoId,
         sourceUrl: resolved.youtube.sourceUrl,
+        onProgress: ytDownloadProgress(sessionId, gen),
       });
       if (!isCurrent(sessionId, gen)) return;
       mediaPath = yt.mediaPath;
