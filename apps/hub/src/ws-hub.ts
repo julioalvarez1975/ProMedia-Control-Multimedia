@@ -21,6 +21,7 @@ import {
   normalizeThemeOverrides,
 } from "@promedia/shared";
 import {
+  maybeAutoPrepare,
   maybeRefreshSubtitleAgent,
   maybeStartKaraokeOnGuionItem,
   nudgeSubtitleCancionero,
@@ -700,6 +701,7 @@ export class WsHub {
           `[hub] live.clear from=${conn.role} was=${session.live.currentItemId ?? "-"}`,
         );
         this.applyResult(conn, session, sessionStore.clearLive(session));
+        maybeAutoPrepare(session.id);
         return;
       case "live.setSlide":
         this.applyResult(

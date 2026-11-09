@@ -1,4 +1,4 @@
-import { forgetItemProgress, markItemsReady } from "./subtitle-item-progress.js";
+import { forgetItemProgress, isItemReady, markItemsReady } from "./subtitle-item-progress.js";
 import type {
   AudioPlaylistItem,
   HubMessage,
@@ -145,6 +145,7 @@ export function disposeSubtitleSession(sessionId: string): void {
   pendingAdds.delete(sessionId);
   forgetReadyAgent(sessionId);
   forgetItemProgress(sessionId);
+  autoPrepareRunning.delete(sessionId);
 }
 
 function bumpJob(sessionId: string): number {
@@ -1091,7 +1092,15 @@ async function tryCancioneroLyricPath(options: {
     timingSpeech[0]?.startMs ?? null,
   );
 
-  const withVoiceAndBlank = (cues: SubtitleCue[]): SubtitleCue[] =>
+  const withVoiceAndBlank = (cues: SubtitleCue[]): SubtitleCue[] => {
+    if (cues.length > 0 && firstVoiceMs != null) {
+      console.log(
+        `[subtitle] voice anchor: first line at ${Math.round(cues[0]!.startMs)}ms, voice onset ${Math.round(firstVoiceMs)}ms → shift ${Math.round(firstVoiceMs - cues[0]!.startMs)}ms (silence onsets=${silence?.onsetsMs?.length ?? 0})`,
+      );
+    }
+    return withVoiceAndBlankInner(cues);
+  };
+  const withVoiceAndBlankInner = (cues: SubtitleCue[]): SubtitleCue[] =>
     blankCuesAtPhraseSilence(
       anchorFirstCueToVoiceOnset(cues, firstVoiceMs),
       phraseSilences,
@@ -1543,7 +1552,7 @@ export function setSubtitleAgent(
     force: wasOff,
     source: "toggle_or_set",
   });
-  if (wasOff) void precheckGuionReady(session.id);
+  if (wasOff) maybeAutoPrepare(session.id);
 
   return message;
 }
@@ -1840,7 +1849,7 @@ export function maybeStartKaraokeOnGuionItem(
   const message = sessionStore.touchSubtitleAgent(session);
   broadcastSession(session.id, message);
   void runSubtitleJob(session.id, item.id, { force: true, source: "guion_add" });
-  void precheckGuionReady(session.id);
+  maybeAutoPrepare(session.id);
 }
 
 /**
@@ -1877,6 +1886,57 @@ export async function precheckGuionReady(sessionId: string): Promise<void> {
   if (markItemsReady(sessionId, ready)) {
     broadcastSession(sessionId, sessionStore.touchSubtitleAgent(live));
   }
+}
+
+const autoPrepareRunning = new Set<string>();
+
+/**
+ * Prepare the whole Guion by itself, in playlist order: songs whose aligned
+ * karaoke is cached turn green right away, the rest are downloaded,
+ * transcribed (faster-whisper when missing from the cancionero) and aligned one
+ * after another. Triggers: agent turned on, link added, projection cleared.
+ * It never runs while an A/V item is projecting (it would overwrite the live
+ * cues) and waits for the job already in flight instead of superseding it.
+ */
+export function maybeAutoPrepare(sessionId: string): void {
+  if (autoPrepareRunning.has(sessionId)) return;
+  const quick = sessionStore.get(sessionId);
+  if (!quick?.live.subtitleAgent?.enabled) return;
+  autoPrepareRunning.add(sessionId);
+  void (async () => {
+    try {
+      await precheckGuionReady(sessionId);
+      const waitStart = Date.now();
+      while (inflightJobs.has(sessionId) && Date.now() - waitStart < 15 * 60_000) {
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+      const session = sessionStore.get(sessionId);
+      const agent = session?.live.subtitleAgent;
+      if (!session || !agent?.enabled || agent.prepare?.running) return;
+      const live = session.live.currentItemId
+        ? session.playlist.items.find((i) => i.id === session.live.currentItemId)
+        : null;
+      if (live && (live.type === "video" || live.type === "audio")) return;
+      const ids = session.playlist.items
+        .filter(isPrepareTarget)
+        .map((i) => i.id)
+        .filter((id) => !isItemReady(sessionId, id));
+      if (ids.length === 0) return;
+      const token = (prepareTokens.get(sessionId) ?? 0) + 1;
+      prepareTokens.set(sessionId, token);
+      setPrepareState(session, {
+        running: true,
+        total: ids.length,
+        done: 0,
+        failed: 0,
+        currentItemId: null,
+      });
+      console.log(`[subtitle] auto-prepare Guion items=${ids.length}`);
+      await runPrepare(sessionId, ids, token);
+    } finally {
+      autoPrepareRunning.delete(sessionId);
+    }
+  })();
 }
 
 /** In-flight job per session — lets non-forced triggers join instead of restart. */

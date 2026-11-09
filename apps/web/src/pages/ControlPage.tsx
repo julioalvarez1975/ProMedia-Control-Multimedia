@@ -509,6 +509,11 @@ export function ControlPage() {
     if (!subtitleAgent.enabled || !canMutate) {
       return;
     }
+    // The hub is preparing the Guion in order: re-targeting here would
+    // supersede the running item and restart the queue.
+    if (subtitleAgent.prepare?.running && !liveItemId) {
+      return;
+    }
     const focusId = liveItemId || selectedItemId;
     if (!focusId) {
       return;
@@ -526,6 +531,7 @@ export function ControlPage() {
   }, [
     subtitleAgent.enabled,
     subtitleAgent.itemId,
+    subtitleAgent.prepare?.running,
     liveItemId,
     selectedItemId,
     canMutate,

@@ -95,3 +95,7 @@ export function markItemsReady(sessionId: string, itemIds: readonly string[]): b
   }
   return changed;
 }
+
+export function isItemReady(sessionId: string, itemId: string): boolean {
+  return bySession.get(sessionId)?.get(itemId)?.ready === true;
+}
