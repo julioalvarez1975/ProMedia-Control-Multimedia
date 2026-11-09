@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { readFile, rm, stat } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { Hono } from "hono";
 import type {
@@ -24,6 +24,7 @@ import { libraryStore } from "./library-store.js";
 import { playlistStore } from "./playlist-store.js";
 import { clientIpFromHeaders, rateLimitAllow } from "./rate-limit.js";
 import { sessionStore } from "./session-store.js";
+import { downloadYoutubeVideoFile } from "./subtitle-youtube.js";
 
 /** Session media upload cap (bytes) — prevents LAN DoS filling disk. */
 const SESSION_ASSET_MAX_BYTES = 512 * 1024 * 1024;
@@ -371,6 +372,65 @@ export function createApiRoutes(): Hono {
       return c.json({ error: result.error }, 400);
     }
     return c.json({ asset: result }, 201);
+  });
+
+  /**
+   * Download ONE YouTube video as a local mp4 asset (control only). Used when
+   * the owner blocks embedding (IFrame 101/150). Body: { videoId }.
+   * Same auth as asset upload; the URL is built server-side from the id.
+   */
+  api.post("/sessions/:sessionId/youtube-download", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const credential =
+      bearerToken(c.req.header("authorization")) ?? c.req.query("credential");
+    const access = authorizeSessionAccess(sessionId, {
+      credential,
+      accessToken: c.req.query("accessToken") ?? c.req.query("token"),
+      requireRole: "control",
+    });
+    if (!access.ok) {
+      return c.json({ error: access.error }, access.status);
+    }
+
+    let videoId = "";
+    try {
+      const body = (await c.req.json()) as { videoId?: unknown };
+      videoId = typeof body.videoId === "string" ? body.videoId : "";
+    } catch {
+      return c.json({ error: "invalid_json" }, 400);
+    }
+    if (!/^[\w-]{11}$/.test(videoId)) {
+      return c.json({ error: "youtube_invalid_id" }, 400);
+    }
+
+    let downloaded: Awaited<ReturnType<typeof downloadYoutubeVideoFile>>;
+    try {
+      downloaded = await downloadYoutubeVideoFile(videoId);
+    } catch (err) {
+      const hint = err instanceof Error ? err.message : "youtube_download_failed";
+      return c.json({ error: hint }, 502);
+    }
+    try {
+      const info = await stat(downloaded.filePath);
+      if (info.size > SESSION_ASSET_MAX_BYTES) {
+        return c.json({ error: "file_too_large" }, 400);
+      }
+      const bytes = await readFile(downloaded.filePath);
+      const result = await assetStore.putVideo(
+        sessionId,
+        bytes,
+        "video/mp4",
+        `${videoId}.mp4`,
+      );
+      if ("error" in result) {
+        return c.json({ error: result.error }, 400);
+      }
+      return c.json({ asset: result }, 201);
+    } finally {
+      await rm(downloaded.dir, { recursive: true, force: true }).catch(
+        () => undefined,
+      );
+    }
   });
 
   /**

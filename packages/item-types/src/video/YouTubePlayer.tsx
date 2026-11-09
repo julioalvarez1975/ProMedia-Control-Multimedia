@@ -170,6 +170,8 @@ export type YouTubePlayerProps = {
   onMediaClockSet?: (patch: { playing: boolean; positionMs?: number }) => void;
   onReadyChange?: (ready: boolean) => void;
   onPlayingChange?: (playing: boolean) => void;
+  /** The owner blocked embedding (IFrame errors 101/150). */
+  onEmbedBlocked?: () => void;
 };
 
 export const YouTubePlayer = forwardRef<YouTubePlayerHandle, YouTubePlayerProps>(
@@ -186,6 +188,7 @@ export const YouTubePlayer = forwardRef<YouTubePlayerHandle, YouTubePlayerProps>
       onMediaClockSet,
       onReadyChange,
       onPlayingChange,
+      onEmbedBlocked,
     },
     ref,
   ) {
@@ -212,6 +215,8 @@ export const YouTubePlayer = forwardRef<YouTubePlayerHandle, YouTubePlayerProps>
         coldSnapDoneRef.current = false;
       }
     }, [mediaClock?.itemId, mediaClock?.positionMs, mediaClock?.playing]);
+    const onEmbedBlockedRef = useRef(onEmbedBlocked);
+    onEmbedBlockedRef.current = onEmbedBlocked;
     const onBlockedRef = useRef(onBlocked);
     onBlockedRef.current = onBlocked;
     const failStreakRef = useRef(0);
@@ -355,6 +360,9 @@ export const YouTubePlayer = forwardRef<YouTubePlayerHandle, YouTubePlayerProps>
               },
               onError: (e) => {
                 setError(youtubeErrorMessage(e.data));
+                if (e.data === 101 || e.data === 150) {
+                  onEmbedBlockedRef.current?.();
+                }
               },
             },
           });

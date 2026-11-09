@@ -32,6 +32,18 @@ export type VideoPreviewProps = {
   durationMsHint?: number;
   /** Local playhead before Go Live (Vista Previa karaoke). */
   onLocalPositionMs?: (ms: number) => void;
+  /**
+   * Download this YouTube video and swap the item for a local file. Offered
+   * only when the owner blocked embedding. Rejects with a message on failure.
+   */
+  onYoutubeToLocal?: () => Promise<void>;
+  /** Localised UI strings for the embed-blocked download offer. */
+  youtubeToLocalLabels?: {
+    button: string;
+    busy: string;
+    note: string;
+    failed: string;
+  };
 };
 
 /**
@@ -48,6 +60,8 @@ export function VideoPreview({
   onDurationMs,
   durationMsHint = 0,
   onLocalPositionMs,
+  onYoutubeToLocal,
+  youtubeToLocalLabels,
 }: VideoPreviewProps) {
   if (item.type !== "video") {
     return null;
@@ -119,6 +133,8 @@ export function VideoPreview({
           loop={loop}
           onDurationMs={onDurationMs}
           onLocalPositionMs={onLocalPositionMs}
+          onYoutubeToLocal={onYoutubeToLocal}
+          youtubeToLocalLabels={youtubeToLocalLabels}
         />
       )}
       <p className="video-caveat">
@@ -527,12 +543,16 @@ function YouTubePreviewWithToolbar({
   loop,
   onDurationMs,
   onLocalPositionMs,
+  onYoutubeToLocal,
+  youtubeToLocalLabels,
 }: {
   videoId: string;
   initialMuted: boolean;
   loop: boolean;
   onDurationMs?: (ms: number) => void;
   onLocalPositionMs?: (ms: number) => void;
+  onYoutubeToLocal?: () => Promise<void>;
+  youtubeToLocalLabels?: VideoPreviewProps["youtubeToLocalLabels"];
 }) {
   const playerRef = useRef<YouTubePlayerHandle>(null);
   const [ready, setReady] = useState(false);
@@ -542,13 +562,30 @@ function YouTubePreviewWithToolbar({
   const [positionMs, setPositionMs] = useState(0);
   const [scrubbing, setScrubbing] = useState(false);
   const [scrubMs, setScrubMs] = useState(0);
+  const [embedBlocked, setEmbedBlocked] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadFailed, setDownloadFailed] = useState(false);
 
   useEffect(() => {
     setMuted(initialMuted);
     setPlaying(false);
     setPositionMs(0);
     setDurationMs(0);
+    setEmbedBlocked(false);
+    setDownloading(false);
+    setDownloadFailed(false);
   }, [initialMuted, videoId]);
+
+  const startDownload = () => {
+    if (!onYoutubeToLocal || downloading) {
+      return;
+    }
+    setDownloading(true);
+    setDownloadFailed(false);
+    onYoutubeToLocal()
+      .catch(() => setDownloadFailed(true))
+      .finally(() => setDownloading(false));
+  };
 
   useEffect(() => {
     if (!ready) {
@@ -610,12 +647,32 @@ function YouTubePreviewWithToolbar({
           loop={loop}
           onReadyChange={setReady}
           onPlayingChange={setPlaying}
+          onEmbedBlocked={() => setEmbedBlocked(true)}
         />
         <VideoStageTimeOverlay
           positionMs={displayMs}
           durationMs={durationMs}
         />
       </div>
+      {embedBlocked && onYoutubeToLocal && youtubeToLocalLabels ? (
+        <div className="video-yt-local">
+          <p className="preview-toolbar-note">
+            {downloading
+              ? youtubeToLocalLabels.busy
+              : downloadFailed
+                ? youtubeToLocalLabels.failed
+                : youtubeToLocalLabels.note}
+          </p>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={downloading}
+            onClick={startDownload}
+          >
+            {youtubeToLocalLabels.button}
+          </button>
+        </div>
+      ) : null}
       <VideoTransportBar
         playing={playing}
         muted={muted}

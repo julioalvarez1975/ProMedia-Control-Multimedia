@@ -70,6 +70,7 @@ import {
   LARGE_VIDEO_WARN_BYTES,
   buildAssetUrl,
   uploadBrandingLogo,
+  downloadYoutubeAsAsset,
   uploadSessionAsset,
 } from "../lib/assets";
 import {
@@ -1121,6 +1122,39 @@ export function ControlPage() {
       setUploadHint(t("bible.addedFromCache"));
     } else {
       setUploadHint(null);
+    }
+  };
+
+  /**
+   * YouTube blocked embed (101/150): download the video through the hub and
+   * swap the Guion item for a local file (same id/position/title) so Preview,
+   * Output and the karaoke agent use the file path.
+   */
+  const youtubeToLocal = async (item: PlaylistItem): Promise<void> => {
+    if (
+      item.type !== "video" ||
+      item.payload.sourceKind !== "youtube" ||
+      !session.sessionId ||
+      !session.wsTicket
+    ) {
+      throw new Error("not_ready");
+    }
+    const asset = await downloadYoutubeAsAsset(
+      session.sessionId,
+      session.wsTicket,
+      item.payload.videoId,
+    );
+    const payload: VideoPayload = {
+      sourceKind: "file",
+      assetId: asset.id,
+      title: item.payload.title,
+      autoplay: item.payload.autoplay,
+      loop: item.payload.loop,
+      muted: item.payload.muted,
+      fit: item.payload.fit,
+    };
+    if (!session.updateItem(item.id, { payload })) {
+      throw new Error("ws_disconnected");
     }
   };
 
@@ -2642,6 +2676,18 @@ export function ControlPage() {
                         ? setPreviewLocalPositionMs
                         : undefined
                     }
+                    onYoutubeToLocal={
+                      selectedItem.type === "video" &&
+                      selectedItem.payload.sourceKind === "youtube"
+                        ? () => youtubeToLocal(selectedItem)
+                        : undefined
+                    }
+                    youtubeToLocalLabels={{
+                      button: t("video.ytLocalButton"),
+                      busy: t("video.ytLocalBusy"),
+                      note: t("video.ytLocalNote"),
+                      failed: t("video.ytLocalFailed"),
+                    }}
                   />
                   {previewVideoPlaneDots ? <StageDotsOverlay /> : null}
                 </div>

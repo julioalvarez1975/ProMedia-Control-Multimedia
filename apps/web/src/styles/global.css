@@ -4939,3 +4939,14 @@ body.output-route #root {
 .pm-tx-leave {
   animation-direction: reverse;
 }
+
+.video-yt-local {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+.video-yt-local .preview-toolbar-note {
+  flex: 1;
+  margin: 0;
+}
