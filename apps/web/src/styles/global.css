@@ -4815,3 +4815,12 @@ body.output-route #root {
 .control-banner-env-list small {
   color: var(--muted);
 }
+
+/* Song / text editor: the whole text as one block. */
+.text-editor-block {
+  width: 100%;
+  min-height: 18rem;
+  resize: vertical;
+  font: inherit;
+  line-height: 1.45;
+}
