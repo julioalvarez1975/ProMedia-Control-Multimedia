@@ -12,7 +12,6 @@ import {
 } from "@promedia/shared";
 import { LiveItemLayer } from "../components/LiveItemLayer";
 import { SceneOverlay } from "../components/SceneOverlay";
-import { TransitionStack } from "../components/TransitionStack";
 import { WatermarkOverlay } from "../components/WatermarkOverlay";
 import {
   StageBackground,
@@ -191,15 +190,6 @@ export function OutputPage() {
     wsTicket
       ? buildAssetUrl(sessionId, themeBackground.assetId, wsTicket)
       : undefined;
-
-  const videoCover = snapshot?.live.videoCover ?? null;
-  const videoCoverSrc =
-    videoCover?.active &&
-    sessionId &&
-    wsTicket &&
-    (liveItem?.type === "video" || liveItem?.type === "audio")
-      ? buildAssetUrl(sessionId, videoCover.assetId, wsTicket)
-      : null;
 
   const assetSrc = (() => {
     if (!liveItem || !sessionId || !wsTicket) {
@@ -434,21 +424,6 @@ export function OutputPage() {
                 </div>
               </LiveItemLayer>
             ) : null}
-            {/* Image cover: above the video plane (z 3), below captions. The
-                player stays mounted, so audio / mediaClock never stop. It uses
-                the stage effect on the way in and out, like scene overlays. */}
-            <TransitionStack
-              effect={transitionEffect}
-              layerKey={videoCoverSrc ? `cover:${videoCover?.assetId ?? ""}` : null}
-              zIndex={3}
-              node={
-                videoCoverSrc ? (
-                  <div className="video-cover-layer" aria-hidden>
-                    <img className="video-cover-img" src={videoCoverSrc} alt="" />
-                  </div>
-                ) : null
-              }
-            />
             <SubtitleOverlay
               agent={subtitleAgent}
               mediaClock={mediaClock}
@@ -457,7 +432,6 @@ export function OutputPage() {
             />
             <SceneOverlay
               mode={sceneMode}
-              effect={transitionEffect}
               logoSrc={
                 logoUpdatedAt && sessionId && wsTicket
                   ? buildBrandingLogoUrl(

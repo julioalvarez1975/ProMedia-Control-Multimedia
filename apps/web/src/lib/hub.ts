@@ -83,14 +83,6 @@ export type HubHealth = {
   mode?: string;
   listenHost?: string;
   lanAddresses?: string[];
-  /** Boot-time karaoke environment checks (hub startup-check). */
-  startup?: Array<{
-    id: string;
-    label: string;
-    status: "ok" | "warn" | "fail";
-    detail: string;
-    fix: string;
-  }>;
 };
 
 export async function probeHubHealth(): Promise<boolean> {

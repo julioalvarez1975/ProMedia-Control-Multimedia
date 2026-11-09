@@ -83,9 +83,7 @@ import {
   clearPersistMeta,
   forgetPersistedAgent,
   getPersistMeta,
-  cacheKeyOf,
   loadPersistedAgent,
-  resolveCacheKey,
   lyricsHash,
   setPersistMeta,
   type PersistedAgent,
@@ -130,20 +128,6 @@ const HARD_YT_HINT_PREFIXES = [
 
 const YT_HARD_FAIL_BACKOFF_MS = 30_000;
 const ytHardFailUntil = new Map<string, number>();
-
-/**
- * Session closed: cancel its running karaoke/prepare job and drop every
- * per-session map entry (the next job of a dead session sees a stale
- * generation and stops).
- */
-export function disposeSubtitleSession(sessionId: string): void {
-  bumpJob(sessionId);
-  jobGeneration.delete(sessionId);
-  prepareTokens.delete(sessionId);
-  inflightJobs.delete(sessionId);
-  pendingAdds.delete(sessionId);
-  forgetReadyAgent(sessionId);
-}
 
 function bumpJob(sessionId: string): number {
   const next = (jobGeneration.get(sessionId) ?? 0) + 1;
@@ -964,7 +948,6 @@ async function tryCancioneroLyricPath(options: {
     // Partial alignments are never persisted.
     const lyricsFrom: "cancionero" | "lrclib" = lrclib ? "lrclib" : "cancionero";
     if (!hint.endsWith("_partial") && match) {
-      await resolveCacheKey(assetId, resolved.mediaPath);
       setPersistMeta(assetId, {
         songId: match.item.id,
         lyricsHash: lyricsHash(lines),
@@ -1730,7 +1713,7 @@ export function saveLrclibLyricsToLibrary(
     try {
       const song =
         getPersistMeta(assetId)?.lrclibSong ??
-        (await loadPersistedAgent(cacheKeyOf(assetId) ?? assetId, targetLang))?.lrclibSong;
+        (await loadPersistedAgent(assetId, targetLang))?.lrclibSong;
       if (!song || song.lines.length === 0) {
         setAgentHint(sessionId, "lyrics_save_failed");
         return;
@@ -1839,13 +1822,10 @@ async function restorePersistedAgent(
   sessionId: string,
   itemId: string,
   assetId: string,
-  mediaPath: string | null,
   targetLang: SubtitleTargetLang,
   cancelRunning: boolean,
 ): Promise<boolean> {
-  const fileKey = await resolveCacheKey(assetId, mediaPath);
-  if (!fileKey) return false;
-  const saved = await loadPersistedAgent(fileKey, targetLang);
+  const saved = await loadPersistedAgent(assetId, targetLang);
   if (!saved || !(await persistedStillValid(saved))) return false;
   const session = sessionStore.get(sessionId);
   const cur = session?.live.subtitleAgent;
@@ -1991,7 +1971,6 @@ async function runSubtitleJob(
         sessionId,
         peekResolved.item.id,
         peekResolved.assetId,
-        peekResolved.mediaPath,
         peekAgent.targetLang,
         busyOther != null,
       ))

@@ -9,10 +9,12 @@
  * Metal backend). So it is NOT part of `auto`; it exists for machines without
  * whisper-cli or with a fast x86 CPU / CUDA.
  */
+import { spawn } from "node:child_process";
+import { access } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SubtitleCue } from "@promedia/shared";
-import { resolvePythonFor, runPythonScript } from "./subtitle-python.js";
+import { promediaRoot } from "./subtitle-paths.js";
 
 const SCRIPT = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -31,8 +33,27 @@ export function fasterWhisperModel(): string {
   return process.env.SUBTITLE_FASTER_WHISPER_MODEL?.trim() || "base";
 }
 
+async function resolvePython(): Promise<string | null> {
+  const root = promediaRoot();
+  const candidates = [
+    process.env.SUBTITLE_WHISPERX_PYTHON?.trim(),
+    path.join(root, "data/models/whisperx-venv/bin/python"),
+    path.join(root, "data/models/whisperx-venv/bin/python3"),
+    path.join(root, "apps/hub/.venv-whisperx/bin/python"),
+  ].filter((c): c is string => Boolean(c));
+  for (const c of candidates) {
+    try {
+      await access(c);
+      return c;
+    } catch {
+      // next
+    }
+  }
+  return null;
+}
+
 export async function fasterWhisperAvailable(): Promise<boolean> {
-  return (await resolvePythonFor("faster_whisper")) !== null;
+  return (await resolvePython()) !== null;
 }
 
 /** Parse the sidecar's stdout (exported for the smoke test). */
@@ -80,7 +101,7 @@ export async function transcribeWithFasterWhisper(options: {
   prompt?: string | null;
   onStatus?: (status: "downloading" | "transcribing") => void;
 }): Promise<FasterWhisperResult> {
-  const python = await resolvePythonFor("faster_whisper");
+  const python = await resolvePython();
   if (!python) throw new Error("faster_whisper_missing");
 
   const timeoutMs = Math.max(
@@ -92,23 +113,42 @@ export async function transcribeWithFasterWhisper(options: {
   // First run downloads the model from Hugging Face.
   options.onStatus?.("transcribing");
 
-  const run = await runPythonScript(
-    python,
-    SCRIPT,
-    {
-      audioPath: options.wavPath,
-      model,
-      computeType: process.env.SUBTITLE_FASTER_WHISPER_COMPUTE?.trim() || "int8",
-      language: options.languageHint ?? null,
-      translate: options.translateToEn,
-      prompt: options.prompt ?? null,
-    },
-    { timeoutMs, label: "faster_whisper" },
-  );
-  if (!run.stdout.trim() && run.stderr.trim()) {
-    throw new Error(`faster_whisper_failed: ${run.stderr.trim().slice(-200)}`);
-  }
-  const stdout = run.stdout;
+  const request = JSON.stringify({
+    audioPath: options.wavPath,
+    model,
+    computeType: process.env.SUBTITLE_FASTER_WHISPER_COMPUTE?.trim() || "int8",
+    language: options.languageHint ?? null,
+    translate: options.translateToEn,
+    prompt: options.prompt ?? null,
+  });
+
+  const stdout = await new Promise<string>((resolve, reject) => {
+    const child = spawn(python, [SCRIPT], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+    });
+    let out = "";
+    let err = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("faster_whisper_timeout"));
+    }, timeoutMs);
+    child.stdout.on("data", (b: Buffer) => (out += b.toString("utf8")));
+    child.stderr.on("data", (b: Buffer) => (err += b.toString("utf8")));
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.on("close", () => {
+      clearTimeout(timer);
+      if (!out.trim() && err.trim()) {
+        reject(new Error(`faster_whisper_failed: ${err.trim().slice(-200)}`));
+      } else {
+        resolve(out);
+      }
+    });
+    child.stdin.end(request);
+  });
 
   const result = parseFasterWhisperOutput(stdout, options.translateToEn);
   console.log(

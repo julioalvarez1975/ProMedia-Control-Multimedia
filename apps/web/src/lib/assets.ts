@@ -87,36 +87,6 @@ export async function uploadSessionAsset(
   return data.asset;
 }
 
-/**
- * Ask the hub to download ONE YouTube video as a local mp4 asset (used when
- * the owner blocks embedding). Can take a minute; rejects with the hub hint.
- */
-export async function downloadYoutubeAsAsset(
-  sessionId: string,
-  credential: string,
-  videoId: string,
-): Promise<{ id: string; mime: string; size?: number; originalName?: string }> {
-  const res = await fetch(
-    `${hubHttpBase()}/api/v1/sessions/${encodeURIComponent(sessionId)}/youtube-download`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${credential}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ videoId }),
-    },
-  );
-  if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? `youtube_download_failed_${res.status}`);
-  }
-  const data = (await res.json()) as {
-    asset: { id: string; mime: string; size?: number; originalName?: string };
-  };
-  return data.asset;
-}
-
 /** Soft UI warning threshold (no hard cap). */
 export const LARGE_IMAGE_WARN_BYTES = 20 * 1024 * 1024;
 

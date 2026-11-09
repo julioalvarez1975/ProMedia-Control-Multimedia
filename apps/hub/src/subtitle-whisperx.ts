@@ -3,13 +3,18 @@
  * cancionero lines (exact text) → wav2vec2 clocks on local audio.
  * Python sidecar: apps/hub/python/whisperx_align.py
  */
+import { spawn } from "node:child_process";
 import { access, constants } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SubtitleCue } from "@promedia/shared";
+import { ensureAugmentedPath } from "./subtitle-bins.js";
 import { extractWav16k } from "./subtitle-asr.js";
-import { ensureSubtitleDirs } from "./subtitle-paths.js";
-import { resolvePythonFor, runPythonScript } from "./subtitle-python.js";
+import {
+  ensureSubtitleDirs,
+  promediaRoot,
+  subtitleModelsRoot,
+} from "./subtitle-paths.js";
 import { cueStartWithAirMs, SILENCE_AIR_ANTICIPATION_MS } from "./subtitle-silence.js";
 
 const ALIGN_SCRIPT = path.join(
@@ -25,20 +30,84 @@ export type WhisperxAlignResult = {
   durationMs: number;
 };
 
+let cachedPython: string | null | undefined;
 let cachedAvailable: boolean | undefined;
 
+function venvPythonCandidates(): string[] {
+  const root = promediaRoot();
+  const envOverride = process.env.SUBTITLE_WHISPERX_PYTHON?.trim();
+  const out: string[] = [];
+  if (envOverride) out.push(envOverride);
+  out.push(
+    path.join(root, "data/models/whisperx-venv/bin/python"),
+    path.join(root, "data/models/whisperx-venv/bin/python3"),
+    path.join(root, "apps/hub/.venv-whisperx/bin/python"),
+    "/opt/homebrew/bin/python3.12",
+    "/usr/local/bin/python3.12",
+    "python3.12",
+    "python3",
+  );
+  return out;
+}
+
+async function isExecutable(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath, constants.X_OK);
+    return true;
+  } catch {
+    try {
+      await access(filePath, constants.F_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 async function resolveWhisperxPython(): Promise<string | null> {
-  return resolvePythonFor("whisperx");
+  if (cachedPython !== undefined) return cachedPython;
+  ensureAugmentedPath();
+  for (const candidate of venvPythonCandidates()) {
+    if (candidate.includes(path.sep) || candidate.startsWith("/")) {
+      if (!(await isExecutable(candidate))) continue;
+    }
+    const ok = await probeWhisperxImport(candidate);
+    if (ok) {
+      cachedPython = candidate;
+      return candidate;
+    }
+  }
+  cachedPython = null;
+  return null;
+}
+
+function probeWhisperxImport(pythonBin: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn(
+      pythonBin,
+      ["-c", "import whisperx; print('ok')"],
+      { stdio: ["ignore", "pipe", "pipe"], env: process.env },
+    );
+    let out = "";
+    child.stdout?.on("data", (c: Buffer) => {
+      out += c.toString("utf8");
+    });
+    child.on("error", () => resolve(false));
+    child.on("close", (code) => {
+      resolve(code === 0 && out.includes("ok"));
+    });
+  });
 }
 
 /** True when the WhisperX venv + package are ready for karaoke align. */
 export async function whisperxAvailable(): Promise<boolean> {
   if (cachedAvailable !== undefined) return cachedAvailable;
-  if (!(await fileExists(ALIGN_SCRIPT))) {
+  if (!(await isExecutable(ALIGN_SCRIPT)) && !(await fileExists(ALIGN_SCRIPT))) {
     cachedAvailable = false;
     return false;
   }
-  cachedAvailable = Boolean(await resolveWhisperxPython());
+  const py = await resolveWhisperxPython();
+  cachedAvailable = Boolean(py);
   return cachedAvailable;
 }
 
@@ -49,6 +118,48 @@ async function fileExists(p: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function runAlignScript(
+  pythonBin: string,
+  payload: unknown,
+  timeoutMs: number,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const models = subtitleModelsRoot();
+    const child = spawn(pythonBin, [ALIGN_SCRIPT], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        HF_HOME: process.env.HF_HOME || models,
+        HUGGINGFACE_HUB_CACHE:
+          process.env.HUGGINGFACE_HUB_CACHE || models,
+        TRANSFORMERS_CACHE: process.env.TRANSFORMERS_CACHE || models,
+      },
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("whisperx_timeout"));
+    }, timeoutMs);
+    child.stdout?.on("data", (c: Buffer) => {
+      stdout += c.toString("utf8");
+    });
+    child.stderr?.on("data", (c: Buffer) => {
+      stderr += c.toString("utf8");
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code: code ?? 1, stdout, stderr });
+    });
+    child.stdin?.write(JSON.stringify(payload));
+    child.stdin?.end();
+  });
 }
 
 function applyAirToCues(
@@ -129,9 +240,8 @@ export async function alignLyricsWithWhisperx(options: {
 
   let raw: { code: number; stdout: string; stderr: string };
   try {
-    raw = await runPythonScript(
+    raw = await runAlignScript(
       pythonBin,
-      ALIGN_SCRIPT,
       {
         audioPath: wavPath,
         lines,
@@ -141,7 +251,7 @@ export async function alignLyricsWithWhisperx(options: {
         modelName: process.env.SUBTITLE_WHISPERX_ALIGN_MODEL ?? null,
         onsetHintsMs: options.onsetHintsMs ?? [],
       },
-      { timeoutMs, label: "whisperx" },
+      timeoutMs,
     );
   } catch (err) {
     console.warn(

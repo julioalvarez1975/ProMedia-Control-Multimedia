@@ -10,9 +10,7 @@
     "dev:all": "node scripts/dev.mjs",
     "dev:web": "pnpm run build:packages && pnpm --filter @promedia/web dev",
     "dev:hub": "pnpm run build:packages && pnpm --filter @promedia/hub dev",
-    "build": "pnpm run build:packages && pnpm -r --filter @promedia/hub --filter @promedia/web build",
-    "test": "pnpm run build:packages && pnpm --filter @promedia/hub test",
-    "typecheck": "pnpm run build:packages && pnpm --filter @promedia/hub typecheck && pnpm --filter @promedia/web exec tsc --noEmit"
+    "build": "pnpm run build:packages && pnpm -r --filter @promedia/hub --filter @promedia/web build"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

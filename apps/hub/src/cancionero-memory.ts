@@ -3,7 +3,7 @@
  * YouTube id / audio asset / primary title so the next run skips bad aliases,
  * plus operator-taught cue start times from Preview ←/→ nudges.
  */
-import { readJsonFile, writeJsonAtomic } from "./json-file.js";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promediaRoot } from "./subtitle-paths.js";
 import { normalizeMatchTitle, primaryTitleSegment } from "./subtitle-cancionero.js";
@@ -61,39 +61,42 @@ function legacyMemoryPath(): string {
 let cache: MemoryFile | null = null;
 let writeChain: Promise<void> = Promise.resolve();
 
-function validMemory(parsed: MemoryFile | undefined): MemoryFile | null {
-  if (parsed?.version === 1 && parsed.byMedia && parsed.byTitle) {
-    return { ...parsed, timingByMedia: parsed.timingByMedia ?? {} };
+function parseMemory(raw: string): MemoryFile | null {
+  try {
+    const parsed = JSON.parse(raw) as MemoryFile;
+    if (parsed?.version === 1 && parsed.byMedia && parsed.byTitle) {
+      return {
+        ...parsed,
+        timingByMedia: parsed.timingByMedia ?? {},
+      };
+    }
+  } catch {
+    // corrupt
   }
   return null;
 }
 
 async function loadMemory(): Promise<MemoryFile> {
   if (cache) return cache;
-  // A corrupt seed is quarantined + logged by readJsonFile (never silently reset).
-  const seeded = await readJsonFile<MemoryFile>(memoryPath(), "Memoria del cancionero");
-  if (seeded.status === "ok") {
-    const ok = validMemory(seeded.value);
-    if (ok) {
-      cache = ok;
+  try {
+    const seeded = parseMemory(await readFile(memoryPath(), "utf8"));
+    if (seeded) {
+      cache = seeded;
       return cache;
     }
-    console.warn("[hub] Memoria del cancionero: formato desconocido, se ignora.");
+  } catch {
+    // seed missing — try legacy data/ path
   }
-  const legacy = await readJsonFile<MemoryFile>(legacyMemoryPath(), "Memoria del cancionero (data/)");
-  if (legacy.status === "ok") {
-    const ok = validMemory(legacy.value);
-    if (ok) {
-      cache = ok;
+  try {
+    const legacy = parseMemory(await readFile(legacyMemoryPath(), "utf8"));
+    if (legacy) {
+      cache = legacy;
       // Persist into the tracked seed path so it can be committed.
-      void saveMemory(ok).catch((err) =>
-        console.warn(
-          "[hub] no se pudo copiar la memoria legada al seed:",
-          err instanceof Error ? err.message : err,
-        ),
-      );
+      void saveMemory(legacy).catch(() => undefined);
       return cache;
     }
+  } catch {
+    // no legacy either
   }
   cache = { ...EMPTY, byMedia: {}, byTitle: {}, timingByMedia: {} };
   return cache;
@@ -101,10 +104,11 @@ async function loadMemory(): Promise<MemoryFile> {
 
 async function saveMemory(next: MemoryFile): Promise<void> {
   cache = next;
-  // A failed write must not wedge the chain: later saves still run.
-  writeChain = writeChain
-    .catch(() => undefined)
-    .then(() => writeJsonAtomic(memoryPath(), next));
+  writeChain = writeChain.then(async () => {
+    const dir = path.dirname(memoryPath());
+    await mkdir(dir, { recursive: true });
+    await writeFile(memoryPath(), `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  });
   await writeChain;
 }
 

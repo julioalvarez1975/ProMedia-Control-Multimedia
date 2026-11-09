@@ -5,7 +5,6 @@ import {
   cuesLookLikeLyrics,
   inferDominantLanguage,
 } from "./subtitle-lang-detect.js";
-import { translateWithCache } from "./subtitle-translation-cache.js";
 import {
   applyTransformersCacheEnv,
   ensureSubtitleDirs,
@@ -241,15 +240,7 @@ export async function translateCuesLocal(options: {
   onStatus?.();
   const texts = speechCues.map((c) => c.text);
   try {
-    const hit = await translateWithCache(src, tgt, texts, (missing) =>
-      translateViaPair(missing, src!, tgt),
-    );
-    const translated = hit?.translations ?? null;
-    if (hit && hit.cached > 0) {
-      console.log(
-        `[subtitle] translation cache ${src}->${tgt}: ${hit.cached}/${texts.length} lines reused`,
-      );
-    }
+    const translated = await translateViaPair(texts, src, tgt);
     if (!translated) {
       return {
         cues: speechCues,

@@ -1,8 +1,5 @@
 /**
- * Disk persistence of finished karaoke results — one file per song.
- * YouTube videos are keyed by video id (`yt_<id>`); local audio/video by a
- * content hash (`fh_<sha1>`), so the same file re-uploaded in a later session
- * (asset ids are random per upload) is recognised and restored instantly.
+ * Disk persistence of finished karaoke results (YouTube videos only).
  *
  * The in-memory per-item cache dies with the hub (every restart). Aligning a
  * song without official captions costs 60–90 s (WhisperX on CPU), so the
@@ -13,15 +10,13 @@
  * persisted: a stale ASR transcript must never shadow a song added later.
  */
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { SubtitleAgentState, SubtitleTargetLang } from "@promedia/shared";
 import { subtitleDataRoot } from "./subtitle-paths.js";
 
 const VERSION = 1;
-/** `yt_<videoId>` or `fh_<sha1 of the local file>`. */
-const SAFE_KEY = /^(?:yt_[A-Za-z0-9_-]{6,20}|fh_[0-9a-f]{40})$/;
-const HASH_HEAD_BYTES = 4 * 1024 * 1024;
+const SAFE_ASSET = /^yt_[A-Za-z0-9_-]{6,20}$/;
 const WRITE_DEBOUNCE_MS = 400;
 
 export type PersistSource = "cancionero" | "lrclib";
@@ -38,8 +33,7 @@ export type PersistMeta = {
 
 export type PersistedAgent = {
   version: number;
-  /** Cache key of the song (`yt_…` / `fh_…`), see resolveCacheKey. */
-  fileKey: string;
+  assetId: string;
   targetLang: SubtitleTargetLang;
   songId: string;
   lyricsHash: string;
@@ -64,8 +58,6 @@ export function lyricsHash(lines: readonly string[]): string {
 }
 
 const metaByAsset = new Map<string, PersistMeta>();
-/** Session asset id → stable cache key (filled by resolveCacheKey). */
-const keyByAsset = new Map<string, string>();
 const writeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function alignedDir(): string {
@@ -73,52 +65,10 @@ function alignedDir(): string {
 }
 
 function fileFor(assetId: string, targetLang: string): string | null {
-  if (!SAFE_KEY.test(assetId) || !/^[A-Za-z-]{2,10}$/.test(targetLang)) {
+  if (!SAFE_ASSET.test(assetId) || !/^[A-Za-z-]{2,10}$/.test(targetLang)) {
     return null;
   }
   return path.join(alignedDir(), `${assetId}.${targetLang}.json`);
-}
-
-/**
- * Stable per-song key: `yt_<id>` as-is; a local file is hashed (first 4 MB +
- * size — fast, and unique enough for media files). Remembered per asset id so
- * the synchronous persist path can find it.
- */
-export async function resolveCacheKey(
-  assetId: string,
-  mediaPath: string | null,
-): Promise<string | null> {
-  const known = keyByAsset.get(assetId);
-  if (known) return known;
-  if (SAFE_KEY.test(assetId)) {
-    keyByAsset.set(assetId, assetId);
-    return assetId;
-  }
-  if (!mediaPath) return null;
-  try {
-    const size = (await stat(mediaPath)).size;
-    const fh = await open(mediaPath, "r");
-    try {
-      const buf = Buffer.alloc(Math.min(size, HASH_HEAD_BYTES));
-      await fh.read(buf, 0, buf.length, 0);
-      const key = `fh_${createHash("sha1").update(buf).update(String(size)).digest("hex")}`;
-      keyByAsset.set(assetId, key);
-      return key;
-    } finally {
-      await fh.close();
-    }
-  } catch (err) {
-    console.warn(
-      "[subtitle] could not hash media for the aligned cache:",
-      err instanceof Error ? err.message : err,
-    );
-    return null;
-  }
-}
-
-/** Test hook. */
-export function cacheKeyOf(assetId: string): string | null {
-  return keyByAsset.get(assetId) ?? (SAFE_KEY.test(assetId) ? assetId : null);
 }
 
 /** The job declares what the cues are built from, right before publishing. */
@@ -147,13 +97,12 @@ export function persistReadyAgent(
     return;
   }
   const meta = metaByAsset.get(agent.assetId);
-  const key = cacheKeyOf(agent.assetId);
-  const file = key ? fileFor(key, agent.targetLang) : null;
-  if (!meta || !key || !file) return;
+  const file = fileFor(agent.assetId, agent.targetLang);
+  if (!meta || !file) return;
 
   const payload: PersistedAgent = {
     version: VERSION,
-    fileKey: key,
+    assetId: agent.assetId,
     targetLang: agent.targetLang,
     songId: meta.songId,
     lyricsHash: meta.lyricsHash,
@@ -194,16 +143,16 @@ export function persistReadyAgent(
 }
 
 export async function loadPersistedAgent(
-  fileKey: string,
+  assetId: string,
   targetLang: SubtitleTargetLang,
 ): Promise<PersistedAgent | null> {
-  const file = fileFor(fileKey, targetLang);
+  const file = fileFor(assetId, targetLang);
   if (!file) return null;
   try {
     const parsed = JSON.parse(await readFile(file, "utf8")) as PersistedAgent;
     if (
       parsed?.version !== VERSION ||
-      parsed.fileKey !== fileKey ||
+      parsed.assetId !== assetId ||
       parsed.targetLang !== targetLang ||
       !Array.isArray(parsed.agent?.cues) ||
       parsed.agent.cues.length === 0
@@ -225,14 +174,13 @@ export async function loadPersistedAgent(
 
 /** Forget a video (operator taught another song, lyrics changed…). */
 export async function forgetPersistedAgent(assetId: string): Promise<void> {
-  const key = cacheKeyOf(assetId) ?? assetId;
   metaByAsset.delete(assetId);
-  if (!SAFE_KEY.test(key)) return;
+  if (!SAFE_ASSET.test(assetId)) return;
   try {
     const names = await readdir(alignedDir());
     await Promise.all(
       names
-        .filter((n) => n.startsWith(`${key}.`))
+        .filter((n) => n.startsWith(`${assetId}.`))
         .map((n) => rm(path.join(alignedDir(), n), { force: true })),
     );
   } catch {

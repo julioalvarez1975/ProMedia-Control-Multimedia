@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { readFile, rm, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { Hono } from "hono";
 import type {
@@ -24,7 +24,6 @@ import { libraryStore } from "./library-store.js";
 import { playlistStore } from "./playlist-store.js";
 import { clientIpFromHeaders, rateLimitAllow } from "./rate-limit.js";
 import { sessionStore } from "./session-store.js";
-import { downloadYoutubeVideoFile } from "./subtitle-youtube.js";
 
 /** Session media upload cap (bytes) — prevents LAN DoS filling disk. */
 const SESSION_ASSET_MAX_BYTES = 512 * 1024 * 1024;
@@ -375,65 +374,6 @@ export function createApiRoutes(): Hono {
   });
 
   /**
-   * Download ONE YouTube video as a local mp4 asset (control only). Used when
-   * the owner blocks embedding (IFrame 101/150). Body: { videoId }.
-   * Same auth as asset upload; the URL is built server-side from the id.
-   */
-  api.post("/sessions/:sessionId/youtube-download", async (c) => {
-    const sessionId = c.req.param("sessionId");
-    const credential =
-      bearerToken(c.req.header("authorization")) ?? c.req.query("credential");
-    const access = authorizeSessionAccess(sessionId, {
-      credential,
-      accessToken: c.req.query("accessToken") ?? c.req.query("token"),
-      requireRole: "control",
-    });
-    if (!access.ok) {
-      return c.json({ error: access.error }, access.status);
-    }
-
-    let videoId = "";
-    try {
-      const body = (await c.req.json()) as { videoId?: unknown };
-      videoId = typeof body.videoId === "string" ? body.videoId : "";
-    } catch {
-      return c.json({ error: "invalid_json" }, 400);
-    }
-    if (!/^[\w-]{11}$/.test(videoId)) {
-      return c.json({ error: "youtube_invalid_id" }, 400);
-    }
-
-    let downloaded: Awaited<ReturnType<typeof downloadYoutubeVideoFile>>;
-    try {
-      downloaded = await downloadYoutubeVideoFile(videoId);
-    } catch (err) {
-      const hint = err instanceof Error ? err.message : "youtube_download_failed";
-      return c.json({ error: hint }, 502);
-    }
-    try {
-      const info = await stat(downloaded.filePath);
-      if (info.size > SESSION_ASSET_MAX_BYTES) {
-        return c.json({ error: "file_too_large" }, 400);
-      }
-      const bytes = await readFile(downloaded.filePath);
-      const result = await assetStore.putVideo(
-        sessionId,
-        bytes,
-        "video/mp4",
-        `${videoId}.mp4`,
-      );
-      if ("error" in result) {
-        return c.json({ error: result.error }, 400);
-      }
-      return c.json({ asset: result }, 201);
-    } finally {
-      await rm(downloaded.dir, { recursive: true, force: true }).catch(
-        () => undefined,
-      );
-    }
-  });
-
-  /**
    * Parse an uploaded document into page/paragraph text for Control text import.
    * PDF only on hub (pdf-parse). Auth not required — no session mutation.
    */
@@ -488,30 +428,6 @@ export function createApiRoutes(): Hono {
       return c.json({ error: "not_found" }, 404);
     }
     return c.json({ playlist: saved });
-  });
-
-  /** Rename a saved playlist (control). */
-  api.patch("/playlists/:id", async (c) => {
-    const access = hubOperatorFromRequest(c);
-    if (!access.ok) {
-      return c.json({ error: access.error }, access.status);
-    }
-    let body: { name?: unknown } = {};
-    try {
-      body = (await c.req.json()) as { name?: unknown };
-    } catch {
-      return c.json({ error: "invalid_json" }, 400);
-    }
-    if (typeof body.name !== "string") {
-      return c.json({ error: "missing_name" }, 400);
-    }
-    const result = await playlistStore.rename(c.req.param("id"), body.name);
-    if ("error" in result) {
-      return c.json({ error: result.error }, result.error === "not_found" ? 404 : 400);
-    }
-    return c.json({
-      playlist: { id: result.id, name: result.name, updatedAt: result.updatedAt },
-    });
   });
 
   /** Save current session playlist under a name (control). */
@@ -1065,35 +981,6 @@ export function createApiRoutes(): Hono {
       return c.json({ error: "file_missing" }, 404);
     }
   });
-
-  /**
-   * Copy a Biblioteca image into the session's assets (control) — used to pick
-   * a video cover from the library. Returns the new session asset id.
-   */
-  api.post(
-    "/sessions/:sessionId/library/:libraryItemId/copy-image",
-    async (c) => {
-      const sessionId = c.req.param("sessionId");
-      const credential =
-        bearerToken(c.req.header("authorization")) ??
-        c.req.query("credential");
-      const access = authorizeSessionAccess(sessionId, {
-        credential,
-        requireRole: "control",
-      });
-      if (!access.ok) {
-        return c.json({ error: access.error }, access.status);
-      }
-      const copied = await libraryStore.copyImageToSession({
-        sessionId,
-        libraryItemId: c.req.param("libraryItemId"),
-      });
-      if ("error" in copied) {
-        return c.json({ error: copied.error, message: copied.message }, 400);
-      }
-      return c.json({ assetId: copied.assetId }, 201);
-    },
-  );
 
   /**
    * Copy a library item into the live session playlist (control).

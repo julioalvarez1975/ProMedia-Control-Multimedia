@@ -1,5 +1,4 @@
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { readJsonFile, writeJsonAtomic } from "./json-file.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
@@ -245,17 +244,16 @@ export class LibraryStore {
       return;
     }
     this.loaded = true;
-    const res = await readJsonFile<{ items?: LibraryItem[] }>(
-      indexPath(),
-      "Biblioteca",
-    );
-    if (res.status !== "ok") {
-      return; // missing = empty; corrupt = quarantined + logged by readJsonFile
-    }
-    for (const item of res.value.items ?? []) {
-      if (item?.id && item.category && item.title) {
-        this.items.set(item.id, item);
+    try {
+      const raw = await readFile(indexPath(), "utf8");
+      const parsed = JSON.parse(raw) as { items?: LibraryItem[] };
+      for (const item of parsed.items ?? []) {
+        if (item?.id && item.category && item.title) {
+          this.items.set(item.id, item);
+        }
       }
+    } catch {
+      // missing = empty
     }
   }
 
@@ -265,7 +263,11 @@ export class LibraryStore {
     const items = [...this.items.values()].sort((a, b) =>
       a.updatedAt < b.updatedAt ? 1 : -1,
     );
-    await writeJsonAtomic(indexPath(), { items });
+    await writeFile(
+      indexPath(),
+      JSON.stringify({ items }, null, 2),
+      "utf8",
+    );
   }
 
   private resolveUnderLibrary(relativePath: string): string {
@@ -511,7 +513,6 @@ export class LibraryStore {
       bytes: opts.bytes,
       originalName: opts.originalName,
       mime: opts.mime,
-      cacheDir: path.join(libraryRoot(), "bibles", "cache"),
     });
     if (!imported.ok) {
       return { error: imported.error, message: imported.message };
@@ -1034,32 +1035,6 @@ export class LibraryStore {
   /**
    * Materialize a library item into session playlist item(s) + session assets.
    */
-  /**
-   * Copy a Biblioteca image into the session asset store (e.g. as a video
-   * cover) without adding a Guion item.
-   */
-  async copyImageToSession(opts: {
-    sessionId: string;
-    libraryItemId: string;
-  }): Promise<{ assetId: string } | { error: string; message: string }> {
-    await this.ensureLoaded();
-    const lib = this.items.get(opts.libraryItemId);
-    if (!lib || lib.category !== "imagenes" || !lib.original) {
-      return { error: "not_an_image", message: "El ítem no es una imagen de la Biblioteca." };
-    }
-    const bytes = await readFile(this.resolveUnderLibrary(lib.original.relativePath));
-    const asset = await assetStore.putProjectionImage(
-      opts.sessionId,
-      bytes,
-      lib.original.mime.startsWith("image/") ? lib.original.mime : "image/png",
-      lib.original.originalName,
-    );
-    if ("error" in asset) {
-      return { error: asset.error, message: "No se pudo copiar la imagen a la sesión." };
-    }
-    return { assetId: asset.id };
-  }
-
   async addToSession(opts: {
     sessionId: string;
     libraryItemId: string;
