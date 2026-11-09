@@ -1,4 +1,4 @@
-import { forgetItemProgress } from "./subtitle-item-progress.js";
+import { forgetItemProgress, markItemsReady } from "./subtitle-item-progress.js";
 import type {
   AudioPlaylistItem,
   HubMessage,
@@ -1543,6 +1543,7 @@ export function setSubtitleAgent(
     force: wasOff,
     source: "toggle_or_set",
   });
+  if (wasOff) void precheckGuionReady(session.id);
 
   return message;
 }
@@ -1839,6 +1840,43 @@ export function maybeStartKaraokeOnGuionItem(
   const message = sessionStore.touchSubtitleAgent(session);
   broadcastSession(session.id, message);
   void runSubtitleJob(session.id, item.id, { force: true, source: "guion_add" });
+  void precheckGuionReady(session.id);
+}
+
+/**
+ * Look at every A/V row of the Guion (playlist order) and mark green 100 % the
+ * ones whose aligned karaoke already exists (in-memory cache or on disk), so
+ * the operator sees at a glance which songs are ready without selecting them.
+ * Only reads caches: no download, no ASR, and the agent state is untouched.
+ */
+export async function precheckGuionReady(sessionId: string): Promise<void> {
+  const session = sessionStore.get(sessionId);
+  const agent = session?.live.subtitleAgent;
+  if (!session || !agent?.enabled) return;
+  const targetLang = agent.targetLang;
+  const ready: string[] = [];
+  for (const item of session.playlist.items) {
+    if (item.type !== "video" && item.type !== "audio") continue;
+    const resolved = resolveMediaSource(session, item.id);
+    if (!resolved.ok) continue;
+    if (recallReadyAgent(sessionId, item.id, resolved.assetId, targetLang)) {
+      ready.push(item.id);
+      continue;
+    }
+    try {
+      const key = await resolveCacheKey(resolved.assetId, resolved.mediaPath);
+      if (!key) continue;
+      const saved = await loadPersistedAgent(key, targetLang);
+      if (saved && (await persistedStillValid(saved))) ready.push(item.id);
+    } catch {
+      // unreadable cache entry: leave the row as not prepared
+    }
+  }
+  const live = sessionStore.get(sessionId);
+  if (!live?.live.subtitleAgent?.enabled) return;
+  if (markItemsReady(sessionId, ready)) {
+    broadcastSession(sessionId, sessionStore.touchSubtitleAgent(live));
+  }
 }
 
 /** In-flight job per session — lets non-forced triggers join instead of restart. */

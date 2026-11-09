@@ -76,3 +76,22 @@ export function deriveItemProgress(
   }
   return Object.fromEntries(map);
 }
+
+/**
+ * Mark rows as ready (green 100 %) without touching the agent: songs whose
+ * aligned karaoke is already cached (memory or disk). Never downgrades.
+ */
+export function markItemsReady(sessionId: string, itemIds: readonly string[]): boolean {
+  let map = bySession.get(sessionId);
+  if (!map) {
+    map = new Map();
+    bySession.set(sessionId, map);
+  }
+  let changed = false;
+  for (const id of itemIds) {
+    if (map.get(id)?.ready) continue;
+    map.set(id, { percent: 100, ready: true });
+    changed = true;
+  }
+  return changed;
+}

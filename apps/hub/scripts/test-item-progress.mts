@@ -6,7 +6,7 @@ import {
   subtitleOverallPercent,
   type SubtitleAgentState,
 } from "@promedia/shared";
-import { deriveItemProgress, forgetItemProgress } from "../src/subtitle-item-progress.ts";
+import { deriveItemProgress, forgetItemProgress, markItemsReady } from "../src/subtitle-item-progress.ts";
 import { parseYtDlpPercent } from "../src/subtitle-youtube.ts";
 
 function assert(cond: unknown, msg: string): void {
@@ -62,6 +62,16 @@ m = deriveItemProgress(SID, agent({ itemId: "a", status: "ready", cues: [cue] })
 assert(!("b" in m), "item removed from the Guion is dropped");
 m = deriveItemProgress(SID, agent({ enabled: false, status: "off" }), ids);
 assert(Object.keys(m).length === 0, "agent off clears progress");
+
+// cached songs are marked ready without touching the agent, never downgraded
+forgetItemProgress(SID);
+m = deriveItemProgress(SID, agent({ itemId: "a", status: "idle" }), ids);
+assert(markItemsReady(SID, ["a", "b"]) === true, "marks cached rows ready");
+assert(markItemsReady(SID, ["a", "b"]) === false, "second mark is a no-op");
+m = deriveItemProgress(SID, agent({ itemId: "a", status: "idle" }), ids);
+assert(m.a?.ready === true && m.b?.ready === true && m.b.percent === 100, "cached rows show 100 ready");
+m = deriveItemProgress(SID, agent({ itemId: "b", status: "transcribing" }), ids);
+assert(m.a?.ready === true && !m.a.stale, "a ready row is not made stale by the agent moving");
 
 forgetItemProgress(SID);
 console.log("all passed");
