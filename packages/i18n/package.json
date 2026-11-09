@@ -13,7 +13,7 @@
     "./locales/*": "./locales/*"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/export-locales.mjs",
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput"
   },
   "devDependencies": {

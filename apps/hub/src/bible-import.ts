@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
+import path from "node:path";
 import { BIBLE_BOOKS, findBook } from "./bible/books.js";
+import { readJsonFile, writeJsonAtomic } from "./json-file.js";
 import { parsePdfBuffer } from "./text-import.js";
 
 export const BIBLE_IMPORT_MAX_BYTES = 40 * 1024 * 1024;
@@ -392,7 +395,60 @@ export function looksLikeBibleFile(originalName: string, bytes?: Buffer): boolea
   return /<bible[\s>]/i.test(head) || /<b\s+n=/i.test(head) || /<book\s+number=/i.test(head);
 }
 
+/** Bump when the parser output changes, so old cache files are ignored. */
+const BIBLE_CACHE_VERSION = 1;
+
+/**
+ * Parse a Bible file, reusing a cached parse when the same file (same bytes
+ * and name) was imported before. Parsing a full XML/PDF with regexes is slow;
+ * the parsed canon is stored as `<cacheDir>/<sha256>.json`.
+ */
 export async function importBibleFile(opts: {
+  bytes: Buffer;
+  originalName: string;
+  mime?: string;
+  /** Where parsed canons are cached (e.g. data/library/bibles/cache). */
+  cacheDir?: string;
+}): Promise<BibleImportResult> {
+  const { cacheDir, ...rest } = opts;
+  if (!cacheDir || rest.bytes.byteLength === 0) {
+    return importBibleFileUncached(rest);
+  }
+  const key = createHash("sha256")
+    .update(rest.bytes)
+    .update("\0")
+    .update(rest.originalName || "biblia")
+    .update(`\0v${BIBLE_CACHE_VERSION}`)
+    .digest("hex");
+  const file = path.join(cacheDir, `${key}.json`);
+
+  const hit = await readJsonFile<{ version: number; canon: ImportedBibleCanon }>(
+    file,
+    "Caché de Biblia",
+  );
+  if (
+    hit.status === "ok" &&
+    hit.value.version === BIBLE_CACHE_VERSION &&
+    hit.value.canon?.versionId &&
+    (hit.value.canon.verseCount ?? 0) >= BIBLE_IMPORT_MIN_VERSES
+  ) {
+    return { ok: true, canon: hit.value.canon };
+  }
+
+  const result = await importBibleFileUncached(rest);
+  if (result.ok) {
+    void writeJsonAtomic(file, { version: BIBLE_CACHE_VERSION, canon: result.canon }, false).catch(
+      (err) =>
+        console.warn(
+          "[hub] no se pudo guardar la caché de la Biblia:",
+          err instanceof Error ? err.message : err,
+        ),
+    );
+  }
+  return result;
+}
+
+async function importBibleFileUncached(opts: {
   bytes: Buffer;
   originalName: string;
   mime?: string;
