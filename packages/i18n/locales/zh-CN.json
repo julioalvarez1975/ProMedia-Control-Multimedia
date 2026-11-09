@@ -288,6 +288,7 @@
   "link.urlLabel": "URL（YouTube 或普通链接）",
   "link.hint": "YouTube 会添加为视频。其他 http(s) URL 会保存为带链接的文本。",
   "link.invalid": "无效 URL。请使用 http://、https:// 或 YouTube 链接。",
+  "link.youtubeNoVideo": "此 YouTube 链接未指向具体视频（是播放列表、频道或搜索）。请打开歌曲并复制其“watch?v=…”链接。",
   "link.add": "添加",
   "link.itemTitle": "链接",
   "link.added": "链接已添加到日程。",

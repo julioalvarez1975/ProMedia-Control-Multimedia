@@ -289,6 +289,7 @@
   "link.urlLabel": "URL (YouTube or generic link)",
   "link.hint": "YouTube becomes a video item. Any other http(s) URL is saved as text with the link.",
   "link.invalid": "Invalid URL. Use http:// or https://, or a YouTube link.",
+  "link.youtubeNoVideo": "This YouTube link does not point to a specific video (it is a playlist, channel or search). Open the song and copy its “watch?v=…” link.",
   "link.add": "Add",
   "link.itemTitle": "Link",
   "link.added": "Link added to the schedule.",

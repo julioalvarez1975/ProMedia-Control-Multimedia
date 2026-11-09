@@ -288,6 +288,7 @@
   "link.urlLabel": "URL (YouTube ou lien générique)",
   "link.hint": "YouTube devient une vidéo. Toute autre URL http(s) est enregistrée comme texte avec le lien.",
   "link.invalid": "URL invalide. Utilisez http:// ou https://, ou un lien YouTube.",
+  "link.youtubeNoVideo": "Ce lien YouTube ne pointe pas vers une vidéo précise (playlist, chaîne ou recherche). Ouvrez le morceau et copiez son lien « watch?v=… ».",
   "link.add": "Ajouter",
   "link.itemTitle": "Lien",
   "link.added": "Lien ajouté au programme.",
