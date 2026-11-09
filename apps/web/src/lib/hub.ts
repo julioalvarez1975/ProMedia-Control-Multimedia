@@ -151,27 +151,6 @@ export function buildLanControlUrls(
     .map((ip) => `http://${ip}:${port}${path}`);
 }
 
-/** Output / projection URL(s) so a second device mirrors the same session. */
-export function buildLanOutputUrls(
-  lanAddresses: string[],
-  code?: string | null,
-): string[] {
-  const port = lanPagePort();
-  const c = code?.trim().toUpperCase();
-  const path = c
-    ? `/output?code=${encodeURIComponent(c)}&autofullscreen=1`
-    : "/output";
-  return lanAddresses
-    .filter((ip) => typeof ip === "string" && ip.length > 0)
-    .map((ip) => `http://${ip}:${port}${path}`);
-}
-
-/** Same-origin Output path for the current session (phone or PC). */
-export function sharedOutputPath(code: string): string {
-  const c = code.trim().toUpperCase();
-  return `/output?code=${encodeURIComponent(c)}&autofullscreen=1`;
-}
-
 export async function createSession(
   mode: "lan" | "cloud" | "portable" = "lan",
 ): Promise<CreateSessionResponse> {

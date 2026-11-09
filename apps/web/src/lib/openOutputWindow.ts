@@ -227,18 +227,6 @@ export function codeOutputUrl(
   return u.toString();
 }
 
-export function opaqueOutputUrl(
-  accessToken: string,
-  opts?: { autofullscreen?: boolean },
-): string {
-  const u = new URL(`${window.location.origin}/output`);
-  u.searchParams.set("token", accessToken);
-  if (opts?.autofullscreen) {
-    u.searchParams.set("autofullscreen", "1");
-  }
-  return u.toString();
-}
-
 function tryMoveResize(win: Window, p: OutputPlacement): void {
   try {
     win.moveTo(p.left, p.top);

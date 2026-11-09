@@ -331,13 +331,6 @@ export type SubtitleAgentStatus =
 /** Caption size on Preview / Live / Output (SM–XL). Default MD. */
 export type SubtitleFontSize = "sm" | "md" | "lg" | "xl";
 
-export const SUBTITLE_FONT_SIZES: readonly SubtitleFontSize[] = [
-  "sm",
-  "md",
-  "lg",
-  "xl",
-] as const;
-
 export function isSubtitleFontSize(value: unknown): value is SubtitleFontSize {
   return value === "sm" || value === "md" || value === "lg" || value === "xl";
 }
@@ -496,35 +489,6 @@ export function emptySubtitleAgentState(
     cueIndex: null,
     hint: null,
     updatedAt: null,
-  };
-}
-
-/** Coerce legacy snapshots missing fontSize / leadMs / timingMode / cueIndex. */
-export function normalizeSubtitleAgentState(
-  raw: SubtitleAgentState | null | undefined,
-): SubtitleAgentState {
-  const base = raw ?? emptySubtitleAgentState();
-  const cueIndexRaw = (base as { cueIndex?: unknown }).cueIndex;
-  const cueIndex =
-    typeof cueIndexRaw === "number" && Number.isFinite(cueIndexRaw)
-      ? cueIndexRaw === -1
-        ? -1
-        : cueIndexRaw >= 0
-          ? Math.floor(cueIndexRaw)
-          : null
-      : null;
-  return {
-    ...base,
-    fontSize: isSubtitleFontSize(base.fontSize) ? base.fontSize : "md",
-    leadMs: normalizeSubtitleLeadMs(
-      (base as { leadMs?: unknown }).leadMs,
-    ),
-    timingMode: isSubtitleTimingMode(
-      (base as { timingMode?: unknown }).timingMode,
-    )
-      ? (base as { timingMode: SubtitleTimingMode }).timingMode
-      : "exact",
-    cueIndex,
   };
 }
 
