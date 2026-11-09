@@ -129,6 +129,20 @@ const HARD_YT_HINT_PREFIXES = [
 const YT_HARD_FAIL_BACKOFF_MS = 30_000;
 const ytHardFailUntil = new Map<string, number>();
 
+/**
+ * Session closed: cancel its running karaoke/prepare job and drop every
+ * per-session map entry (the next job of a dead session sees a stale
+ * generation and stops).
+ */
+export function disposeSubtitleSession(sessionId: string): void {
+  bumpJob(sessionId);
+  jobGeneration.delete(sessionId);
+  prepareTokens.delete(sessionId);
+  inflightJobs.delete(sessionId);
+  pendingAdds.delete(sessionId);
+  forgetReadyAgent(sessionId);
+}
+
 function bumpJob(sessionId: string): number {
   const next = (jobGeneration.get(sessionId) ?? 0) + 1;
   jobGeneration.set(sessionId, next);

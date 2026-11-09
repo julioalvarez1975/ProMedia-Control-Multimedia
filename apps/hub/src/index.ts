@@ -8,8 +8,12 @@ import { setSessionBroadcaster } from "./broadcast.js";
 import { listLanIPv4, resolveHubListenHost } from "./lan.js";
 import { ensureLibraryLayout } from "./library-store.js";
 import { createApiRoutes } from "./routes.js";
+import { checkEnvironmentAtStartup, lastStartupChecks } from "./startup-check.js";
 import { ensureSubtitleDirs } from "./subtitle-paths.js";
-import { WsHub } from "./ws-hub.js";
+import { assetStore } from "./asset-store.js";
+import { sessionStore } from "./session-store.js";
+import { disposeSubtitleSession } from "./subtitle-agent.js";
+import { forgetClockReports, WsHub } from "./ws-hub.js";
 
 const app = new Hono();
 const port = Number(process.env.PORT ?? 8787);
@@ -73,6 +77,7 @@ app.get("/health", (c) =>
     mode: deployMode,
     listenHost,
     lanAddresses,
+    startup: lastStartupChecks(),
     mediaAdapter: process.env.MEDIA_ADAPTER ?? (deployMode === "cloud" ? "s3-compatible" : "local"),
   }),
 );
@@ -144,3 +149,36 @@ server.on("error", (err: NodeJS.ErrnoException) => {
 // Attach WS upgrade handler (ticket auth on /api/v1/ws)
 const hub = new WsHub(server as Server);
 setSessionBroadcaster((sessionId, message) => hub.broadcast(sessionId, message));
+
+// ── Session lifecycle: release everything a closed session owned ───────
+sessionStore.onSessionClosed((sessionId) => {
+  disposeSubtitleSession(sessionId);
+  forgetClockReports(sessionId);
+  void assetStore.dropSession(sessionId);
+});
+
+// Tickets nobody uses (no open socket) are released after TICKET_IDLE_MS.
+setInterval(() => {
+  const n = sessionStore.releaseIdleTickets();
+  if (n > 0) console.log(`[hub] released ${n} idle ticket(s)`);
+}, 60_000).unref();
+
+let shuttingDown = false;
+function shutdown(signal: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[hub] ${signal}: closing sessions and sockets…`);
+  hub.shutdown();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 2_000).unref();
+}
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+// Probe ffmpeg / yt-dlp / whisper / venv once and tell the operator what is missing.
+void checkEnvironmentAtStartup().catch((err) => {
+  console.error(
+    "[hub] el chequeo del entorno falló:",
+    err instanceof Error ? err.message : err,
+  );
+});

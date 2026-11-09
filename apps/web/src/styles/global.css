@@ -4798,3 +4798,20 @@ body.output-route #root {
     box-shadow: 0 0 0 2px rgba(47, 191, 90, 0.5);
   }
 }
+
+/* Hub boot check: karaoke tools missing (ffmpeg, yt-dlp, whisper, venv). */
+.control-banner-env {
+  border: 1px solid rgba(240, 180, 60, 0.55);
+  background: rgba(240, 180, 60, 0.1);
+  color: var(--text, #e8eef7);
+}
+
+.control-banner-env-list {
+  margin: 0.35rem 0;
+  padding-left: 1.1rem;
+  font-size: 0.85rem;
+}
+
+.control-banner-env-list small {
+  color: var(--muted);
+}

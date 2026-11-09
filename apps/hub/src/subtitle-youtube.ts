@@ -659,10 +659,20 @@ export async function listYoutubeCaptionTracks(options: {
       "--",
       url,
     ]);
-  } catch {
+  } catch (err) {
+    console.warn(
+      "[subtitle] yt-dlp captions list failed to start:",
+      err instanceof Error ? err.message : err,
+    );
     return [];
   }
-  if (result.code !== 0 || !result.stdout.trim()) return [];
+  if (result.code !== 0 || !result.stdout.trim()) {
+    console.warn(
+      `[subtitle] yt-dlp captions list failed (code=${result.code}) ${videoId}:`,
+      result.stderr.trim().split("\n").slice(-2).join(" | ").slice(0, 300),
+    );
+    return [];
+  }
   let data: {
     subtitles?: Record<string, unknown>;
     automatic_captions?: Record<string, unknown>;
@@ -670,6 +680,7 @@ export async function listYoutubeCaptionTracks(options: {
   try {
     data = JSON.parse(result.stdout) as typeof data;
   } catch {
+    console.warn("[subtitle] yt-dlp captions list: output is not JSON", videoId);
     return [];
   }
   const out: YoutubeCaptionTrackInfo[] = [];
@@ -728,10 +739,20 @@ export async function fetchYoutubeMeta(options: {
       "--",
       url,
     ]);
-  } catch {
+  } catch (err) {
+    console.warn(
+      "[subtitle] yt-dlp metadata failed to start:",
+      err instanceof Error ? err.message : err,
+    );
     return null;
   }
-  if (result.code !== 0 || !result.stdout.trim()) return null;
+  if (result.code !== 0 || !result.stdout.trim()) {
+    console.warn(
+      `[subtitle] yt-dlp metadata failed (code=${result.code}) ${videoId}:`,
+      result.stderr.trim().split("\n").slice(-2).join(" | ").slice(0, 300),
+    );
+    return null;
+  }
   let data: {
     title?: string;
     fulltitle?: string;
@@ -744,6 +765,7 @@ export async function fetchYoutubeMeta(options: {
   try {
     data = JSON.parse(result.stdout) as typeof data;
   } catch {
+    console.warn("[subtitle] yt-dlp metadata: output is not JSON", videoId);
     return null;
   }
   const title =

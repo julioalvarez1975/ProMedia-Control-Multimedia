@@ -163,6 +163,8 @@
   "control.wsConnecting": "WS conectando…",
   "control.wsConnectingHint": "Conectando al hub… Si no abre, comprueba que `pnpm dev` tenga el hub en :8787.",
   "control.hubUnreachable": "El hub no está corriendo. Abrí Terminal en la carpeta promedia y ejecutá: pnpm dev",
+  "control.envIssuesTitle": "Aviso del entorno del karaoke",
+  "control.envIssuesHint": "Instalá o corregí lo indicado; el hub sigue funcionando sin eso.",
   "control.hubDownFooter": "Hub apagado — no solo WS",
   "control.lanRemoteHint": "Teléfono (misma Wi‑Fi)",
   "control.lanRemoteCopy": "Copiar",
