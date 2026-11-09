@@ -107,6 +107,10 @@ export function getBrandingLogoUpdatedAt(): string | null {
   return cachedMeta?.updatedAt ?? null;
 }
 
+export function getBrandingLogoMeta(): BrandingLogoMeta | null {
+  return cachedMeta;
+}
+
 export async function getBrandingLogo(): Promise<{
   bytes: Buffer;
   meta: BrandingLogoMeta;

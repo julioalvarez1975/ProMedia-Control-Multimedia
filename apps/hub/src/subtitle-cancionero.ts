@@ -1029,6 +1029,193 @@ function cuesFromVoiceStarts(
 }
 
 /**
+ * Snap ASR/caption voice clocks onto real silence onsets, then −airMs.
+ * Silence onsets span the FULL track (backbone). ASR only nudges locally —
+ * never pack every line into the first minute when captions die early.
+ */
+export function snapAlignedCuesToSilenceOnsets(
+  alignedCues: readonly SubtitleCue[],
+  speechOnsetsMs: readonly number[],
+  durationMs = 0,
+  airMs: number = SILENCE_AIR_ANTICIPATION_MS,
+  silences: readonly SilenceRegion[] = [],
+): CancioneroAlignResult {
+  const exactLines = alignedCues
+    .map((c) => String(c.text ?? "").trim())
+    .filter(Boolean);
+  if (exactLines.length === 0) {
+    return { cues: [], alignedCount: 0, synced: false };
+  }
+
+  const asrStarts = alignedCues.map((c) => Math.max(0, Math.round(c.startMs)));
+  const asrMin = asrStarts.length ? Math.min(...asrStarts) : 0;
+  const asrMax = asrStarts.length ? Math.max(...asrStarts) : 0;
+  const asrSpan = Math.max(0, asrMax - asrMin);
+
+  if (speechOnsetsMs.length === 0) {
+    // No silence map. If ASR/captions only cover the opening, redistribute
+    // across the real duration so lyrics do not vanish after ~1 minute.
+    const total = Math.max(
+      durationMs > 0 ? durationMs : 0,
+      asrMax + 4_000,
+      exactLines.length * 2_500,
+    );
+    const asrTooShort =
+      total >= 90_000 && asrSpan > 0 && asrSpan < Math.min(75_000, total * 0.45);
+    if (asrTooShort) {
+      const equal = cuesFromEqualTime(exactLines, total);
+      return {
+        cues: equal,
+        alignedCount: 0,
+        synced: false,
+      };
+    }
+    const starts = asrStarts.map((onset) => cueStartWithAirMs(onset, airMs));
+    const voiceEnds = alignedCues.map((c) =>
+      Math.max(0, Math.round(c.endMs)),
+    );
+    const cues = cuesFromVoiceStarts(exactLines, starts, total, voiceEnds);
+    return {
+      cues,
+      alignedCount: cues.length,
+      synced: cues.length >= 2,
+    };
+  }
+
+  const onsets = [...speechOnsetsMs]
+    .map((t) => Math.max(0, Math.round(t)))
+    .filter((t) => t > 40)
+    .filter((t, i, arr) => i === 0 || t > arr[i - 1]!)
+    .sort((a, b) => a - b);
+
+  if (onsets.length === 0) {
+    return alignCancioneroLinesToSilence(
+      exactLines,
+      speechOnsetsMs,
+      durationMs,
+      airMs,
+      silences,
+    );
+  }
+
+  const total = Math.max(
+    durationMs > 0 ? durationMs : 0,
+    onsets[onsets.length - 1]! + 4_000,
+    asrMax + 4_000,
+    exactLines.length * 2_500,
+  );
+
+  // Backbone spans the whole song — prevents “lost after 1 minute” when ASR
+  // captions only timed the opening verse.
+  const backbone = pickPhraseOnsetsForLines(
+    onsets,
+    exactLines.length,
+    total,
+    silences,
+  );
+
+  const silenceByEnd = new Map<number, number>();
+  for (const s of silences) {
+    const end = Math.max(0, Math.round(s.endMs));
+    const dur = Math.max(0, Math.round(s.durationMs));
+    silenceByEnd.set(end, Math.max(silenceByEnd.get(end) ?? 0, dur));
+  }
+  const weightAt = (onset: number): number => {
+    let best = 0;
+    for (const [end, dur] of silenceByEnd) {
+      if (Math.abs(end - onset) <= 90) best = Math.max(best, dur);
+    }
+    return best;
+  };
+
+  const firstPhrase =
+    onsets.find((t) => weightAt(t) >= PHRASE_SILENCE_MS) ??
+    backbone[0] ??
+    onsets[0]!;
+
+  // Trust ASR nudge only when its span covers a real share of the track.
+  const asrTrusted =
+    asrSpan >= 90_000 || (total > 0 && asrSpan >= total * 0.45);
+
+  const MIN_LINE_GAP_MS = 850;
+  const used = new Set<number>();
+  const voiceOnsets: number[] = [];
+
+  for (let i = 0; i < exactLines.length; i++) {
+    const spread = backbone[i] ?? firstPhrase + i * 2_500;
+    const asrHint = asrStarts[i] ?? spread;
+    const prev = voiceOnsets[i - 1];
+    const minOnset =
+      prev != null ? prev + MIN_LINE_GAP_MS : Math.max(firstPhrase, 0);
+
+    // Default target = silence backbone across full duration.
+    let target = spread;
+    if (asrTrusted && Math.abs(asrHint - spread) <= 12_000) {
+      target = Math.max(minOnset, asrHint);
+    }
+
+    let best: number | null = null;
+    let bestScore = -Infinity;
+    for (const onset of onsets) {
+      if (used.has(onset)) continue;
+      if (onset < minOnset - 200) continue;
+      const delta = onset - target;
+      // Keep local to the backbone/ASR target — do not jump back to intro.
+      if (Math.abs(delta) > 18_000) continue;
+      const silenceW = weightAt(onset);
+      const earlyPenalty = delta < 0 ? Math.abs(delta) * 1.4 : delta * 0.25;
+      const score = silenceW * 2.2 - earlyPenalty;
+      if (score > bestScore) {
+        bestScore = score;
+        best = onset;
+      }
+    }
+    if (best == null) {
+      for (const onset of onsets) {
+        if (used.has(onset)) continue;
+        if (onset < minOnset) continue;
+        best = onset;
+        break;
+      }
+    }
+    if (best == null) {
+      best = Math.max(minOnset, spread, (prev ?? firstPhrase) + 2_200);
+    }
+    used.add(best);
+    voiceOnsets.push(best);
+  }
+
+  const startsBuilt = voiceOnsets.map((onset) =>
+    cueStartWithAirMs(onset, airMs),
+  );
+  // Prefer caption/ASR last-word ends; else breath before the next onset.
+  const asrEnds = alignedCues.map((c) => Math.max(0, Math.round(c.endMs)));
+  const voiceEnds = voiceOnsets.map((onset, i) => {
+    const nextOnset =
+      i + 1 < voiceOnsets.length ? voiceOnsets[i + 1]! : total;
+    const asrEnd = asrEnds[i];
+    if (
+      typeof asrEnd === "number" &&
+      Number.isFinite(asrEnd) &&
+      asrEnd > onset + 400
+    ) {
+      // Keep last-word clock even if silence snap moved the start slightly.
+      return Math.min(Math.max(asrEnd, onset + 700), nextOnset);
+    }
+    return phraseVoiceEndMs(onset, nextOnset, silences);
+  });
+  const cues = cuesFromVoiceStarts(exactLines, startsBuilt, total, voiceEnds);
+  const alignedCount = Math.min(
+    exactLines.length,
+    onsets.length,
+    voiceOnsets.length,
+  );
+  // Snap without lyric confirmation is not text-synced (WhisperX may still run).
+  const synced = asrTrusted && alignedCount >= Math.max(2, Math.ceil(exactLines.length * 0.35));
+  return { cues, alignedCount, synced };
+}
+
+/**
  * Map exact cancionero lines onto ASR/caption clocks (forced align).
  * Timing source text is used only for alignment — cue `.text` stays Biblioteca.
  * Returns one cue per exact line; call packKaraokeDisplayCues for 2–3 line UI.

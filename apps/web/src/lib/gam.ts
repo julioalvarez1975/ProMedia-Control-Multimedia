@@ -22,6 +22,14 @@ export const GAM_HEADER_SIZES = [
   [320, 100],
 ] as const;
 
+export const GAM_HEADER_SIZE_NOTES = [
+  "970×90 — large desktop leaderboard",
+  "728×90 — standard leaderboard",
+  "320×50 — mobile banner",
+  "320×100 — large mobile banner",
+  "fluid — GPT fluid size when the creative supports it",
+] as const;
+
 const SLOT_ELEMENT_ID = "promedia-control-gam-header";
 
 function trimEnv(value: string | undefined): string {
@@ -52,4 +60,8 @@ export function getGamConfig(): GamConfig | null {
     slotPath,
     slotElementId: SLOT_ELEMENT_ID,
   };
+}
+
+export function isGamConfigured(): boolean {
+  return getGamConfig() !== null;
 }
