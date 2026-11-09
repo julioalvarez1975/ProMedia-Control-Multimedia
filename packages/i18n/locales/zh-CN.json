@@ -67,6 +67,7 @@
   "text.slide": "幻灯片",
   "text.removeSlide": "删除",
   "text.slidePlaceholder": "输入文字。空行用于分隔短语（每个短语为一张幻灯片）…",
+  "text.blockHint": "整段文字为一个整体，与歌曲的保存方式一致。空行用于分隔短语（投影时每个短语为一张幻灯片）。",
   "text.addSlide": "+ 幻灯片",
   "text.cancel": "取消",
   "text.save": "保存",

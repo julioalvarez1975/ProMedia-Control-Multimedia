@@ -68,6 +68,7 @@
   "text.slide": "Slide",
   "text.removeSlide": "Quitar",
   "text.slidePlaceholder": "Escribe el texto. Una línea en blanco separa las frases (cada frase es un slide)…",
+  "text.blockHint": "Toda la letra en un solo bloque, tal como se guarda la canción. Una línea en blanco separa las frases (cada frase es un slide al proyectar).",
   "text.addSlide": "+ Slide",
   "text.cancel": "Cancelar",
   "text.save": "Guardar",

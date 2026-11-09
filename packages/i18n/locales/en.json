@@ -68,6 +68,7 @@
   "text.slide": "Slide",
   "text.removeSlide": "Remove",
   "text.slidePlaceholder": "Write the text. A blank line separates phrases (each phrase is a slide)…",
+  "text.blockHint": "The whole text as one block, the way the song is stored. A blank line separates phrases (each phrase is one slide when projected).",
   "text.addSlide": "+ Slide",
   "text.cancel": "Cancel",
   "text.save": "Save",
