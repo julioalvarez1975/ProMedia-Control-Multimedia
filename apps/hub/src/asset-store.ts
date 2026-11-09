@@ -37,6 +37,26 @@ export class AssetStore {
     return map ? [...map.values()] : [];
   }
 
+  /** Forget a closed session and delete its uploaded files from disk. */
+  async dropSession(sessionId: string): Promise<number> {
+    const map = this.bySession.get(sessionId);
+    this.bySession.delete(sessionId);
+    if (!map) return 0;
+    let removed = 0;
+    for (const asset of map.values()) {
+      try {
+        await this.adapter.delete?.(asset.storageKey);
+        removed += 1;
+      } catch (err) {
+        console.warn(
+          `[hub] could not delete asset ${asset.id}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+    return removed;
+  }
+
   private async putKind(
     sessionId: string,
     kind: MediaKind,

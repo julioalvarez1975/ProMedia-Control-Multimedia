@@ -163,6 +163,8 @@
   "control.wsConnecting": "WS connecting…",
   "control.wsConnectingHint": "Connecting to hub… If it stays closed, ensure `pnpm dev` has the hub on :8787.",
   "control.hubUnreachable": "The hub is not running. Open Terminal in the promedia folder and run: pnpm dev",
+  "control.envIssuesTitle": "Karaoke environment warning",
+  "control.envIssuesHint": "Install or fix what is listed; the hub keeps working without it.",
   "control.hubDownFooter": "Hub down — not just WS",
   "control.lanRemoteHint": "Phone (same Wi‑Fi)",
   "control.lanRemoteCopy": "Copy",

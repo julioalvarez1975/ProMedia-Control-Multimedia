@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
+import { readJsonFile, writeJsonAtomic } from "./json-file.js";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import type { PlaylistItem, SavedPlaylist } from "@promedia/shared";
@@ -31,16 +32,17 @@ export class PlaylistStore {
       return;
     }
     this.loaded = true;
-    try {
-      const raw = await readFile(dataPath(), "utf8");
-      const parsed = JSON.parse(raw) as { playlists?: SavedPlaylist[] };
-      for (const p of parsed.playlists ?? []) {
-        if (p?.id && p.name) {
-          this.items.set(p.id, p);
-        }
+    const res = await readJsonFile<{ playlists?: SavedPlaylist[] }>(
+      dataPath(),
+      "Guiones guardados",
+    );
+    if (res.status !== "ok") {
+      return;
+    }
+    for (const p of res.value.playlists ?? []) {
+      if (p?.id && p.name) {
+        this.items.set(p.id, p);
       }
-    } catch {
-      // missing file = empty
     }
   }
 
@@ -50,7 +52,7 @@ export class PlaylistStore {
     const playlists = [...this.items.values()].sort((a, b) =>
       a.name.localeCompare(b.name),
     );
-    await writeFile(file, JSON.stringify({ playlists }, null, 2), "utf8");
+    await writeJsonAtomic(file, { playlists });
   }
 
   async list(): Promise<SavedPlaylist[]> {

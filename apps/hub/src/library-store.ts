@@ -1,4 +1,5 @@
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { readJsonFile, writeJsonAtomic } from "./json-file.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
@@ -244,16 +245,17 @@ export class LibraryStore {
       return;
     }
     this.loaded = true;
-    try {
-      const raw = await readFile(indexPath(), "utf8");
-      const parsed = JSON.parse(raw) as { items?: LibraryItem[] };
-      for (const item of parsed.items ?? []) {
-        if (item?.id && item.category && item.title) {
-          this.items.set(item.id, item);
-        }
+    const res = await readJsonFile<{ items?: LibraryItem[] }>(
+      indexPath(),
+      "Biblioteca",
+    );
+    if (res.status !== "ok") {
+      return; // missing = empty; corrupt = quarantined + logged by readJsonFile
+    }
+    for (const item of res.value.items ?? []) {
+      if (item?.id && item.category && item.title) {
+        this.items.set(item.id, item);
       }
-    } catch {
-      // missing = empty
     }
   }
 
@@ -263,11 +265,7 @@ export class LibraryStore {
     const items = [...this.items.values()].sort((a, b) =>
       a.updatedAt < b.updatedAt ? 1 : -1,
     );
-    await writeFile(
-      indexPath(),
-      JSON.stringify({ items }, null, 2),
-      "utf8",
-    );
+    await writeJsonAtomic(indexPath(), { items });
   }
 
   private resolveUnderLibrary(relativePath: string): string {

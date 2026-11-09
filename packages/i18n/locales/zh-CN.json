@@ -163,6 +163,8 @@
   "control.wsConnecting": "WS 连接中…",
   "control.wsConnectingHint": "正在连接 hub… 若一直断开，请确认 `pnpm dev` 已在 :8787 启动 hub。",
   "control.hubUnreachable": "Hub 未运行。在 promedia 文件夹打开终端并执行：pnpm dev",
+  "control.envIssuesTitle": "卡拉OK 环境警告",
+  "control.envIssuesHint": "请安装或修复所列项目；没有它们 Hub 仍可运行。",
   "control.hubDownFooter": "Hub 已关闭 — 不只是 WS",
   "control.lanRemoteHint": "手机（同一 Wi‑Fi）",
   "control.lanRemoteCopy": "复制",

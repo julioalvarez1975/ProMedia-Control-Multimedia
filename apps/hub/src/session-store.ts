@@ -54,7 +54,12 @@ export type WsTicketRecord = {
   sessionId: string;
   role: ClientRole;
   createdAt: string;
+  /** Last time the ticket authenticated a request or its socket was alive. */
+  lastUsedAt: number;
 };
+
+/** A ticket nobody uses for this long (and with no open socket) is released. */
+export const TICKET_IDLE_MS = 10 * 60_000;
 
 export type SessionRecord = {
   id: string;
@@ -91,6 +96,9 @@ export class SessionStore {
   private readonly byCode = new Map<string, string>();
   private readonly byAccessToken = new Map<string, string>();
   private readonly tickets = new Map<string, WsTicketRecord>();
+  private readonly closeListeners: Array<(sessionId: string) => void> = [];
+  /** Tickets whose WebSocket is currently open (never idle-released). */
+  private readonly liveTickets = new Map<string, number>();
 
   create(mode: SessionMode = "lan"): {
     session: SessionRecord;
@@ -147,13 +155,76 @@ export class SessionStore {
       sessionId,
       role,
       createdAt: nowIso(),
+      lastUsedAt: Date.now(),
     };
     this.tickets.set(record.ticket, record);
     return record;
   }
 
   getTicket(ticket: string): WsTicketRecord | undefined {
-    return this.tickets.get(ticket);
+    const rec = this.tickets.get(ticket);
+    if (rec) rec.lastUsedAt = Date.now();
+    return rec;
+  }
+
+  /** A socket authenticated with this ticket opened (+1) or closed (-1). */
+  markTicketSocket(ticket: string, open: boolean): void {
+    const n = (this.liveTickets.get(ticket) ?? 0) + (open ? 1 : -1);
+    if (n > 0) this.liveTickets.set(ticket, n);
+    else this.liveTickets.delete(ticket);
+    const rec = this.tickets.get(ticket);
+    if (rec) rec.lastUsedAt = Date.now();
+  }
+
+  /** Release tickets that are idle and have no open socket. Returns count. */
+  releaseIdleTickets(now = Date.now(), idleMs = TICKET_IDLE_MS): number {
+    let released = 0;
+    for (const [ticket, rec] of this.tickets) {
+      if (this.liveTickets.has(ticket)) continue;
+      if (now - rec.lastUsedAt >= idleMs) {
+        this.tickets.delete(ticket);
+        released += 1;
+      }
+    }
+    return released;
+  }
+
+  ticketCount(): number {
+    return this.tickets.size;
+  }
+
+  /** Subscribe to session teardown (caches, jobs, files owned by the session). */
+  onSessionClosed(listener: (sessionId: string) => void): void {
+    this.closeListeners.push(listener);
+  }
+
+  /**
+   * Close a session and revoke everything that grants access to it: join code,
+   * access token and every WebSocket ticket. Returns false if it was unknown.
+   */
+  closeSession(sessionId: string): boolean {
+    const session = this.byId.get(sessionId);
+    if (!session) return false;
+    this.byId.delete(sessionId);
+    this.byCode.delete(session.code);
+    this.byAccessToken.delete(session.accessToken);
+    for (const [ticket, rec] of this.tickets) {
+      if (rec.sessionId === sessionId) {
+        this.tickets.delete(ticket);
+        this.liveTickets.delete(ticket);
+      }
+    }
+    for (const listener of this.closeListeners) {
+      try {
+        listener(sessionId);
+      } catch (err) {
+        console.warn(
+          `[hub] session cleanup failed for ${sessionId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+    return true;
   }
 
   toSnapshot(session: SessionRecord): SessionSnapshot {

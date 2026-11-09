@@ -84,7 +84,7 @@ import {
   createLibrarySong,
   uploadLibraryFile,
 } from "../lib/library";
-import { isLoopbackPageHost } from "../lib/hub";
+import { fetchHubHealth, isLoopbackPageHost, type HubHealth } from "../lib/hub";
 import {
   openOutputWindow,
   postOutputUnmute,
@@ -205,6 +205,25 @@ export function ControlPage() {
   itemsLenRef.current = items.length;
 
   // Backfill Guion labels: YouTube items stored as "YouTube {id}" get real titles.
+  // Hub boot check (ffmpeg / yt-dlp / whisper / venv): warn once per connection.
+  const [envIssues, setEnvIssues] = useState<NonNullable<HubHealth["startup"]>>([]);
+  const [envIssuesDismissed, setEnvIssuesDismissed] = useState(false);
+  const hubReachable = !session.hubUnreachable && session.hasSession;
+  useEffect(() => {
+    if (!hubReachable) {
+      return;
+    }
+    let cancelled = false;
+    void fetchHubHealth().then((health) => {
+      if (!cancelled) {
+        setEnvIssues((health?.startup ?? []).filter((c) => c.status !== "ok"));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [hubReachable]);
+
   useEffect(() => {
     if (!session.hasSession || session.wsStatus !== "open") return;
     for (const it of items) {
@@ -1918,6 +1937,34 @@ export function ControlPage() {
           {pairError ? (
             <p className="control-banner-error-text">{pairError}</p>
           ) : null}
+        </div>
+      ) : null}
+
+      {!session.hubUnreachable && !envIssuesDismissed && envIssues.length > 0 ? (
+        <div
+          className="control-banner control-banner-env control-banner-compact"
+          role={envIssues.some((c) => c.status === "fail") ? "alert" : "status"}
+        >
+          <strong>{t("control.envIssuesTitle")}</strong>
+          <ul className="control-banner-env-list">
+            {envIssues.map((c) => (
+              <li key={c.id}>
+                <b>{c.status === "fail" ? "✗" : "⚠"} {c.label}:</b> {c.detail}
+                <br />
+                <small>{c.fix}</small>
+              </li>
+            ))}
+          </ul>
+          <p>
+            <small>{t("control.envIssuesHint")}</small>
+          </p>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => setEnvIssuesDismissed(true)}
+          >
+            {t("control.close")}
+          </button>
         </div>
       ) : null}
 
