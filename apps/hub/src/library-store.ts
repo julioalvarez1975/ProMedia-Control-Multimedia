@@ -511,6 +511,7 @@ export class LibraryStore {
       bytes: opts.bytes,
       originalName: opts.originalName,
       mime: opts.mime,
+      cacheDir: path.join(libraryRoot(), "bibles", "cache"),
     });
     if (!imported.ok) {
       return { error: imported.error, message: imported.message };

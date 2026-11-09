@@ -1,7 +1,9 @@
 /**
  * i18n placeholders (ES / EN / PT / FR / zh-CN).
- * Locale JSON files live in ../locales/ (source of truth for strings).
- * Catalogs below mirror those files so the package builds for Node + Vite.
+ * The catalogs below are the single source of truth for UI strings.
+ * `locales/*.json` are generated from them on every build
+ * (scripts/export-locales.mjs) for external tools / translators — never edit
+ * the JSON by hand.
  */
 
 export type Locale = "es" | "en" | "pt" | "fr" | "zh-CN";
@@ -2045,6 +2047,11 @@ const catalogs: Record<Locale, Messages> = {
     "bible.localBadge": "本地"
   }
 };
+
+/** Read-only copy of one locale's catalog (used to export locales/*.json). */
+export function getCatalog(locale: Locale): Readonly<Record<string, string>> {
+  return { ...catalogs[locale] };
+}
 
 export function t(locale: Locale, key: string): string {
   return catalogs[locale][key] ?? catalogs.en[key] ?? key;

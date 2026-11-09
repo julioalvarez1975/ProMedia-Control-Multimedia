@@ -83,7 +83,9 @@ import {
   clearPersistMeta,
   forgetPersistedAgent,
   getPersistMeta,
+  cacheKeyOf,
   loadPersistedAgent,
+  resolveCacheKey,
   lyricsHash,
   setPersistMeta,
   type PersistedAgent,
@@ -962,6 +964,7 @@ async function tryCancioneroLyricPath(options: {
     // Partial alignments are never persisted.
     const lyricsFrom: "cancionero" | "lrclib" = lrclib ? "lrclib" : "cancionero";
     if (!hint.endsWith("_partial") && match) {
+      await resolveCacheKey(assetId, resolved.mediaPath);
       setPersistMeta(assetId, {
         songId: match.item.id,
         lyricsHash: lyricsHash(lines),
@@ -1727,7 +1730,7 @@ export function saveLrclibLyricsToLibrary(
     try {
       const song =
         getPersistMeta(assetId)?.lrclibSong ??
-        (await loadPersistedAgent(assetId, targetLang))?.lrclibSong;
+        (await loadPersistedAgent(cacheKeyOf(assetId) ?? assetId, targetLang))?.lrclibSong;
       if (!song || song.lines.length === 0) {
         setAgentHint(sessionId, "lyrics_save_failed");
         return;
@@ -1836,10 +1839,13 @@ async function restorePersistedAgent(
   sessionId: string,
   itemId: string,
   assetId: string,
+  mediaPath: string | null,
   targetLang: SubtitleTargetLang,
   cancelRunning: boolean,
 ): Promise<boolean> {
-  const saved = await loadPersistedAgent(assetId, targetLang);
+  const fileKey = await resolveCacheKey(assetId, mediaPath);
+  if (!fileKey) return false;
+  const saved = await loadPersistedAgent(fileKey, targetLang);
   if (!saved || !(await persistedStillValid(saved))) return false;
   const session = sessionStore.get(sessionId);
   const cur = session?.live.subtitleAgent;
@@ -1985,6 +1991,7 @@ async function runSubtitleJob(
         sessionId,
         peekResolved.item.id,
         peekResolved.assetId,
+        peekResolved.mediaPath,
         peekAgent.targetLang,
         busyOther != null,
       ))
