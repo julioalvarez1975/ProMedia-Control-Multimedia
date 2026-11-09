@@ -21,7 +21,6 @@ import {
   IconProject,
   IconSaveLyrics,
   IconSubtitles,
-  IconTeach,
 } from "./UiIcons";
 
 export type ControlHeaderToolbarProps = {
@@ -59,8 +58,6 @@ export type ControlHeaderToolbarProps = {
    */
   subtitleAgentErrorMessage?: string | null;
   onToggleSubtitleAgent?: () => void;
-  /** Open dialog to teach / correct cancionero song for karaoke. */
-  onTeachCancionero?: () => void;
   /** "Preparar Guion": queue progress from the hub (null = never run). */
   subtitlePrepare?: SubtitlePrepareState | null;
   /** At least one A/V item in the Guion and none projecting. */
@@ -133,7 +130,6 @@ export function ControlHeaderToolbar({
   subtitleAgentTitle,
   subtitleAgentErrorMessage,
   onToggleSubtitleAgent,
-  onTeachCancionero,
   subtitlePrepare,
   canPrepareGuion = false,
   onPrepareGuion,
@@ -181,16 +177,6 @@ export function ControlHeaderToolbar({
             tone="error"
             label={t("control.subtitleAgentError")}
             message={depsError}
-          />
-        ) : null}
-        {subtitleAgentEnabled && onTeachCancionero ? (
-          <ToolbarBtn
-            className="toolbar-cancionero-teach"
-            disabled={!canMutate}
-            title={t("control.cancioneroTeachTitle")}
-            label={t("control.cancioneroTeach")}
-            icon={<IconTeach />}
-            onClick={onTeachCancionero}
           />
         ) : null}
         {subtitleAgentEnabled && onPrepareGuion ? (

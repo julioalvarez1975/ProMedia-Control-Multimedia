@@ -4334,10 +4334,6 @@ body.output-route #root {
   opacity: 0.75;
 }
 
-.toolbar-cancionero-teach .toolbar-icon-btn-label {
-  max-width: 7.5rem;
-}
-
 .video-preview,
 .video-live-panel,
 .video-output {

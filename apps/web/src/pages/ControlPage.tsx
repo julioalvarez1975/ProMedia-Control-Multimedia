@@ -35,8 +35,6 @@ import {
 import { AboutDialog } from "../components/AboutDialog";
 import { BibliotecaDialog } from "../components/BibliotecaDialog";
 import { BibleDialog } from "../components/BibleDialog";
-import { CancioneroNoMatchDialog } from "../components/CancioneroNoMatchDialog";
-import { CancioneroTeachDialog } from "../components/CancioneroTeachDialog";
 import { ControlAdBanner } from "../components/ControlAdBanner";
 import { ControlHeaderToolbar } from "../components/ControlHeaderToolbar";
 import { LanRemoteHint } from "../components/LanRemoteHint";
@@ -181,9 +179,6 @@ export function ControlPage() {
     }>
   >([]);
   const [aboutOpen, setAboutOpen] = useState(false);
-  const [cancioneroNoMatchOpen, setCancioneroNoMatchOpen] = useState(false);
-  const [cancioneroTeachOpen, setCancioneroTeachOpen] = useState(false);
-  const [cancioneroTeachBusy, setCancioneroTeachBusy] = useState(false);
   /** Local Preview playhead (ms) before Go Live — karaoke overlay + ←/→ teach. */
   const [previewLocalPositionMs, setPreviewLocalPositionMs] = useState(0);
   /** YouTube items already probed for oEmbed title (avoid repeat fetches). */
@@ -506,8 +501,8 @@ export function ControlPage() {
   /** Playlist chrome needs a session; mutations need WS (auto-reconnects if down). */
   const canMutate = sessionReady && wsReady;
 
-  // Cancionero miss no longer opens a blocking modal — Whisper/captions
-  // auto-generate subtitle text. Teach UI remains available from the toolbar.
+  // Cancionero miss does not open a modal — Whisper/captions auto-generate
+  // the subtitle text.
 
   // When agent is on, re-target ASR if focus item changed (live preferred).
   useEffect(() => {
@@ -1833,7 +1828,6 @@ export function ControlPage() {
                   });
                 }
               }}
-              onTeachCancionero={() => setCancioneroTeachOpen(true)}
               subtitlePrepare={subtitleAgent.prepare ?? null}
               canPrepareGuion={canPrepareGuion}
               onPrepareGuion={() =>
@@ -1905,71 +1899,6 @@ export function ControlPage() {
       </div>
 
       <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
-
-      <CancioneroNoMatchDialog
-        open={cancioneroNoMatchOpen}
-        onClose={() => setCancioneroNoMatchOpen(false)}
-        hint={subtitleAgent.hint}
-        mediaTitle={(() => {
-          const id = subtitleAgent.itemId;
-          const it = id
-            ? items.find((i) => i.id === id) ?? subtitleFocusItem
-            : subtitleFocusItem;
-          if (!it) return null;
-          if (it.type === "audio") {
-            return it.payload.title?.trim() || null;
-          }
-          if (it.type === "video" && it.payload.sourceKind === "youtube") {
-            return (
-              it.payload.title?.trim() ||
-              `YouTube ${it.payload.videoId || ""}`.trim() ||
-              null
-            );
-          }
-          return null;
-        })()}
-        onTeach={() => {
-          setCancioneroNoMatchOpen(false);
-          setCancioneroTeachOpen(true);
-        }}
-      />
-
-      <CancioneroTeachDialog
-        open={cancioneroTeachOpen}
-        busy={cancioneroTeachBusy}
-        onClose={() => {
-          if (!cancioneroTeachBusy) setCancioneroTeachOpen(false);
-        }}
-        mediaTitle={(() => {
-          const id = subtitleAgent.itemId || liveItemId || selectedItemId;
-          const it = id ? items.find((i) => i.id === id) : null;
-          if (!it) return null;
-          if (it.type === "audio" || it.type === "video") {
-            return it.payload.title?.trim() || null;
-          }
-          return null;
-        })()}
-        matchedSongTitle={null}
-        onTeach={(songId) => {
-          setCancioneroTeachBusy(true);
-          const ok = session.teachSubtitleCancionero({
-            songId,
-            itemId:
-              subtitleAgent.itemId ||
-              liveItemId ||
-              selectedItemId ||
-              undefined,
-          });
-          setCancioneroTeachBusy(false);
-          if (ok) {
-            setCancioneroTeachOpen(false);
-            setUploadHint(t("control.cancioneroTeachSaving"));
-          } else {
-            setUploadHint(t("control.wsDisconnectedHint"));
-            session.reconnect();
-          }
-        }}
-      />
 
       {popupBlockedUrl ? (
         <div className="control-banner control-banner-compact" role="status">

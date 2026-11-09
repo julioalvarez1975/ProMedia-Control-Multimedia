@@ -386,12 +386,6 @@ export function useSessionConnection(role: ClientRole) {
     [send],
   );
 
-  const teachSubtitleCancionero = useCallback(
-    (patch: { songId: string; itemId?: string }): boolean =>
-      send("live.subtitleAgent.teach", patch),
-    [send],
-  );
-
   const nudgeSubtitleCancionero = useCallback(
     (patch: {
       delta: -1 | 1;
@@ -438,7 +432,6 @@ export function useSessionConnection(role: ClientRole) {
     setVideoCover,
     prepareSubtitleAgent,
     saveSubtitleLyrics,
-    teachSubtitleCancionero,
     nudgeSubtitleCancionero,
     isWsOpen,
     hasSession: Boolean(sessionId && wsTicket),
