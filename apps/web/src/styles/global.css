@@ -4815,3 +4815,21 @@ body.output-route #root {
 .control-banner-env-list small {
   color: var(--muted);
 }
+
+/* Scene-change transitions (Logo / Vacío / Clear overlays, video cover):
+   TransitionStack plays the chosen "Efectos" animation on enter and the same
+   keyframes in reverse on leave. */
+.pm-tx-stack-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.pm-tx-stack-layer .scene-overlay,
+.pm-tx-stack-layer .video-cover-layer {
+  animation: none;
+}
+
+.pm-tx-leave {
+  animation-direction: reverse;
+}

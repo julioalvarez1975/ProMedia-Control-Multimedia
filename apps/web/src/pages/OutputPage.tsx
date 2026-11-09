@@ -432,6 +432,7 @@ export function OutputPage() {
             />
             <SceneOverlay
               mode={sceneMode}
+              effect={transitionEffect}
               logoSrc={
                 logoUpdatedAt && sessionId && wsTicket
                   ? buildBrandingLogoUrl(
