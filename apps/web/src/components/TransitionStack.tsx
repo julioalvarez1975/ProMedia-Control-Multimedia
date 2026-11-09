@@ -40,6 +40,11 @@ export function TransitionStack({
 }: TransitionStackProps) {
   const [layers, setLayers] = useState<Layer[]>([]);
   const timers = useRef<number[]>([]);
+  const latestKey = useRef<string | null>(layerKey);
+  /** effect "none": no animation, drop old layers on the next tick. */
+  const sweepSoon = (fn: () => void) => {
+    timers.current.push(window.setTimeout(fn, 0));
+  };
   const ms = effect === "none" ? 0 : TRANSITION_DURATION_MS;
 
   useEffect(
@@ -50,16 +55,20 @@ export function TransitionStack({
   );
 
   useEffect(() => {
-    const drop = (keys: (key: string) => boolean) => {
-      if (ms === 0) {
-        setLayers((prev) => prev.filter((l) => !keys(l.key)));
-        return;
-      }
-      const t = window.setTimeout(() => {
-        setLayers((prev) => prev.filter((l) => !keys(l.key)));
-      }, ms + 40);
-      timers.current.push(t);
+    // After the effect ends, keep ONLY the layer that is current at that
+    // moment (an older timer must never remove a layer added later).
+    const sweep = () => {
+      setLayers((prev) =>
+        prev.filter((l) => l.key === latestKey.current && !l.leaving),
+      );
     };
+    latestKey.current = layerKey;
+    if (ms === 0) {
+      sweepSoon(sweep);
+    } else {
+      const t = window.setTimeout(sweep, ms + 40);
+      timers.current.push(t);
+    }
 
     setLayers((prev) => {
       const top = prev.filter((l) => !l.leaving).at(-1);
@@ -73,12 +82,6 @@ export function TransitionStack({
       return [...prev, { key: layerKey, node, leaving: false }];
     });
 
-    if (layerKey === null) {
-      drop(() => true);
-    } else {
-      // Older layers stay under the new one until its effect finishes.
-      drop((k) => k !== layerKey);
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layerKey, effect]);
 
