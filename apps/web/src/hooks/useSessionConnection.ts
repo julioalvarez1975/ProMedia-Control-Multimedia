@@ -369,6 +369,12 @@ export function useSessionConnection(role: ClientRole) {
     [send],
   );
 
+  const setVideoCover = useCallback(
+    (patch: { assetId?: string | null; active?: boolean }): boolean =>
+      send("live.setVideoCover", patch),
+    [send],
+  );
+
   const prepareSubtitleAgent = useCallback(
     (cancel?: boolean): boolean =>
       send("live.subtitleAgent.prepare", { cancel: cancel === true }),
@@ -429,6 +435,7 @@ export function useSessionConnection(role: ClientRole) {
     setWatermark,
     setTheme,
     setSubtitleAgent,
+    setVideoCover,
     prepareSubtitleAgent,
     saveSubtitleLyrics,
     teachSubtitleCancionero,

@@ -54,7 +54,12 @@ export type WsTicketRecord = {
   sessionId: string;
   role: ClientRole;
   createdAt: string;
+  /** Last time the ticket authenticated a request or its socket was alive. */
+  lastUsedAt: number;
 };
+
+/** A ticket nobody uses for this long (and with no open socket) is released. */
+export const TICKET_IDLE_MS = 10 * 60_000;
 
 export type SessionRecord = {
   id: string;
@@ -91,6 +96,9 @@ export class SessionStore {
   private readonly byCode = new Map<string, string>();
   private readonly byAccessToken = new Map<string, string>();
   private readonly tickets = new Map<string, WsTicketRecord>();
+  private readonly closeListeners: Array<(sessionId: string) => void> = [];
+  /** Tickets whose WebSocket is currently open (never idle-released). */
+  private readonly liveTickets = new Map<string, number>();
 
   create(mode: SessionMode = "lan"): {
     session: SessionRecord;
@@ -147,13 +155,76 @@ export class SessionStore {
       sessionId,
       role,
       createdAt: nowIso(),
+      lastUsedAt: Date.now(),
     };
     this.tickets.set(record.ticket, record);
     return record;
   }
 
   getTicket(ticket: string): WsTicketRecord | undefined {
-    return this.tickets.get(ticket);
+    const rec = this.tickets.get(ticket);
+    if (rec) rec.lastUsedAt = Date.now();
+    return rec;
+  }
+
+  /** A socket authenticated with this ticket opened (+1) or closed (-1). */
+  markTicketSocket(ticket: string, open: boolean): void {
+    const n = (this.liveTickets.get(ticket) ?? 0) + (open ? 1 : -1);
+    if (n > 0) this.liveTickets.set(ticket, n);
+    else this.liveTickets.delete(ticket);
+    const rec = this.tickets.get(ticket);
+    if (rec) rec.lastUsedAt = Date.now();
+  }
+
+  /** Release tickets that are idle and have no open socket. Returns count. */
+  releaseIdleTickets(now = Date.now(), idleMs = TICKET_IDLE_MS): number {
+    let released = 0;
+    for (const [ticket, rec] of this.tickets) {
+      if (this.liveTickets.has(ticket)) continue;
+      if (now - rec.lastUsedAt >= idleMs) {
+        this.tickets.delete(ticket);
+        released += 1;
+      }
+    }
+    return released;
+  }
+
+  ticketCount(): number {
+    return this.tickets.size;
+  }
+
+  /** Subscribe to session teardown (caches, jobs, files owned by the session). */
+  onSessionClosed(listener: (sessionId: string) => void): void {
+    this.closeListeners.push(listener);
+  }
+
+  /**
+   * Close a session and revoke everything that grants access to it: join code,
+   * access token and every WebSocket ticket. Returns false if it was unknown.
+   */
+  closeSession(sessionId: string): boolean {
+    const session = this.byId.get(sessionId);
+    if (!session) return false;
+    this.byId.delete(sessionId);
+    this.byCode.delete(session.code);
+    this.byAccessToken.delete(session.accessToken);
+    for (const [ticket, rec] of this.tickets) {
+      if (rec.sessionId === sessionId) {
+        this.tickets.delete(ticket);
+        this.liveTickets.delete(ticket);
+      }
+    }
+    for (const listener of this.closeListeners) {
+      try {
+        listener(sessionId);
+      } catch (err) {
+        console.warn(
+          `[hub] session cleanup failed for ${sessionId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+    return true;
   }
 
   toSnapshot(session: SessionRecord): SessionSnapshot {
@@ -315,6 +386,7 @@ export class SessionStore {
       session.live.currentSlideIndex = 0;
       session.live.mediaClock = null;
       session.live.sceneMode = "normal";
+      session.live.videoCover = null;
     }
     return { message: this.bumpUpdated(session), skipped };
   }
@@ -393,6 +465,7 @@ export class SessionStore {
       session.live.currentItemId = null;
       session.live.currentSlideIndex = 0;
       session.live.mediaClock = null;
+      session.live.videoCover = null;
     }
     return this.bumpUpdated(session);
   }
@@ -433,6 +506,10 @@ export class SessionStore {
       item.type !== "presentation"
     ) {
       return { error: "unsupported_type" };
+    }
+    // The cover belongs to the item it was set on: another item starts clean.
+    if (session.live.currentItemId !== itemId) {
+      session.live.videoCover = null;
     }
     session.live.currentItemId = itemId;
     session.live.currentSlideIndex = 0;
@@ -495,6 +572,7 @@ export class SessionStore {
     session.live.currentItemId = null;
     session.live.currentSlideIndex = 0;
     session.live.mediaClock = null;
+    session.live.videoCover = null;
     session.live.sceneMode = "normal";
     // Keep the subtitle agent state: stopping the projection (black) must not
     // wipe the aligned cues. Wiping made Control re-target the agent and re-run
@@ -515,6 +593,49 @@ export class SessionStore {
     // Overlay only — does not touch currentItemId or mediaClock (Q1/Q2)
     session.live.sceneMode = sceneMode;
     return this.bumpUpdated(session);
+  }
+
+  /**
+   * Image cover over the live video/audio (under the subtitle). Overlay only:
+   * does not touch currentItemId or mediaClock, so playback never stops.
+   * - `assetId` string: choose that session image (active unless active:false)
+   * - `assetId` null: forget the cover
+   * - only `active`: toggle the current image
+   */
+  setVideoCover(
+    session: SessionRecord,
+    patch: { assetId?: string | null; active?: boolean },
+  ): HubMessage | { error: string } {
+    const live = session.live;
+    const current = live.currentItemId
+      ? session.playlist.items.find((i) => i.id === live.currentItemId)
+      : null;
+    if (!current || (current.type !== "video" && current.type !== "audio")) {
+      return { error: "no_av_live" };
+    }
+    if (patch.assetId === null) {
+      live.videoCover = null;
+      return this.bumpUpdated(session);
+    }
+    if (typeof patch.assetId === "string") {
+      const asset = assetStore.get(session.id, patch.assetId);
+      if (!asset || asset.kind !== "image") {
+        return { error: "cover_asset_not_found" };
+      }
+      live.videoCover = {
+        assetId: asset.id,
+        active: patch.active !== false,
+      };
+      return this.bumpUpdated(session);
+    }
+    if (typeof patch.active === "boolean") {
+      if (!live.videoCover) {
+        return { error: "no_cover_image" };
+      }
+      live.videoCover = { ...live.videoCover, active: patch.active };
+      return this.bumpUpdated(session);
+    }
+    return { error: "invalid_video_cover" };
   }
 
   setWatermark(

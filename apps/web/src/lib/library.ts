@@ -1,9 +1,7 @@
 import type {
-  BiblePayload,
   LibraryItem,
   LibrarySongPayload,
   PlaylistItem,
-  TextPayload,
 } from "@promedia/shared";
 import { hubHttpBase } from "./hub";
 import { libraryAuthHeaders, libraryAuthQuery } from "./libraryAuth";
@@ -69,45 +67,6 @@ export async function updateLibrarySong(
   };
   if (!res.ok || !body.item) {
     throw new Error(body.message || body.error || `song_update_${res.status}`);
-  }
-  return body.item;
-}
-
-export async function saveLibraryText(opts: {
-  title: string;
-  text: TextPayload;
-}): Promise<LibraryItem> {
-  const res = await fetch(`${hubHttpBase()}/api/v1/library/text`, {
-    method: "POST",
-    headers: libraryAuthHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify(opts),
-  });
-  const body = (await res.json().catch(() => ({}))) as {
-    item?: LibraryItem;
-    error?: string;
-    message?: string;
-  };
-  if (!res.ok || !body.item) {
-    throw new Error(body.message || body.error || `text_save_${res.status}`);
-  }
-  return body.item;
-}
-
-export async function saveLibraryBible(
-  payload: BiblePayload,
-): Promise<LibraryItem> {
-  const res = await fetch(`${hubHttpBase()}/api/v1/library/bible`, {
-    method: "POST",
-    headers: libraryAuthHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify(payload),
-  });
-  const body = (await res.json().catch(() => ({}))) as {
-    item?: LibraryItem;
-    error?: string;
-    message?: string;
-  };
-  if (!res.ok || !body.item) {
-    throw new Error(body.message || body.error || `bible_save_${res.status}`);
   }
   return body.item;
 }
@@ -297,3 +256,24 @@ export const LIBRARY_BIBLE_UPLOAD_ACCEPT = ".xml,.xmm,.pdf,application/pdf,text/
 
 export const LIBRARY_SONG_UPLOAD_ACCEPT =
   ".qsp,.xml,application/zip,application/xml,text/xml";
+
+/** Copy a Biblioteca image into the live session's assets (for the video cover). */
+export async function copyLibraryImageToSession(opts: {
+  sessionId: string;
+  credential: string;
+  libraryItemId: string;
+}): Promise<{ assetId: string }> {
+  const res = await fetch(
+    `${hubHttpBase()}/api/v1/sessions/${encodeURIComponent(opts.sessionId)}/library/${encodeURIComponent(opts.libraryItemId)}/copy-image`,
+    { method: "POST", headers: { Authorization: `Bearer ${opts.credential}` } },
+  );
+  const body = (await res.json().catch(() => ({}))) as {
+    assetId?: string;
+    error?: string;
+    message?: string;
+  };
+  if (!res.ok || !body.assetId) {
+    throw new Error(body.message || body.error || `cover_copy_${res.status}`);
+  }
+  return { assetId: body.assetId };
+}

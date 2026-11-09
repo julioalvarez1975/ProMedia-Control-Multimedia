@@ -16,49 +16,33 @@ export type TextItemEditorProps = {
   onCancel: () => void;
 };
 
-function slideToText(slide: TextSlide): string {
-  return slide.lines.join("\n");
+function slidesToBlock(slides: readonly TextSlide[]): string {
+  // Slides are joined by a blank line, which is exactly how phrases are
+  // separated when the block is split back into slides on save.
+  return slides.map((slide) => slide.lines.join("\n")).join("\n\n");
 }
 
-function textToLines(text: string): string[] {
-  return text.split("\n");
+function blockToLines(text: string): string[] {
+  return text.replace(/\r\n?/g, "\n").split("\n");
 }
 
-/** One textarea per slide (Q2) + PDF/XML/text import. */
+/**
+ * One text block for the whole song / text — the same shape the song is stored
+ * in (lines, blank line between phrases). Each phrase still becomes one slide
+ * on save — plus PDF/XML/text import.
+ */
 export function TextItemEditor({ initial, onSave, onCancel }: TextItemEditorProps) {
   const { t } = useLocale();
 
   const [title, setTitle] = useState(initial.title ?? "");
   const [align, setAlign] = useState<TextAlign>(initial.align ?? "center");
-  const [slides, setSlides] = useState<TextSlide[]>(
-    initial.slides.length > 0
-      ? initial.slides.map((s) => ({ ...s, lines: [...s.lines] }))
-      : [{ id: cryptoRandomId(), lines: [""] }],
+  const [block, setBlock] = useState<string>(() => slidesToBlock(initial.slides));
+  const [blockId] = useState<string>(
+    () => initial.slides[0]?.id || cryptoRandomId(),
   );
   const [importHint, setImportHint] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
-
-  const updateSlideText = (index: number, text: string) => {
-    setSlides((prev) =>
-      prev.map((slide, i) =>
-        i === index ? { ...slide, lines: textToLines(text) } : slide,
-      ),
-    );
-  };
-
-  const addSlide = () => {
-    setSlides((prev) => [...prev, { id: cryptoRandomId(), lines: [""] }]);
-  };
-
-  const removeSlide = (index: number) => {
-    setSlides((prev) => {
-      if (prev.length <= 1) {
-        return prev;
-      }
-      return prev.filter((_, i) => i !== index);
-    });
-  };
 
   const onImportFile = async (file: File | undefined) => {
     if (!file) {
@@ -76,7 +60,7 @@ export function TextItemEditor({ initial, onSave, onCancel }: TextItemEditorProp
     setImporting(true);
     try {
       const result = await importFileToTextSlides(file);
-      setSlides(result.slides);
+      setBlock(slidesToBlock(result.slides));
       if (result.title && !title.trim()) {
         setTitle(result.title);
       }
@@ -112,10 +96,9 @@ export function TextItemEditor({ initial, onSave, onCancel }: TextItemEditorProp
     onSave({
       title: title.trim() || undefined,
       align,
-      // Split slides with >6 lines so Output/Live ←/→ match projection chunks.
-      slides: projectionTextSlides(
-        slides.map((s) => ({ id: s.id, lines: s.lines })),
-      ),
+      // Blank lines separate phrases (one slide each); phrases over 6 lines
+      // are chunked so Output/Live ←/→ match what is projected.
+      slides: projectionTextSlides([{ id: blockId, lines: blockToLines(block) }]),
     });
   };
 
@@ -168,35 +151,18 @@ export function TextItemEditor({ initial, onSave, onCancel }: TextItemEditorProp
       </div>
 
       <div className="text-editor-slides">
-        {slides.map((slide, index) => (
-          <div key={slide.id} className="text-editor-slide">
-            <div className="text-editor-slide-head">
-              <span>
-                {t("text.slide")} {index + 1}
-              </span>
-              <button
-                type="button"
-                className="btn btn-ghost"
-                disabled={slides.length <= 1}
-                onClick={() => removeSlide(index)}
-              >
-                {t("text.removeSlide")}
-              </button>
-            </div>
-            <textarea
-              rows={4}
-              value={slideToText(slide)}
-              onChange={(e) => updateSlideText(index, e.target.value)}
-              placeholder={t("text.slidePlaceholder")}
-            />
-          </div>
-        ))}
+        <p className="text-editor-import-hint">{t("text.blockHint")}</p>
+        <textarea
+          className="text-editor-block"
+          rows={18}
+          value={block}
+          onChange={(e) => setBlock(e.target.value)}
+          placeholder={t("text.slidePlaceholder")}
+          spellCheck={false}
+        />
       </div>
 
       <div className="text-editor-actions">
-        <button type="button" className="btn" onClick={addSlide}>
-          {t("text.addSlide")}
-        </button>
         <div className="text-editor-actions-right">
           <button type="button" className="btn" onClick={onCancel}>
             {t("text.cancel")}

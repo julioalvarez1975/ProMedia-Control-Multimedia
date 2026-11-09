@@ -331,13 +331,6 @@ export type SubtitleAgentStatus =
 /** Caption size on Preview / Live / Output (SM–XL). Default MD. */
 export type SubtitleFontSize = "sm" | "md" | "lg" | "xl";
 
-export const SUBTITLE_FONT_SIZES: readonly SubtitleFontSize[] = [
-  "sm",
-  "md",
-  "lg",
-  "xl",
-] as const;
-
 export function isSubtitleFontSize(value: unknown): value is SubtitleFontSize {
   return value === "sm" || value === "md" || value === "lg" || value === "xl";
 }
@@ -496,35 +489,6 @@ export function emptySubtitleAgentState(
     cueIndex: null,
     hint: null,
     updatedAt: null,
-  };
-}
-
-/** Coerce legacy snapshots missing fontSize / leadMs / timingMode / cueIndex. */
-export function normalizeSubtitleAgentState(
-  raw: SubtitleAgentState | null | undefined,
-): SubtitleAgentState {
-  const base = raw ?? emptySubtitleAgentState();
-  const cueIndexRaw = (base as { cueIndex?: unknown }).cueIndex;
-  const cueIndex =
-    typeof cueIndexRaw === "number" && Number.isFinite(cueIndexRaw)
-      ? cueIndexRaw === -1
-        ? -1
-        : cueIndexRaw >= 0
-          ? Math.floor(cueIndexRaw)
-          : null
-      : null;
-  return {
-    ...base,
-    fontSize: isSubtitleFontSize(base.fontSize) ? base.fontSize : "md",
-    leadMs: normalizeSubtitleLeadMs(
-      (base as { leadMs?: unknown }).leadMs,
-    ),
-    timingMode: isSubtitleTimingMode(
-      (base as { timingMode?: unknown }).timingMode,
-    )
-      ? (base as { timingMode: SubtitleTimingMode }).timingMode
-      : "exact",
-    cueIndex,
   };
 }
 
@@ -708,6 +672,18 @@ export type SessionLiveState = {
    * Independent of sceneMode (works with "normal"; hidden under full logo/black).
    */
   watermarkEnabled: boolean;
+  /**
+   * Image shown ON TOP of the live video/audio and UNDER the subtitle. The
+   * player stays mounted underneath, so audio and the media clock never
+   * stop. `assetId` is an image in the session asset store; `active` toggles
+   * it without forgetting the image. Cleared when the live item changes.
+   */
+  videoCover: VideoCoverState | null;
+};
+
+export type VideoCoverState = {
+  assetId: string;
+  active: boolean;
 };
 
 export type SessionSnapshot = {
@@ -833,6 +809,16 @@ export type LiveSubtitleAgentSetMessage = {
  * Operator teaches karaoke which Biblioteca song matches the current
  * Audio/YouTube item — saved to cancionero memory and forces a re-align.
  */
+/**
+ * Set / toggle the image cover over the live video or audio. Send `assetId`
+ * (a session image asset) to choose it (active unless `active:false`), or only
+ * `active` to toggle the current one; `assetId:null` forgets it.
+ */
+export type LiveSetVideoCoverMessage = {
+  type: "live.setVideoCover";
+  payload: { assetId?: string | null; active?: boolean };
+};
+
 /** Pre-align every A/V item in the Guion (queue). `cancel` stops it. */
 export type LiveSubtitleAgentPrepareMessage = {
   type: "live.subtitleAgent.prepare";
@@ -903,6 +889,7 @@ export type ClientToHubMessage =
   | LiveSetSlideMessage
   | LiveMediaClockSetMessage
   | LiveSubtitleAgentSetMessage
+  | LiveSetVideoCoverMessage
   | LiveSubtitleAgentPrepareMessage
   | LiveSubtitleAgentSaveLyricsMessage
   | LiveSubtitleAgentTeachMessage
@@ -956,6 +943,7 @@ export function emptyLiveState(): SessionLiveState {
     subtitleAgent: emptySubtitleAgentState(),
     logoUpdatedAt: null,
     watermarkEnabled: false,
+    videoCover: null,
   };
 }
 

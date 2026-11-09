@@ -282,3 +282,25 @@ export async function deleteSavedPlaylist(id: string): Promise<void> {
     throw new Error(`delete_failed_${res.status}`);
   }
 }
+
+export async function renameSavedPlaylist(
+  id: string,
+  name: string,
+  credential: string,
+): Promise<void> {
+  const res = await fetch(
+    `${hubHttpBase()}/api/v1/playlists/${encodeURIComponent(id)}`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${credential}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ name }),
+    },
+  );
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `rename_failed_${res.status}`);
+  }
+}

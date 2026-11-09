@@ -58,6 +58,11 @@ function noteClockReport(
   clockReports.set(sessionId, rec);
 }
 
+/** Forget diagnostics of a closed session. */
+export function forgetClockReports(sessionId: string): void {
+  clockReports.delete(sessionId);
+}
+
 /** After Go Live on A/V: warn if the player never reports its playback time. */
 function watchClockAfterGoLive(sessionId: string): void {
   const rec = clockReports.get(sessionId) ?? { lastAt: 0, lastLogAt: 0, goAt: 0 };
@@ -322,6 +327,20 @@ function parseClientMessage(raw: string): ClientToHubMessage | null {
       }
       return { type: "live.setSceneMode", payload: { sceneMode } };
     }
+    if (type === "live.setVideoCover") {
+      const p = payload as { assetId?: unknown; active?: unknown } | undefined;
+      const out: { assetId?: string | null; active?: boolean } = {};
+      if (p?.assetId === null) out.assetId = null;
+      else if (typeof p?.assetId === "string" && p.assetId.length > 0 && p.assetId.length <= 64) {
+        out.assetId = p.assetId;
+      } else if (p?.assetId !== undefined) {
+        return null;
+      }
+      if (typeof p?.active === "boolean") out.active = p.active;
+      else if (p?.active !== undefined) return null;
+      if (out.assetId === undefined && out.active === undefined) return null;
+      return { type: "live.setVideoCover", payload: out };
+    }
     if (type === "live.setWatermark") {
       const enabled = (payload as { enabled?: unknown } | undefined)?.enabled;
       if (typeof enabled !== "boolean") {
@@ -393,9 +412,21 @@ function parseClientMessage(raw: string): ClientToHubMessage | null {
   }
 }
 
+/**
+ * Grace before an empty session is closed (page reload / brief reconnect).
+ * PROMEDIA_SESSION_GRACE_MS=0 closes the moment the last client leaves.
+ */
+export function sessionGraceMs(): number {
+  const raw = process.env.PROMEDIA_SESSION_GRACE_MS;
+  if (raw === undefined || raw.trim() === "") return 20_000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 20_000;
+}
+
 export class WsHub {
   private readonly wss: WebSocketServer;
   private readonly clients = new Set<ClientConn>();
+  private readonly closeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(server: HttpServer) {
     this.wss = new WebSocketServer({ noServer: true });
@@ -421,7 +452,7 @@ export class WsHub {
       }
 
       this.wss.handleUpgrade(req, socket, head, (ws) => {
-        this.onConnection(ws, req, sessionId, role as ClientRole);
+        this.onConnection(ws, req, sessionId, role as ClientRole, credential);
       });
     });
   }
@@ -450,12 +481,16 @@ export class WsHub {
     _req: IncomingMessage,
     sessionId: string,
     role: ClientRole,
+    credential: string,
   ): void {
     const session = sessionStore.get(sessionId);
     if (!session) {
       ws.close(4401, "session not found");
       return;
     }
+    // Someone is here again: cancel a pending "empty session" close.
+    this.cancelSessionClose(sessionId);
+    sessionStore.markTicketSocket(credential, true);
 
     const conn: ClientConn = {
       ws,
@@ -477,13 +512,63 @@ export class WsHub {
       this.handleClientMessage(conn, text);
     });
 
-    ws.on("close", () => {
+    let released = false;
+    const onGone = () => {
       this.clients.delete(conn);
-    });
+      if (released) return;
+      released = true;
+      sessionStore.markTicketSocket(credential, false);
+      this.scheduleSessionCloseIfEmpty(sessionId);
+    };
+    ws.on("close", onGone);
+    ws.on("error", onGone);
+  }
 
-    ws.on("error", () => {
-      this.clients.delete(conn);
-    });
+  private connectionCount(sessionId: string): number {
+    let n = 0;
+    for (const c of this.clients) if (c.sessionId === sessionId) n += 1;
+    return n;
+  }
+
+  private cancelSessionClose(sessionId: string): void {
+    const t = this.closeTimers.get(sessionId);
+    if (t) {
+      clearTimeout(t);
+      this.closeTimers.delete(sessionId);
+    }
+  }
+
+  /** Last client gone → close the session after the grace period. */
+  private scheduleSessionCloseIfEmpty(sessionId: string): void {
+    if (this.connectionCount(sessionId) > 0) return;
+    this.cancelSessionClose(sessionId);
+    const timer = setTimeout(() => {
+      this.closeTimers.delete(sessionId);
+      if (this.connectionCount(sessionId) > 0) return;
+      if (sessionStore.closeSession(sessionId)) {
+        console.log(`[hub] session ${sessionId} closed (no clients)`);
+      }
+    }, sessionGraceMs());
+    timer.unref?.();
+    this.closeTimers.set(sessionId, timer);
+  }
+
+  /** Hub shutdown: close every socket and session. */
+  shutdown(): void {
+    for (const t of this.closeTimers.values()) clearTimeout(t);
+    this.closeTimers.clear();
+    for (const conn of [...this.clients]) {
+      try {
+        conn.ws.close(1001, "hub shutting down");
+      } catch {
+        // socket already gone — nothing to close
+      }
+    }
+    this.clients.clear();
+    for (const session of sessionStore.listSessions()) {
+      sessionStore.closeSession(session.id);
+    }
+    this.wss.close();
   }
 
   private requireControl(conn: ClientConn, session: SessionRecord): boolean {
@@ -667,6 +752,13 @@ export class WsHub {
           conn,
           session,
           sessionStore.setSceneMode(session, msg.payload.sceneMode),
+        );
+        return;
+      case "live.setVideoCover":
+        this.applyResult(
+          conn,
+          session,
+          sessionStore.setVideoCover(session, msg.payload),
         );
         return;
       case "live.setWatermark":

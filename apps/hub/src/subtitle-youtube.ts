@@ -1,4 +1,12 @@
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { SubtitleCue } from "@promedia/shared";
@@ -431,6 +439,70 @@ export async function ensureYoutubeAudio(options: {
   throw new Error(lastHint);
 }
 
+export type YoutubeVideoFileResult = {
+  /** Absolute path to the downloaded mp4 (caller must delete `dir`). */
+  filePath: string;
+  /** Temp directory holding the file; remove it after reading. */
+  dir: string;
+  videoId: string;
+};
+
+/**
+ * Download the full video (mp4) of ONE YouTube video so it can be used as a
+ * local file when the owner blocks embedding (IFrame errors 101/150).
+ * Built from the id only (never from a client URL) and with `--no-playlist`.
+ */
+export async function downloadYoutubeVideoFile(
+  videoId: string,
+): Promise<YoutubeVideoFileResult> {
+  assertSafeVideoId(videoId);
+  const dirs = await ensureSubtitleDirs();
+  if (!(await ytDlpAvailable())) {
+    throw new Error("yt_dlp_missing");
+  }
+  // Merging video+audio streams needs ffmpeg.
+  await ensureFfmpegForExtract();
+
+  const dir = await mkdtemp(
+    path.join(path.resolve(dirs.youtubeCache), `video-${videoId}-`),
+  );
+  const cleanup = () =>
+    rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  try {
+    const result = await runCmd(resolveYtDlpBin(), [
+      "--no-playlist",
+      "--no-warnings",
+      "-f",
+      "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
+      "--merge-output-format",
+      "mp4",
+      "-P",
+      dir,
+      "-o",
+      "%(id)s.%(ext)s",
+      "--",
+      `https://www.youtube.com/watch?v=${videoId}`,
+    ]);
+    if (result.code !== 0) {
+      throw new Error(classifyYoutubeError(result.stderr || result.stdout));
+    }
+    const names = await readdir(dir);
+    const name = names.find(
+      (n) => n.startsWith(`${videoId}.`) && /\.mp4$/i.test(n),
+    );
+    if (!name) {
+      throw new Error("youtube_cache_missing_after_download");
+    }
+    return { filePath: path.join(dir, name), dir, videoId };
+  } catch (err) {
+    await cleanup();
+    if (missingBinHintFromError(err, "yt_dlp")) {
+      throw new Error("yt_dlp_missing");
+    }
+    throw err;
+  }
+}
+
 /** Caption sidecar extensions we accept after yt-dlp `--convert-subs vtt`. */
 const CAPTION_EXTS = new Set([".vtt", ".srt"]);
 
@@ -659,10 +731,20 @@ export async function listYoutubeCaptionTracks(options: {
       "--",
       url,
     ]);
-  } catch {
+  } catch (err) {
+    console.warn(
+      "[subtitle] yt-dlp captions list failed to start:",
+      err instanceof Error ? err.message : err,
+    );
     return [];
   }
-  if (result.code !== 0 || !result.stdout.trim()) return [];
+  if (result.code !== 0 || !result.stdout.trim()) {
+    console.warn(
+      `[subtitle] yt-dlp captions list failed (code=${result.code}) ${videoId}:`,
+      result.stderr.trim().split("\n").slice(-2).join(" | ").slice(0, 300),
+    );
+    return [];
+  }
   let data: {
     subtitles?: Record<string, unknown>;
     automatic_captions?: Record<string, unknown>;
@@ -670,6 +752,7 @@ export async function listYoutubeCaptionTracks(options: {
   try {
     data = JSON.parse(result.stdout) as typeof data;
   } catch {
+    console.warn("[subtitle] yt-dlp captions list: output is not JSON", videoId);
     return [];
   }
   const out: YoutubeCaptionTrackInfo[] = [];
@@ -728,10 +811,20 @@ export async function fetchYoutubeMeta(options: {
       "--",
       url,
     ]);
-  } catch {
+  } catch (err) {
+    console.warn(
+      "[subtitle] yt-dlp metadata failed to start:",
+      err instanceof Error ? err.message : err,
+    );
     return null;
   }
-  if (result.code !== 0 || !result.stdout.trim()) return null;
+  if (result.code !== 0 || !result.stdout.trim()) {
+    console.warn(
+      `[subtitle] yt-dlp metadata failed (code=${result.code}) ${videoId}:`,
+      result.stderr.trim().split("\n").slice(-2).join(" | ").slice(0, 300),
+    );
+    return null;
+  }
   let data: {
     title?: string;
     fulltitle?: string;
@@ -744,6 +837,7 @@ export async function fetchYoutubeMeta(options: {
   try {
     data = JSON.parse(result.stdout) as typeof data;
   } catch {
+    console.warn("[subtitle] yt-dlp metadata: output is not JSON", videoId);
     return null;
   }
   const title =

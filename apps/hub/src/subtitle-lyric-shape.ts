@@ -11,8 +11,6 @@ import { cuesLookLikeLyrics } from "./subtitle-lang-detect.js";
  * overlay lead (#77) or intro-hold (#80).
  */
 
-/** Target characters per projected lyric line (Spanish hymn / chorus density). */
-export const LYRIC_TARGET_CHARS = 48;
 /** Soft ceiling before we split a long ASR paragraph. */
 export const LYRIC_SPLIT_CHARS = 64;
 /** Merge micro-cues until we reach roughly this many characters. */

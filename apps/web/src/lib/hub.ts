@@ -83,6 +83,14 @@ export type HubHealth = {
   mode?: string;
   listenHost?: string;
   lanAddresses?: string[];
+  /** Boot-time karaoke environment checks (hub startup-check). */
+  startup?: Array<{
+    id: string;
+    label: string;
+    status: "ok" | "warn" | "fail";
+    detail: string;
+    fix: string;
+  }>;
 };
 
 export async function probeHubHealth(): Promise<boolean> {
@@ -149,27 +157,6 @@ export function buildLanControlUrls(
   return lanAddresses
     .filter((ip) => typeof ip === "string" && ip.length > 0)
     .map((ip) => `http://${ip}:${port}${path}`);
-}
-
-/** Output / projection URL(s) so a second device mirrors the same session. */
-export function buildLanOutputUrls(
-  lanAddresses: string[],
-  code?: string | null,
-): string[] {
-  const port = lanPagePort();
-  const c = code?.trim().toUpperCase();
-  const path = c
-    ? `/output?code=${encodeURIComponent(c)}&autofullscreen=1`
-    : "/output";
-  return lanAddresses
-    .filter((ip) => typeof ip === "string" && ip.length > 0)
-    .map((ip) => `http://${ip}:${port}${path}`);
-}
-
-/** Same-origin Output path for the current session (phone or PC). */
-export function sharedOutputPath(code: string): string {
-  const c = code.trim().toUpperCase();
-  return `/output?code=${encodeURIComponent(c)}&autofullscreen=1`;
 }
 
 export async function createSession(
