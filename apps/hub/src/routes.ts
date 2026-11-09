@@ -430,6 +430,30 @@ export function createApiRoutes(): Hono {
     return c.json({ playlist: saved });
   });
 
+  /** Rename a saved playlist (control). */
+  api.patch("/playlists/:id", async (c) => {
+    const access = hubOperatorFromRequest(c);
+    if (!access.ok) {
+      return c.json({ error: access.error }, access.status);
+    }
+    let body: { name?: unknown } = {};
+    try {
+      body = (await c.req.json()) as { name?: unknown };
+    } catch {
+      return c.json({ error: "invalid_json" }, 400);
+    }
+    if (typeof body.name !== "string") {
+      return c.json({ error: "missing_name" }, 400);
+    }
+    const result = await playlistStore.rename(c.req.param("id"), body.name);
+    if ("error" in result) {
+      return c.json({ error: result.error }, result.error === "not_found" ? 404 : 400);
+    }
+    return c.json({
+      playlist: { id: result.id, name: result.name, updatedAt: result.updatedAt },
+    });
+  });
+
   /** Save current session playlist under a name (control). */
   api.post("/sessions/:sessionId/playlists", async (c) => {
     const sessionId = c.req.param("sessionId");
