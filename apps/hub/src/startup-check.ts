@@ -164,11 +164,11 @@ export async function runStartupChecks(
     ),
     result(
       "faster-whisper",
-      "faster-whisper (opcional)",
+      "faster-whisper",
       Boolean(fwPython),
       fwPython ?? "",
       "no se puede importar faster_whisper",
-      "Solo hace falta si usás SUBTITLE_ASR_BACKEND=faster_whisper; viene con el venv de WhisperX.",
+      "Transcribe las canciones que no están en el cancionero; viene con el venv de WhisperX. Sin él se usa whisper.cpp.",
       "warn",
     ),
     result(

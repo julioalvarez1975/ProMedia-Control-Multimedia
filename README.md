@@ -271,7 +271,7 @@ brew install yt-dlp ffmpeg whisper-cpp
 
 Reiniciá el hub tras instalar. Overrides: `FFMPEG_PATH`, `YT_DLP_PATH`, `WHISPER_CPP_PATH`.
 
-En **macOS** (y en cualquier host) el hub usa **whisper.cpp exclusivamente** cuando `whisper-cli` está en el PATH. **No carga** Xenova/ONNX en el modo por defecto (`SUBTITLE_ASR_BACKEND=auto`). Sin `whisper-cli`, falla con `whisper_cpp_missing` — salvo que haya **pistas locales** (abajo) o captions de YouTube.
+En el modo por defecto (`SUBTITLE_ASR_BACKEND=auto`) el hub transcribe con **faster-whisper** cuando está instalado (viene con el venv de WhisperX) y, si no está o falla, con **whisper.cpp** (`whisper-cli`). **No carga** Xenova/ONNX en `auto`. Sin ninguno de los dos, falla con `whisper_cpp_missing` — salvo que haya **pistas locales** (abajo) o captions de YouTube.
 
 **WhisperX (opcional, alineación acústica)**
 
@@ -310,8 +310,8 @@ YouTube con captions oficiales en el idioma de Control es el camino de referenci
 - Sin whisper-cli: error `whisper_cpp_missing` → `brew install whisper-cpp` (no Xenova por defecto).
 - Caché: `data/subtitles/cache/`, `wav/`, `youtube-cache/` (gitignore)
 - Requiere **`ffmpeg`** + **`whisper-cli`**; YouTube también **`yt-dlp`**
-- Backend: `SUBTITLE_ASR_BACKEND=auto|whisper_cpp|transformers|faster_whisper` (default `auto` = solo whisper-cli)
-- `faster_whisper` (opt-in): usa el venv de WhisperX (`faster-whisper` ya viene con él). En Apple Silicon es **más lento** que whisper.cpp con Metal (canción de 5,5 min: ≈10 s whisper.cpp base vs ≈31–58 s faster-whisper base vs ≈68 s small, CPU int8), por eso no está en `auto`. Útil sin `whisper-cli` o en CPUs x86/CUDA rápidas. Env: `SUBTITLE_FASTER_WHISPER_MODEL` (base), `SUBTITLE_FASTER_WHISPER_COMPUTE` (int8), `SUBTITLE_FASTER_WHISPER_TIMEOUT_MS`.
+- Backend: `SUBTITLE_ASR_BACKEND=auto|whisper_cpp|transformers|faster_whisper` (default `auto` = faster-whisper si está instalado, si no whisper-cli)
+- `faster_whisper`: usa el venv de WhisperX (`faster-whisper` ya viene con él). En Apple Silicon es **más lento** que whisper.cpp con Metal (canción de 5,5 min: ≈10 s whisper.cpp base vs ≈31–58 s faster-whisper base vs ≈68 s small, CPU int8). Para volver a whisper.cpp: `SUBTITLE_ASR_BACKEND=whisper_cpp`. Env: `SUBTITLE_FASTER_WHISPER_MODEL` (base), `SUBTITLE_FASTER_WHISPER_COMPUTE` (int8), `SUBTITLE_FASTER_WHISPER_TIMEOUT_MS`.
 
 **Traducción**
 
