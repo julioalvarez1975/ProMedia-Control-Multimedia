@@ -215,10 +215,16 @@ export function FittedTextStage({
       block.style.fontSize = `${best}px`;
       setWrapMode(mode);
       setFontPx(best);
-      // Mark fitted so lyric overlay CSS can start enter motion at final size
-      // (animating during the 28px→fit search looked like a hard cut).
-      void block.offsetWidth;
-      block.dataset.fitted = "1";
+      // Mark fitted on the next frames so CSS enter keyframes paint the
+      // "from" state at final font size (same-frame toggle skips motion).
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (blockRef.current !== block) {
+            return;
+          }
+          block.dataset.fitted = "1";
+        });
+      });
     };
 
     measure();
