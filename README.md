@@ -310,8 +310,7 @@ YouTube con captions oficiales en el idioma de Control es el camino de referenci
 - Sin whisper-cli: error `whisper_cpp_missing` → `brew install whisper-cpp` (no Xenova por defecto).
 - Caché: `data/subtitles/cache/`, `wav/`, `youtube-cache/` (gitignore)
 - Requiere **`ffmpeg`** + **`whisper-cli`**; YouTube también **`yt-dlp`**
-- Backend: `SUBTITLE_ASR_BACKEND=auto|whisper_cpp|transformers|faster_whisper` (default `auto` = solo whisper-cli)
-- `faster_whisper` (opt-in): usa el venv de WhisperX (`faster-whisper` ya viene con él). En Apple Silicon es **más lento** que whisper.cpp con Metal (canción de 5,5 min: ≈10 s whisper.cpp base vs ≈31–58 s faster-whisper base vs ≈68 s small, CPU int8), por eso no está en `auto`. Útil sin `whisper-cli` o en CPUs x86/CUDA rápidas. Env: `SUBTITLE_FASTER_WHISPER_MODEL` (base), `SUBTITLE_FASTER_WHISPER_COMPUTE` (int8), `SUBTITLE_FASTER_WHISPER_TIMEOUT_MS`.
+- Backend: `SUBTITLE_ASR_BACKEND=auto|whisper_cpp|transformers` (default `auto` = solo whisper-cli)
 
 **Traducción**
 

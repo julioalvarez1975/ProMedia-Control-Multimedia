@@ -4768,33 +4768,3 @@ body.output-route #root {
   color: var(--muted);
   font-size: 0.85rem;
 }
-
-/* "Guardar letra": lyrics came from LRCLIB, not from the cancionero — blink
-   green until the operator saves them to the Biblioteca. */
-.control-header-toolbar .toolbar-subtitle-save-lyrics:not(:disabled) {
-  color: #8dffa8;
-  border-color: #2fbf5a;
-  background: rgba(47, 191, 90, 0.18);
-  animation: pm-save-lyrics-blink 1s ease-in-out infinite;
-}
-
-@keyframes pm-save-lyrics-blink {
-  0%,
-  100% {
-    border-color: #2fbf5a;
-    box-shadow: 0 0 0 0 rgba(47, 191, 90, 0.6);
-    filter: brightness(1);
-  }
-  50% {
-    border-color: #6dff94;
-    box-shadow: 0 0 0 3px rgba(47, 191, 90, 0.4);
-    filter: brightness(1.25);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .control-header-toolbar .toolbar-subtitle-save-lyrics:not(:disabled) {
-    animation: none;
-    box-shadow: 0 0 0 2px rgba(47, 191, 90, 0.5);
-  }
-}

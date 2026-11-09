@@ -16,7 +16,6 @@ import {
   subtitleModelsRoot,
 } from "./subtitle-paths.js";
 import { filterSpeechCues } from "./subtitle-cue-text.js";
-import { transcribeWithFasterWhisper } from "./subtitle-faster-whisper.js";
 import { shapeLyricLikeCues } from "./subtitle-lyric-shape.js";
 import {
   assertWhisperCliOrThrow,
@@ -341,16 +340,11 @@ async function getWhisper(): Promise<WhisperPipeline> {
   return whisperPromise;
 }
 
-type AsrBackend = "auto" | "transformers" | "whisper_cpp" | "faster_whisper";
+type AsrBackend = "auto" | "transformers" | "whisper_cpp";
 
 function asrBackendPref(): AsrBackend {
   const raw = (process.env.SUBTITLE_ASR_BACKEND || "auto").trim().toLowerCase();
-  if (
-    raw === "transformers" ||
-    raw === "whisper_cpp" ||
-    raw === "faster_whisper" ||
-    raw === "auto"
-  ) {
+  if (raw === "transformers" || raw === "whisper_cpp" || raw === "auto") {
     return raw;
   }
   return "auto";
@@ -511,21 +505,6 @@ export async function transcribeLocalFile(options: {
       } catch (tfErr) {
         throw new Error(classifyWhisperLoadError(tfErr));
       }
-    }
-    if (backend === "faster_whisper") {
-      // Opt-in only (slower than whisper.cpp+Metal on Apple Silicon).
-      const fw = await transcribeWithFasterWhisper({
-        wavPath,
-        translateToEn: forceTranslateToEn,
-        languageHint: hint,
-        prompt,
-        onStatus,
-      });
-      return {
-        cues: fw.cues,
-        sourceLang: fw.sourceLang,
-        whisperTranslatedToEn: fw.whisperTranslatedToEn,
-      };
     }
     // auto | whisper_cpp: whisper-cli exclusively. Never fall into Xenova.
     const cliPresent = await whisperCliAvailable();

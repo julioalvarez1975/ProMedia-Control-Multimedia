@@ -69,3 +69,15 @@ export function savePersistedControlSession(opts: {
   }
 }
 
+export function clearPersistedControlSession(): void {
+  try {
+    window.localStorage.removeItem(KEY);
+  } catch {
+    // ignore
+  }
+  try {
+    window.sessionStorage.removeItem(KEY);
+  } catch {
+    // ignore
+  }
+}

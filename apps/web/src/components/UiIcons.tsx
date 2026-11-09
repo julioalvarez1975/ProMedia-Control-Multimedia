@@ -95,6 +95,20 @@ export function IconAddFiles(props: IconProps) {
   );
 }
 
+export function IconChevronDown(props: IconProps) {
+  return (
+    <svg {...svgProps({ ...props, size: props.size ?? 14 })}>
+      <path
+        d="M6 9.5 12 15l6-5.5"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 /** Open / load guion file (bi-folder2-open). */
 export function IconFolderOpen(props: IconProps) {
   return (
