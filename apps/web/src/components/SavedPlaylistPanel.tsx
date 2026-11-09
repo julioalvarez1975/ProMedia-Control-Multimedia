@@ -9,6 +9,7 @@ import {
   loadSavedPlaylist,
   pickGuionFromDisk,
   saveGuionToDisk,
+  renameSavedPlaylist,
   saveSessionPlaylist,
   type SavedPlaylistSummary,
 } from "../lib/playlists";
@@ -53,6 +54,8 @@ export function SavedPlaylistPanel({
   const [name, setName] = useState("");
   const [list, setList] = useState<SavedPlaylistSummary[]>([]);
   const [busy, setBusy] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
 
   const refresh = useCallback(async () => {
     try {
@@ -145,6 +148,51 @@ export function SavedPlaylistPanel({
     }
   };
 
+  /** Replace a saved guion with the current Guion (same id, same name). */
+  const onOverwrite = async (p: SavedPlaylistSummary) => {
+    if (disabled || items.length === 0) {
+      return;
+    }
+    if (!window.confirm(t("playlist.overwriteConfirm").replace("{name}", p.name))) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await saveSessionPlaylist(sessionId, wsTicket, p.name, p.id);
+      await refresh();
+      onHint?.(t("playlist.overwriteOk").replace("{name}", p.name));
+      onSaveOpenChange?.(false);
+    } catch (err) {
+      onHint?.(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startRename = (p: SavedPlaylistSummary) => {
+    setRenamingId(p.id);
+    setRenameValue(p.name);
+  };
+
+  const onRenameSave = async () => {
+    const id = renamingId;
+    const next = renameValue.trim();
+    if (!id || !next) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await renameSavedPlaylist(id, next, wsTicket);
+      await refresh();
+      setRenamingId(null);
+      onHint?.(t("playlist.renamedOk"));
+    } catch (err) {
+      onHint?.(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onDelete = async (id: string) => {
     setBusy(true);
     try {
@@ -197,6 +245,89 @@ export function SavedPlaylistPanel({
                   }}
                 />
               </label>
+              {list.length > 0 ? (
+                <>
+                  <p className="promedia-dialog-hint">
+                    {t("playlist.existingTitle")}
+                  </p>
+                  <ul className="saved-playlist-list saved-playlist-list-dialog">
+                    {list.map((p) => (
+                      <li key={p.id}>
+                        {renamingId === p.id ? (
+                          <input
+                            className="saved-playlist-rename"
+                            value={renameValue}
+                            autoFocus
+                            disabled={busy}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                void onRenameSave();
+                              } else if (e.key === "Escape") {
+                                setRenamingId(null);
+                              }
+                            }}
+                          />
+                        ) : (
+                          <span className="saved-playlist-name">
+                            {p.name}{" "}
+                            <span className="footer-muted">({p.itemCount})</span>
+                          </span>
+                        )}
+                        <div className="playlist-row-actions">
+                          {renamingId === p.id ? (
+                            <>
+                              <button
+                                type="button"
+                                className="btn btn-primary"
+                                disabled={busy || !renameValue.trim()}
+                                onClick={() => void onRenameSave()}
+                              >
+                                {t("playlist.renameSave")}
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-ghost"
+                                disabled={busy}
+                                onClick={() => setRenamingId(null)}
+                              >
+                                {t("text.cancel")}
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                className="btn btn-primary"
+                                disabled={disabled || busy || items.length === 0}
+                                onClick={() => void onOverwrite(p)}
+                              >
+                                {t("playlist.overwrite")}
+                              </button>
+                              <button
+                                type="button"
+                                className="btn"
+                                disabled={busy}
+                                onClick={() => startRename(p)}
+                              >
+                                {t("playlist.rename")}
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-ghost"
+                                disabled={busy}
+                                onClick={() => void onDelete(p.id)}
+                              >
+                                {t("playlist.remove")}
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
               <div className="promedia-dialog-actions">
                 <button
                   type="button"

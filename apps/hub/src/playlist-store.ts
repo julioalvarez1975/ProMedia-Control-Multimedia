@@ -99,6 +99,23 @@ export class PlaylistStore {
     return record;
   }
 
+  /** Rename a saved playlist (keeps its items). */
+  async rename(id: string, rawName: string): Promise<SavedPlaylist | { error: string }> {
+    await this.ensureLoaded();
+    const existing = this.items.get(id);
+    if (!existing) {
+      return { error: "not_found" };
+    }
+    const name = rawName.trim();
+    if (!name) {
+      return { error: "empty_name" };
+    }
+    const record: SavedPlaylist = { ...existing, name, updatedAt: nowIso() };
+    this.items.set(id, record);
+    await this.persist();
+    return record;
+  }
+
   async remove(id: string): Promise<boolean> {
     await this.ensureLoaded();
     const ok = this.items.delete(id);
