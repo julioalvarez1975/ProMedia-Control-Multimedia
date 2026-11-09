@@ -983,6 +983,35 @@ export function createApiRoutes(): Hono {
   });
 
   /**
+   * Copy a Biblioteca image into the session's assets (control) — used to pick
+   * a video cover from the library. Returns the new session asset id.
+   */
+  api.post(
+    "/sessions/:sessionId/library/:libraryItemId/copy-image",
+    async (c) => {
+      const sessionId = c.req.param("sessionId");
+      const credential =
+        bearerToken(c.req.header("authorization")) ??
+        c.req.query("credential");
+      const access = authorizeSessionAccess(sessionId, {
+        credential,
+        requireRole: "control",
+      });
+      if (!access.ok) {
+        return c.json({ error: access.error }, access.status);
+      }
+      const copied = await libraryStore.copyImageToSession({
+        sessionId,
+        libraryItemId: c.req.param("libraryItemId"),
+      });
+      if ("error" in copied) {
+        return c.json({ error: copied.error, message: copied.message }, 400);
+      }
+      return c.json({ assetId: copied.assetId }, 201);
+    },
+  );
+
+  /**
    * Copy a library item into the live session playlist (control).
    * Presentation/image/video bytes are copied into session assets.
    */

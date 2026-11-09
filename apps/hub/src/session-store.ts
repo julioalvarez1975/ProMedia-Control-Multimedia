@@ -386,6 +386,7 @@ export class SessionStore {
       session.live.currentSlideIndex = 0;
       session.live.mediaClock = null;
       session.live.sceneMode = "normal";
+      session.live.videoCover = null;
     }
     return { message: this.bumpUpdated(session), skipped };
   }
@@ -464,6 +465,7 @@ export class SessionStore {
       session.live.currentItemId = null;
       session.live.currentSlideIndex = 0;
       session.live.mediaClock = null;
+      session.live.videoCover = null;
     }
     return this.bumpUpdated(session);
   }
@@ -504,6 +506,10 @@ export class SessionStore {
       item.type !== "presentation"
     ) {
       return { error: "unsupported_type" };
+    }
+    // The cover belongs to the item it was set on: another item starts clean.
+    if (session.live.currentItemId !== itemId) {
+      session.live.videoCover = null;
     }
     session.live.currentItemId = itemId;
     session.live.currentSlideIndex = 0;
@@ -566,6 +572,7 @@ export class SessionStore {
     session.live.currentItemId = null;
     session.live.currentSlideIndex = 0;
     session.live.mediaClock = null;
+    session.live.videoCover = null;
     session.live.sceneMode = "normal";
     // Keep the subtitle agent state: stopping the projection (black) must not
     // wipe the aligned cues. Wiping made Control re-target the agent and re-run
@@ -586,6 +593,49 @@ export class SessionStore {
     // Overlay only — does not touch currentItemId or mediaClock (Q1/Q2)
     session.live.sceneMode = sceneMode;
     return this.bumpUpdated(session);
+  }
+
+  /**
+   * Image cover over the live video/audio (under the subtitle). Overlay only:
+   * does not touch currentItemId or mediaClock, so playback never stops.
+   * - `assetId` string: choose that session image (active unless active:false)
+   * - `assetId` null: forget the cover
+   * - only `active`: toggle the current image
+   */
+  setVideoCover(
+    session: SessionRecord,
+    patch: { assetId?: string | null; active?: boolean },
+  ): HubMessage | { error: string } {
+    const live = session.live;
+    const current = live.currentItemId
+      ? session.playlist.items.find((i) => i.id === live.currentItemId)
+      : null;
+    if (!current || (current.type !== "video" && current.type !== "audio")) {
+      return { error: "no_av_live" };
+    }
+    if (patch.assetId === null) {
+      live.videoCover = null;
+      return this.bumpUpdated(session);
+    }
+    if (typeof patch.assetId === "string") {
+      const asset = assetStore.get(session.id, patch.assetId);
+      if (!asset || asset.kind !== "image") {
+        return { error: "cover_asset_not_found" };
+      }
+      live.videoCover = {
+        assetId: asset.id,
+        active: patch.active !== false,
+      };
+      return this.bumpUpdated(session);
+    }
+    if (typeof patch.active === "boolean") {
+      if (!live.videoCover) {
+        return { error: "no_cover_image" };
+      }
+      live.videoCover = { ...live.videoCover, active: patch.active };
+      return this.bumpUpdated(session);
+    }
+    return { error: "invalid_video_cover" };
   }
 
   setWatermark(

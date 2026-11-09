@@ -4,6 +4,8 @@ import type { SceneMode, ThemeId } from "@promedia/shared";
 export type ControlShortcutHandlers = {
   goLive?: () => void;
   setSceneMode?: (mode: SceneMode) => void;
+  /** F: toggle the image cover over the live video/audio. */
+  toggleVideoCover?: () => void;
   setTheme?: (themeId: ThemeId) => void;
   prevSlide?: () => void;
   nextSlide?: () => void;
@@ -44,12 +46,14 @@ function isTypingTarget(el: EventTarget | null): boolean {
  * G — Go Live · O — Abrir salida
  * 1/2/3 — tema Oscuro/Claro/Acento
  * L / B / C / N — logo / black / clear / normal
+ * F — imagen de fondo sobre el video/audio en vivo (toggle)
  * ← / → — slide prev/next (texto live)
  */
 export function useControlShortcuts(handlers: ControlShortcutHandlers): void {
   const {
     goLive,
     setSceneMode,
+    toggleVideoCover,
     setTheme,
     prevSlide,
     nextSlide,
@@ -85,6 +89,10 @@ export function useControlShortcuts(handlers: ControlShortcutHandlers): void {
         case "b":
           e.preventDefault();
           setSceneMode?.("black");
+          break;
+        case "f":
+          e.preventDefault();
+          toggleVideoCover?.();
           break;
         case "c":
           e.preventDefault();
@@ -126,6 +134,7 @@ export function useControlShortcuts(handlers: ControlShortcutHandlers): void {
     enabled,
     goLive,
     setSceneMode,
+    toggleVideoCover,
     setTheme,
     prevSlide,
     nextSlide,

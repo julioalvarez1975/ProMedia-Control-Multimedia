@@ -475,6 +475,16 @@ export function IconDotsOverlay(props: IconProps) {
 }
 
 /** Empty / black scene. */
+export function IconVideoCover(props: IconProps) {
+  return (
+    <svg {...svgProps({ ...props, size: props.size ?? 18 })}>
+      <rect x="3" y="5" width="18" height="14" rx="2" stroke="currentColor" strokeWidth="1.6" fill="none" />
+      <circle cx="8.5" cy="10" r="1.6" fill="currentColor" />
+      <path d="M4 17l5-4.5 3.5 3 3-2.5 4.5 4" stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export function IconSceneEmpty(props: IconProps) {
   return (
     <svg {...svgProps({ ...props, size: props.size ?? 18 })}>

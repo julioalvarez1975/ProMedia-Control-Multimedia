@@ -327,6 +327,20 @@ function parseClientMessage(raw: string): ClientToHubMessage | null {
       }
       return { type: "live.setSceneMode", payload: { sceneMode } };
     }
+    if (type === "live.setVideoCover") {
+      const p = payload as { assetId?: unknown; active?: unknown } | undefined;
+      const out: { assetId?: string | null; active?: boolean } = {};
+      if (p?.assetId === null) out.assetId = null;
+      else if (typeof p?.assetId === "string" && p.assetId.length > 0 && p.assetId.length <= 64) {
+        out.assetId = p.assetId;
+      } else if (p?.assetId !== undefined) {
+        return null;
+      }
+      if (typeof p?.active === "boolean") out.active = p.active;
+      else if (p?.active !== undefined) return null;
+      if (out.assetId === undefined && out.active === undefined) return null;
+      return { type: "live.setVideoCover", payload: out };
+    }
     if (type === "live.setWatermark") {
       const enabled = (payload as { enabled?: unknown } | undefined)?.enabled;
       if (typeof enabled !== "boolean") {
@@ -738,6 +752,13 @@ export class WsHub {
           conn,
           session,
           sessionStore.setSceneMode(session, msg.payload.sceneMode),
+        );
+        return;
+      case "live.setVideoCover":
+        this.applyResult(
+          conn,
+          session,
+          sessionStore.setVideoCover(session, msg.payload),
         );
         return;
       case "live.setWatermark":

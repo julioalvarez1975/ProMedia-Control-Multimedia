@@ -1034,6 +1034,32 @@ export class LibraryStore {
   /**
    * Materialize a library item into session playlist item(s) + session assets.
    */
+  /**
+   * Copy a Biblioteca image into the session asset store (e.g. as a video
+   * cover) without adding a Guion item.
+   */
+  async copyImageToSession(opts: {
+    sessionId: string;
+    libraryItemId: string;
+  }): Promise<{ assetId: string } | { error: string; message: string }> {
+    await this.ensureLoaded();
+    const lib = this.items.get(opts.libraryItemId);
+    if (!lib || lib.category !== "imagenes" || !lib.original) {
+      return { error: "not_an_image", message: "El ítem no es una imagen de la Biblioteca." };
+    }
+    const bytes = await readFile(this.resolveUnderLibrary(lib.original.relativePath));
+    const asset = await assetStore.putProjectionImage(
+      opts.sessionId,
+      bytes,
+      lib.original.mime.startsWith("image/") ? lib.original.mime : "image/png",
+      lib.original.originalName,
+    );
+    if ("error" in asset) {
+      return { error: asset.error, message: "No se pudo copiar la imagen a la sesión." };
+    }
+    return { assetId: asset.id };
+  }
+
   async addToSession(opts: {
     sessionId: string;
     libraryItemId: string;
