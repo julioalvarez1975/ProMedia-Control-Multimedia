@@ -256,3 +256,24 @@ export const LIBRARY_BIBLE_UPLOAD_ACCEPT = ".xml,.xmm,.pdf,application/pdf,text/
 
 export const LIBRARY_SONG_UPLOAD_ACCEPT =
   ".qsp,.xml,application/zip,application/xml,text/xml";
+
+/** Copy a Biblioteca image into the live session's assets (for the video cover). */
+export async function copyLibraryImageToSession(opts: {
+  sessionId: string;
+  credential: string;
+  libraryItemId: string;
+}): Promise<{ assetId: string }> {
+  const res = await fetch(
+    `${hubHttpBase()}/api/v1/sessions/${encodeURIComponent(opts.sessionId)}/library/${encodeURIComponent(opts.libraryItemId)}/copy-image`,
+    { method: "POST", headers: { Authorization: `Bearer ${opts.credential}` } },
+  );
+  const body = (await res.json().catch(() => ({}))) as {
+    assetId?: string;
+    error?: string;
+    message?: string;
+  };
+  if (!res.ok || !body.assetId) {
+    throw new Error(body.message || body.error || `cover_copy_${res.status}`);
+  }
+  return { assetId: body.assetId };
+}

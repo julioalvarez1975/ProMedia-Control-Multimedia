@@ -57,6 +57,7 @@ import {
   IconNext,
   IconPrev,
   IconSceneEmpty,
+  IconVideoCover,
   IconSceneLogo,
   IconWatermark,
   IconUploadLogo,
@@ -85,6 +86,8 @@ import {
   createLibrarySong,
   uploadLibraryFile,
 } from "../lib/library";
+import { VideoCoverDialog } from "../components/VideoCoverDialog";
+import { copyLibraryImageToSession } from "../lib/library";
 import { fetchHubHealth, isLoopbackPageHost, type HubHealth } from "../lib/hub";
 import {
   openOutputWindow,
@@ -792,6 +795,72 @@ export function ControlPage() {
     });
   };
 
+  // ── Cover image over the live video/audio (under the subtitle) ───────
+  const videoCover = session.snapshot?.live.videoCover ?? null;
+  const liveIsAv = Boolean(
+    liveItem && (liveItem.type === "video" || liveItem.type === "audio"),
+  );
+  const [coverDialogOpen, setCoverDialogOpen] = useState(false);
+  const [coverBusy, setCoverBusy] = useState(false);
+  const [coverError, setCoverError] = useState<string | null>(null);
+
+  /** Tap: toggle the current image, or open the picker when none is set. */
+  const toggleVideoCover = () => {
+    if (!liveIsAv || !ensureWsOrHint()) {
+      return;
+    }
+    if (!videoCover) {
+      setCoverError(null);
+      setCoverDialogOpen(true);
+      return;
+    }
+    session.setVideoCover({ active: !videoCover.active });
+  };
+
+  const applyCoverAsset = (assetId: string) => {
+    if (session.setVideoCover({ assetId, active: true })) {
+      setCoverDialogOpen(false);
+    } else {
+      setCoverError(t("control.videoCoverFailed"));
+    }
+  };
+
+  const pickCoverFromLibrary = async (libraryItemId: string) => {
+    if (!session.sessionId || !session.wsTicket) {
+      return;
+    }
+    setCoverBusy(true);
+    setCoverError(null);
+    try {
+      const { assetId } = await copyLibraryImageToSession({
+        sessionId: session.sessionId,
+        credential: session.wsTicket,
+        libraryItemId,
+      });
+      applyCoverAsset(assetId);
+    } catch (err) {
+      setCoverError(err instanceof Error ? err.message : t("control.videoCoverFailed"));
+    } finally {
+      setCoverBusy(false);
+    }
+  };
+
+  const pickCoverFromFile = async (file: File) => {
+    if (!session.sessionId || !session.wsTicket) {
+      return;
+    }
+    setCoverBusy(true);
+    setCoverError(null);
+    try {
+      const asset = await uploadSessionAsset(session.sessionId, session.wsTicket, file);
+      applyCoverAsset(asset.id);
+    } catch (err) {
+      setCoverError(err instanceof Error ? err.message : t("control.videoCoverFailed"));
+    } finally {
+      setCoverBusy(false);
+    }
+  };
+
   /**
    * Scene buttons / shortcuts are toggles: pressing the active overlay again
    * (Logo, Vacío, Clear) returns to the live content ("normal").
@@ -815,6 +884,7 @@ export function ControlPage() {
     },
     openOutput,
     setSceneMode: toggleSceneMode,
+    toggleVideoCover,
     setTheme: (id) => session.setTheme({ themeId: id }),
     prevSlide: () => {
       if (nudgeKaraoke(-1)) {
@@ -1949,6 +2019,20 @@ export function ControlPage() {
         </div>
       ) : null}
 
+      <VideoCoverDialog
+        open={coverDialogOpen}
+        onClose={() => setCoverDialogOpen(false)}
+        busy={coverBusy}
+        error={coverError}
+        hasCover={Boolean(videoCover)}
+        onPickLibrary={(id) => void pickCoverFromLibrary(id)}
+        onPickFile={(file) => void pickCoverFromFile(file)}
+        onRemove={() => {
+          session.setVideoCover({ assetId: null });
+          setCoverDialogOpen(false);
+        }}
+      />
+
       {!session.hubUnreachable && !envIssuesDismissed && envIssues.length > 0 ? (
         <div
           className="control-banner control-banner-env control-banner-compact"
@@ -2448,6 +2532,47 @@ export function ControlPage() {
                 </span>
                 <span className="preview-tb-scene-label">
                   {t("control.sceneEmpty")}
+                </span>
+              </button>
+              <button
+                type="button"
+                className={[
+                  "btn preview-tb-btn preview-tb-scene",
+                  videoCover?.active ? "is-active" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                disabled={!canMutate || !liveIsAv}
+                title={
+                  liveIsAv
+                    ? t("control.videoCoverHint")
+                    : t("control.videoCoverNeedsAv")
+                }
+                aria-label={t("control.videoCover")}
+                aria-pressed={Boolean(videoCover?.active)}
+                onClick={(e) => {
+                  // Alt/Meta/Ctrl+click → choose another image.
+                  if (e.altKey || e.metaKey || e.ctrlKey) {
+                    e.preventDefault();
+                    setCoverError(null);
+                    setCoverDialogOpen(true);
+                    return;
+                  }
+                  toggleVideoCover();
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  if (liveIsAv) {
+                    setCoverError(null);
+                    setCoverDialogOpen(true);
+                  }
+                }}
+              >
+                <span className="preview-tb-scene-glyph" aria-hidden>
+                  <IconVideoCover />
+                </span>
+                <span className="preview-tb-scene-label">
+                  {t("control.videoCover")}
                 </span>
               </button>
               <span className="preview-tb-spacer" />

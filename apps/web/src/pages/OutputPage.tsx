@@ -191,6 +191,15 @@ export function OutputPage() {
       ? buildAssetUrl(sessionId, themeBackground.assetId, wsTicket)
       : undefined;
 
+  const videoCover = snapshot?.live.videoCover ?? null;
+  const videoCoverSrc =
+    videoCover?.active &&
+    sessionId &&
+    wsTicket &&
+    (liveItem?.type === "video" || liveItem?.type === "audio")
+      ? buildAssetUrl(sessionId, videoCover.assetId, wsTicket)
+      : null;
+
   const assetSrc = (() => {
     if (!liveItem || !sessionId || !wsTicket) {
       return undefined;
@@ -423,6 +432,13 @@ export function OutputPage() {
                   </p>
                 </div>
               </LiveItemLayer>
+            ) : null}
+            {/* Image cover: above the video plane, below captions. The player
+                stays mounted above, so audio / mediaClock never stop. */}
+            {videoCoverSrc ? (
+              <div className="video-cover-layer" aria-hidden>
+                <img className="video-cover-img" src={videoCoverSrc} alt="" />
+              </div>
             ) : null}
             <SubtitleOverlay
               agent={subtitleAgent}
