@@ -10,6 +10,7 @@ import type {
   AudioPayload,
   BiblePayload,
   ImageFit,
+  SceneMode,
   ImagePayload,
   LibrarySongPayload,
   PlaylistItem,
@@ -791,6 +792,14 @@ export function ControlPage() {
     });
   };
 
+  /**
+   * Scene buttons / shortcuts are toggles: pressing the active overlay again
+   * (Logo, Vacío, Clear) returns to the live content ("normal").
+   */
+  const toggleSceneMode = (mode: SceneMode) => {
+    session.setSceneMode(mode !== "normal" && mode === sceneMode ? "normal" : mode);
+  };
+
   useControlShortcuts({
     enabled: canMutate,
     goLive: () => {
@@ -805,7 +814,7 @@ export function ControlPage() {
       }
     },
     openOutput,
-    setSceneMode: (mode) => session.setSceneMode(mode),
+    setSceneMode: toggleSceneMode,
     setTheme: (id) => session.setTheme({ themeId: id }),
     prevSlide: () => {
       if (nudgeKaraoke(-1)) {
@@ -1456,7 +1465,7 @@ export function ControlPage() {
       openLogoFilePicker();
       return;
     }
-    session.setSceneMode("logo");
+    toggleSceneMode("logo");
   };
 
   const watermarkEnabled =
@@ -1523,7 +1532,7 @@ export function ControlPage() {
     if (!ensureWsOrHint()) {
       return;
     }
-    session.setSceneMode("black");
+    toggleSceneMode("black");
   };
 
   const slideCount =
