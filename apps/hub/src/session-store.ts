@@ -613,7 +613,7 @@ export class SessionStore {
    */
   setVideoCover(
     session: SessionRecord,
-    patch: { assetId?: string | null; active?: boolean },
+    patch: { assetId?: string | null; active?: boolean; background?: boolean },
   ): HubMessage | { error: string } {
     const live = session.live;
     const current = live.currentItemId
@@ -621,6 +621,12 @@ export class SessionStore {
       : null;
     if (!current || (current.type !== "video" && current.type !== "audio")) {
       return { error: "no_av_live" };
+    }
+    // The animated stage background itself (no image): above the video, under
+    // the subtitle.
+    if (patch.background === true) {
+      live.videoCover = { assetId: null, active: patch.active !== false };
+      return this.bumpUpdated(session);
     }
     if (patch.assetId === null) {
       live.videoCover = null;

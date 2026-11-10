@@ -810,8 +810,8 @@ export function ControlPage() {
       return;
     }
     if (!videoCover) {
-      setCoverError(null);
-      setCoverDialogOpen(true);
+      // First tap: the animated background goes over the video (under captions).
+      session.setVideoCover({ background: true });
       return;
     }
     session.setVideoCover({ active: !videoCover.active });

@@ -193,7 +193,7 @@
   "control.wsConnectingHint": "Connecting to hub… If it stays closed, ensure `pnpm dev` has the hub on :8787.",
   "control.hubUnreachable": "The hub is not running. Open Terminal in the promedia folder and run: pnpm dev",
   "control.videoCover": "Cover",
-  "control.videoCoverHint": "Puts an image over the video (audio keeps playing). Tap again to bring the video back · Alt+click: change image",
+  "control.videoCoverHint": "Puts the animated background over the video (audio keeps playing) and under the subtitle. Tap again to return to the video · Alt+click or right-click: use an image",
   "control.videoCoverDialogTitle": "Cover image over the video",
   "control.videoCoverFromLibrary": "From the Library",
   "control.videoCoverUpload": "Upload image…",

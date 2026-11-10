@@ -193,7 +193,7 @@
   "control.wsConnectingHint": "Conectando al hub… Si no abre, comprueba que `pnpm dev` tenga el hub en :8787.",
   "control.hubUnreachable": "El hub no está corriendo. Abrí Terminal en la carpeta promedia y ejecutá: pnpm dev",
   "control.videoCover": "Fondo",
-  "control.videoCoverHint": "Pone una imagen sobre el video (el audio sigue). Tocar de nuevo vuelve al video · Alt+clic: cambiar imagen",
+  "control.videoCoverHint": "Pone el fondo animado sobre el video (el audio sigue) y bajo el subtítulo. Tocar de nuevo vuelve al video · Alt+clic o clic derecho: usar una imagen",
   "control.videoCoverDialogTitle": "Imagen de fondo sobre el video",
   "control.videoCoverFromLibrary": "Desde la Biblioteca",
   "control.videoCoverUpload": "Subir imagen…",

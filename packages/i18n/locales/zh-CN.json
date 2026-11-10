@@ -192,7 +192,7 @@
   "control.wsConnectingHint": "正在连接 hub… 若一直断开，请确认 `pnpm dev` 已在 :8787 启动 hub。",
   "control.hubUnreachable": "Hub 未运行。在 promedia 文件夹打开终端并执行：pnpm dev",
   "control.videoCover": "背景",
-  "control.videoCoverHint": "在视频上方显示图片（音频继续播放）。再次点击恢复视频 · Alt+点击：更换图片",
+  "control.videoCoverHint": "将动画背景置于视频之上、字幕之下（音频继续播放）。再次点击返回视频 · Alt+点击或右键：使用图片",
   "control.videoCoverDialogTitle": "视频上方的背景图片",
   "control.videoCoverFromLibrary": "从资料库选择",
   "control.videoCoverUpload": "上传图片…",

@@ -4975,3 +4975,9 @@ body.output-route #root {
   color: #f5c542;
   opacity: 0.45;
 }
+
+/* "Fondo" cover with no image: the animated stage background itself. Its own
+   stacking context (z 3): above the video plane, below the captions (z 4). */
+.video-cover-layer.video-cover-bg {
+  background: var(--pm-bg, #000);
+}

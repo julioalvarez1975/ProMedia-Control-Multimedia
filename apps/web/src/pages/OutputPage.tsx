@@ -193,13 +193,15 @@ export function OutputPage() {
       : undefined;
 
   const videoCover = snapshot?.live.videoCover ?? null;
+  const coverOn =
+    Boolean(videoCover?.active) &&
+    (liveItem?.type === "video" || liveItem?.type === "audio");
   const videoCoverSrc =
-    videoCover?.active &&
-    sessionId &&
-    wsTicket &&
-    (liveItem?.type === "video" || liveItem?.type === "audio")
+    coverOn && videoCover?.assetId && sessionId && wsTicket
       ? buildAssetUrl(sessionId, videoCover.assetId, wsTicket)
       : null;
+  /** "Fondo" with no image: the animated stage background over the video. */
+  const coverIsBackground = coverOn && videoCover?.assetId == null;
 
   const assetSrc = (() => {
     if (!liveItem || !sessionId || !wsTicket) {
@@ -439,10 +441,24 @@ export function OutputPage() {
                 the stage effect on the way in and out, like scene overlays. */}
             <TransitionStack
               effect={transitionEffect}
-              layerKey={videoCoverSrc ? `cover:${videoCover?.assetId ?? ""}` : null}
+              layerKey={
+                coverIsBackground
+                  ? "cover:stage-background"
+                  : videoCoverSrc
+                    ? `cover:${videoCover?.assetId ?? ""}`
+                    : null
+              }
               zIndex={3}
               node={
-                videoCoverSrc ? (
+                coverIsBackground ? (
+                  <div className="video-cover-layer video-cover-bg" aria-hidden>
+                    <StageBackground
+                      background={themeBackground}
+                      assetSrc={themeBgAssetSrc}
+                      showDots={dotsOverlay}
+                    />
+                  </div>
+                ) : videoCoverSrc ? (
                   <div className="video-cover-layer" aria-hidden>
                     <img className="video-cover-img" src={videoCoverSrc} alt="" />
                   </div>

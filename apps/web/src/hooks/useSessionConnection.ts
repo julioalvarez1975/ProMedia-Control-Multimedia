@@ -370,8 +370,11 @@ export function useSessionConnection(role: ClientRole) {
   );
 
   const setVideoCover = useCallback(
-    (patch: { assetId?: string | null; active?: boolean }): boolean =>
-      send("live.setVideoCover", patch),
+    (patch: {
+      assetId?: string | null;
+      active?: boolean;
+      background?: boolean;
+    }): boolean => send("live.setVideoCover", patch),
     [send],
   );
 

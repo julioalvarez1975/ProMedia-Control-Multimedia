@@ -728,7 +728,8 @@ export type SessionLiveState = {
 };
 
 export type VideoCoverState = {
-  assetId: string;
+  /** Session image asset, or null = the animated stage background ("Fondo"). */
+  assetId: string | null;
   active: boolean;
 };
 
@@ -862,7 +863,7 @@ export type LiveSubtitleAgentSetMessage = {
  */
 export type LiveSetVideoCoverMessage = {
   type: "live.setVideoCover";
-  payload: { assetId?: string | null; active?: boolean };
+  payload: { assetId?: string | null; active?: boolean; background?: boolean };
 };
 
 /** Pre-align every A/V item in the Guion (queue). `cancel` stops it. */
