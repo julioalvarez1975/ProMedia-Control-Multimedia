@@ -1232,7 +1232,10 @@ async function tryCancioneroLyricPath(options: {
       SILENCE_AIR_ANTICIPATION_MS,
     );
 
-  if (timing && timing.cues.length > 0) {
+  // WhisperX forced alignment is the primary engine; the caption/ASR clocks
+  // only serve as fallback when it is missing or fails.
+  const whisperxPreferred = await whisperxAvailable();
+  if (!whisperxPreferred && timing && timing.cues.length > 0) {
     const textAligned = alignCancioneroLinesToTiming(
       lines,
       timing.cues,
@@ -1275,7 +1278,7 @@ async function tryCancioneroLyricPath(options: {
       (await publishKaraokeCues(lineCues, timingModeHint)) || published;
   }
 
-  // 2) WhisperX when captions did not lyric-confirm.
+  // 2) WhisperX (primary engine).
   const canWhisperx = mediaPath ? await whisperxAvailable() : false;
   if (!textSynced && canWhisperx && mediaPath) {
     const wx = await alignLyricsWithWhisperx({
