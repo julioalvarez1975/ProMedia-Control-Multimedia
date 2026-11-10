@@ -477,6 +477,8 @@ export type SubtitleItemProgress = {
   failed?: boolean;
   /** Another item took over the agent: percent is the last known value. */
   stale?: boolean;
+  /** Prepared by the hub's background queue (never goes stale). */
+  bg?: boolean;
 };
 
 /**

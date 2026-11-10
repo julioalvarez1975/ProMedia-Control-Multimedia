@@ -50,7 +50,7 @@ export function deriveItemProgress(
   // its last percent but is flagged stale (its job may have been replaced).
   if (prevItem && prevItem !== itemId) {
     const prev = map.get(prevItem);
-    if (prev && !prev.ready && !prev.failed) {
+    if (prev && !prev.ready && !prev.failed && !prev.bg) {
       map.set(prevItem, { ...prev, stale: true });
     }
   }
@@ -69,6 +69,7 @@ export function deriveItemProgress(
       map.set(itemId, {
         percent: Math.max(computed, base),
         ready: false,
+        ...(before?.bg ? { bg: true } : {}),
       });
     }
   } else if (itemId && live.has(itemId) && agent.status === "idle" && !map.has(itemId)) {
@@ -98,4 +99,38 @@ export function markItemsReady(sessionId: string, itemIds: readonly string[]): b
 
 export function isItemReady(sessionId: string, itemId: string): boolean {
   return bySession.get(sessionId)?.get(itemId)?.ready === true;
+}
+
+/**
+ * Progress reported by a background row job (hub queue). Rising only; ready and
+ * failed are final for that run. Returns true when the stored value changed.
+ */
+export function setBgProgress(
+  sessionId: string,
+  itemId: string,
+  next: { percent: number; ready: boolean; failed?: boolean },
+): boolean {
+  let map = bySession.get(sessionId);
+  if (!map) {
+    map = new Map();
+    bySession.set(sessionId, map);
+  }
+  const before = map.get(itemId);
+  let rec: SubtitleItemProgress;
+  if (next.ready) rec = { percent: 100, ready: true, bg: true };
+  else if (next.failed) rec = { percent: before?.percent ?? 0, ready: false, failed: true, bg: true };
+  else {
+    const base = before && !before.ready && !before.failed ? before.percent : 0;
+    rec = { percent: Math.max(next.percent, base), ready: false, bg: true };
+  }
+  if (
+    before &&
+    before.percent === rec.percent &&
+    before.ready === rec.ready &&
+    before.failed === rec.failed
+  ) {
+    return false;
+  }
+  map.set(itemId, rec);
+  return true;
 }

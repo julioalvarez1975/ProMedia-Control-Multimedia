@@ -67,6 +67,31 @@ const metaByAsset = new Map<string, PersistMeta>();
 /** Session asset id → stable cache key (filled by resolveCacheKey). */
 const keyByAsset = new Map<string, string>();
 const writeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** Payloads waiting for the debounce; flushed on shutdown / session end. */
+const pendingWrites = new Map<string, PersistedAgent>();
+
+async function writePersisted(file: string, payload: PersistedAgent): Promise<void> {
+  try {
+    await mkdir(alignedDir(), { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    await writeFile(tmp, JSON.stringify(payload), "utf8");
+    await rename(tmp, file);
+  } catch (err) {
+    console.warn(
+      "[subtitle] aligned cache save failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+/** Write every pending result now (hub shutdown / session closed). */
+export async function flushPersistedAgents(): Promise<void> {
+  const entries = [...pendingWrites.entries()];
+  pendingWrites.clear();
+  for (const t of writeTimers.values()) clearTimeout(t);
+  writeTimers.clear();
+  await Promise.all(entries.map(([file, payload]) => writePersisted(file, payload)));
+}
 
 function alignedDir(): string {
   return path.join(subtitleDataRoot(), "aligned");
@@ -172,23 +197,14 @@ export function persistReadyAgent(
 
   const prev = writeTimers.get(file);
   if (prev) clearTimeout(prev);
+  pendingWrites.set(file, payload);
   writeTimers.set(
     file,
     setTimeout(() => {
       writeTimers.delete(file);
-      void (async () => {
-        try {
-          await mkdir(alignedDir(), { recursive: true });
-          const tmp = `${file}.${process.pid}.tmp`;
-          await writeFile(tmp, JSON.stringify(payload), "utf8");
-          await rename(tmp, file);
-        } catch (err) {
-          console.warn(
-            "[subtitle] aligned cache save failed:",
-            err instanceof Error ? err.message : err,
-          );
-        }
-      })();
+      const pending = pendingWrites.get(file);
+      pendingWrites.delete(file);
+      if (pending) void writePersisted(file, pending);
     }, WRITE_DEBOUNCE_MS),
   );
 }

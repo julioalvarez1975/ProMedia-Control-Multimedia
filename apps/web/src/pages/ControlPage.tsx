@@ -286,11 +286,9 @@ export function ControlPage() {
         i.type === "audio" ||
         (i.type === "video" && i.payload.sourceKind === "youtube"),
     );
-    const liveAv = Boolean(
-      liveItem && (liveItem.type === "video" || liveItem.type === "audio"),
-    );
-    return hasTarget && !liveAv;
-  }, [session.snapshot?.playlist.items, liveItem]);
+    // The hub prepares rows in the background: allowed while something plays.
+    return hasTarget;
+  }, [session.snapshot?.playlist.items]);
   const subtitleAgentTitle = useMemo(() => {
     if (subtitleAgent.enabled) {
       const st = subtitleAgent.status;

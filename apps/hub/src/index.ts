@@ -13,6 +13,7 @@ import { ensureSubtitleDirs } from "./subtitle-paths.js";
 import { assetStore } from "./asset-store.js";
 import { sessionStore } from "./session-store.js";
 import { disposeSubtitleSession } from "./subtitle-agent.js";
+import { flushPersistedAgents } from "./subtitle-aligned-store.js";
 import { forgetClockReports, WsHub } from "./ws-hub.js";
 
 const app = new Hono();
@@ -169,8 +170,11 @@ function shutdown(signal: string): void {
   shuttingDown = true;
   console.log(`[hub] ${signal}: closing sessions and sockets…`);
   hub.shutdown();
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 2_000).unref();
+  // Save every finished karaoke still waiting on its write-behind timer.
+  void flushPersistedAgents().finally(() => {
+    server.close(() => process.exit(0));
+  });
+  setTimeout(() => process.exit(0), 3_000).unref();
 }
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
