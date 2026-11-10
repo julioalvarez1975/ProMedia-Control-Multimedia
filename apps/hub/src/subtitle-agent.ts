@@ -51,7 +51,6 @@ import {
   recallCancioneroByTitles,
   recallCancioneroTiming,
   rememberCancioneroMatch,
-  rememberCancioneroTiming,
 } from "./cancionero-memory.js";
 import {
   alignCancioneroLinesToSilence,
@@ -588,51 +587,6 @@ async function finishWithCues(options: {
     ...leadPatch,
   });
   return true;
-}
-
-function mediaKeyFromAssetId(assetId: string | null | undefined): string | null {
-  const id = assetId?.trim();
-  if (!id) return null;
-  if (id.startsWith("yt_")) {
-    return cancioneroMediaKey({ youtubeVideoId: id.slice(3) });
-  }
-  return cancioneroMediaKey({ assetId: id });
-}
-
-/** Stamp cue `index` to start at `positionMs`; keep neighbors monotonic. */
-function retimedCuesAtIndex(
-  cues: readonly SubtitleCue[],
-  index: number,
-  positionMs: number,
-): SubtitleCue[] {
-  if (index < 0 || index >= cues.length) return [...cues];
-  const now = Math.max(0, Math.round(positionMs));
-  const next = cues.map((c) => ({ ...c }));
-  const cur = next[index]!;
-  cur.startMs = now;
-  if (index > 0) {
-    const prev = next[index - 1]!;
-    prev.endMs = Math.max(prev.startMs + 400, now);
-  }
-  if (index + 1 < next.length) {
-    const following = next[index + 1]!;
-    if (following.startMs < now + 400) {
-      following.startMs = now + 400;
-    }
-    cur.endMs = Math.max(now + 500, following.startMs);
-  } else {
-    cur.endMs = Math.max(now + 800, cur.endMs);
-  }
-  // Repair forward chain if we pushed following starts.
-  for (let i = index + 1; i < next.length; i++) {
-    const a = next[i - 1]!;
-    const b = next[i]!;
-    if (b.startMs < a.startMs + 400) {
-      b.startMs = a.startMs + 400;
-    }
-    a.endMs = Math.max(a.startMs + 400, b.startMs);
-  }
-  return next;
 }
 
 function isStickyMissingBin(agent: SubtitleAgentState | null | undefined): boolean {
@@ -1518,9 +1472,8 @@ export function teachSubtitleCancionero(
 
 /**
  * Operator steps karaoke on Preview with ←/→ (does not seek the media clock).
- * → show next cue and teach “this line starts now” at positionMs.
- * ← previous cue, or blank (−1) before the first; delays the left-behind cue
- *   so auto timing will not flash it again at the current position.
+ * → next cue; ← previous cue, or blank (−1) before the first. Pure manual
+ * stepping, independent of the media clock; no retiming is saved.
  */
 export function nudgeSubtitleCancionero(
   session: SessionRecord,
@@ -1557,32 +1510,10 @@ export function nudgeSubtitleCancionero(
     nextIndex = current <= 0 ? -1 : current - 1;
   }
 
-  let nextCues = [...cues];
-  if (delta === 1) {
-    // → teaches: the line we land on starts at the operator’s wall clock.
-    nextCues = retimedCuesAtIndex(cues, nextIndex, positionMs);
-  } else if (current >= 0 && current < cues.length) {
-    // ← means “too early”: push the cue we leave so it starts after now.
-    const delayTo = Math.max(positionMs + 500, Math.round(positionMs) + 500);
-    if (cues[current]!.startMs <= positionMs + 50) {
-      nextCues = retimedCuesAtIndex(cues, current, delayTo);
-    }
-  }
-
-  if (delta === 1 || (delta === -1 && current >= 0)) {
-    const mediaKey = mediaKeyFromAssetId(prev.assetId);
-    if (mediaKey) {
-      void rememberCancioneroTiming({
-        mediaKey,
-        cueStarts: nextCues.map((c) => c.startMs),
-      }).catch((err) => {
-        console.warn(
-          "[subtitle] cancionero timing save failed:",
-          err instanceof Error ? err.message : err,
-        );
-      });
-    }
-  }
+  // Manual stepping only: lines keep their times; nothing is retimed or
+  // written to the cancionero. The lyric runs on the operator's keys, apart
+  // from whatever audio/video is playing.
+  const nextCues = cues;
 
   session.live.subtitleAgent = {
     ...prev,
