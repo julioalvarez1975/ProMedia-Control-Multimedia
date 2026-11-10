@@ -416,6 +416,7 @@ export class SessionStore {
       session.live.mediaClock = null;
       session.live.sceneMode = "normal";
       session.live.videoCover = null;
+      session.live.lyricLayer = null;
     }
     return { message: this.bumpUpdated(session), skipped };
   }
@@ -534,6 +535,7 @@ export class SessionStore {
       session.live.currentSlideIndex = 0;
       session.live.mediaClock = null;
       session.live.videoCover = null;
+      session.live.lyricLayer = null;
     }
     return this.bumpUpdated(session);
   }
@@ -578,6 +580,7 @@ export class SessionStore {
     // The cover belongs to the item it was set on: another item starts clean.
     if (session.live.currentItemId !== itemId) {
       session.live.videoCover = null;
+      session.live.lyricLayer = null;
     }
     session.live.currentItemId = itemId;
     session.live.currentSlideIndex = 0;
@@ -641,6 +644,7 @@ export class SessionStore {
     session.live.currentSlideIndex = 0;
     session.live.mediaClock = null;
     session.live.videoCover = null;
+      session.live.lyricLayer = null;
     session.live.sceneMode = "normal";
     // Keep the subtitle agent state: stopping the projection (black) must not
     // wipe the aligned cues. Wiping made Control re-target the agent and re-run
@@ -710,6 +714,55 @@ export class SessionStore {
       return this.bumpUpdated(session);
     }
     return { error: "invalid_video_cover" };
+  }
+
+  /**
+   * Manual lyric layer over the live video/audio (karaoke agent must be off).
+   * `itemId` selects a text item (song) at phrase 0; `delta` steps ←/→;
+   * `itemId:null` removes it.
+   */
+  setLyricLayer(
+    session: SessionRecord,
+    patch: { itemId?: string | null; delta?: -1 | 1 },
+  ): HubMessage | { error: string } {
+    const live = session.live;
+    if (patch.itemId === null) {
+      live.lyricLayer = null;
+      return this.bumpUpdated(session);
+    }
+    const current = live.currentItemId
+      ? session.playlist.items.find((i) => i.id === live.currentItemId)
+      : null;
+    if (!current || (current.type !== "video" && current.type !== "audio")) {
+      return { error: "no_av_live" };
+    }
+    if (live.subtitleAgent?.enabled) {
+      return { error: "karaoke_active" };
+    }
+    if (typeof patch.itemId === "string") {
+      const song = session.playlist.items.find((i) => i.id === patch.itemId);
+      if (!song || song.type !== "text" || itemProjectionSlideCount(song) === 0) {
+        return { error: "lyric_item_invalid" };
+      }
+      live.lyricLayer = { itemId: song.id, index: 0 };
+      return this.bumpUpdated(session);
+    }
+    if (patch.delta === 1 || patch.delta === -1) {
+      const layer = live.lyricLayer;
+      const song = layer
+        ? session.playlist.items.find((i) => i.id === layer.itemId)
+        : null;
+      if (!layer || !song) {
+        return { error: "no_lyric_layer" };
+      }
+      const max = Math.max(itemProjectionSlideCount(song) - 1, 0);
+      live.lyricLayer = {
+        ...layer,
+        index: Math.min(max, Math.max(0, layer.index + patch.delta)),
+      };
+      return this.bumpUpdated(session);
+    }
+    return { error: "invalid_lyric_layer" };
   }
 
   setWatermark(

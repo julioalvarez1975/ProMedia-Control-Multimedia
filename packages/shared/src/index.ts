@@ -732,6 +732,20 @@ export type SessionLiveState = {
    * it without forgetting the image. Cleared when the live item changes.
    */
   videoCover: VideoCoverState | null;
+  /**
+   * Manual lyric layer: a song (text item) shown as subtitles on its own
+   * layer over the live video/audio, stepped with ←/→. Independent from the
+   * media clock; only usable while the karaoke agent is off. Cleared when the
+   * live item changes.
+   */
+  lyricLayer: LyricLayerState | null;
+};
+
+export type LyricLayerState = {
+  /** Playlist text item (song) providing the phrases. */
+  itemId: string;
+  /** Current phrase (index into resolveProjectionTextSlides). */
+  index: number;
 };
 
 export type VideoCoverState = {
@@ -873,6 +887,15 @@ export type LiveSetVideoCoverMessage = {
   payload: { assetId?: string | null; active?: boolean; background?: boolean };
 };
 
+/**
+ * Manual lyric layer: `itemId` picks the song (starts at phrase 0), `delta`
+ * steps ←/→ (clamped), `itemId:null` removes the layer.
+ */
+export type LiveSetLyricLayerMessage = {
+  type: "live.setLyricLayer";
+  payload: { itemId?: string | null; delta?: -1 | 1 };
+};
+
 /** Pre-align every A/V item in the Guion (queue). `cancel` stops it. */
 export type LiveSubtitleAgentPrepareMessage = {
   type: "live.subtitleAgent.prepare";
@@ -944,6 +967,7 @@ export type ClientToHubMessage =
   | LiveMediaClockSetMessage
   | LiveSubtitleAgentSetMessage
   | LiveSetVideoCoverMessage
+  | LiveSetLyricLayerMessage
   | LiveSubtitleAgentPrepareMessage
   | LiveSubtitleAgentSaveLyricsMessage
   | LiveSubtitleAgentTeachMessage
@@ -1000,6 +1024,7 @@ export function emptyLiveState(): SessionLiveState {
     watermarkMime: null,
     watermarkEnabled: false,
     videoCover: null,
+    lyricLayer: null,
   };
 }
 

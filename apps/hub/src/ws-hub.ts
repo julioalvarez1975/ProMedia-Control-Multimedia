@@ -346,6 +346,20 @@ function parseClientMessage(raw: string): ClientToHubMessage | null {
       if (out.assetId === undefined && out.active === undefined && !out.background) return null;
       return { type: "live.setVideoCover", payload: out };
     }
+    if (type === "live.setLyricLayer") {
+      const p = payload as { itemId?: unknown; delta?: unknown } | undefined;
+      const out: { itemId?: string | null; delta?: -1 | 1 } = {};
+      if (p?.itemId === null) out.itemId = null;
+      else if (typeof p?.itemId === "string" && p.itemId.length > 0 && p.itemId.length <= 128) {
+        out.itemId = p.itemId;
+      } else if (p?.itemId !== undefined) {
+        return null;
+      }
+      if (p?.delta === 1 || p?.delta === -1) out.delta = p.delta;
+      else if (p?.delta !== undefined) return null;
+      if (out.itemId === undefined && out.delta === undefined) return null;
+      return { type: "live.setLyricLayer", payload: out };
+    }
     if (type === "live.setWatermark") {
       const enabled = (payload as { enabled?: unknown } | undefined)?.enabled;
       if (typeof enabled !== "boolean") {
@@ -765,6 +779,13 @@ export class WsHub {
           conn,
           session,
           sessionStore.setVideoCover(session, msg.payload),
+        );
+        return;
+      case "live.setLyricLayer":
+        this.applyResult(
+          conn,
+          session,
+          sessionStore.setLyricLayer(session, msg.payload),
         );
         return;
       case "live.setWatermark":

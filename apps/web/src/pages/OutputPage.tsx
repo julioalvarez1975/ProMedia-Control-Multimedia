@@ -8,6 +8,7 @@ import {
   DEFAULT_THEME_ID,
   DEFAULT_TRANSITION_EFFECT,
   emptySubtitleAgentState,
+  resolveProjectionTextSlides,
   normalizeThemeBackground,
 } from "@promedia/shared";
 import { LiveItemLayer } from "../components/LiveItemLayer";
@@ -184,6 +185,34 @@ export function OutputPage() {
     snapshot?.live.transitionEffect ?? DEFAULT_TRANSITION_EFFECT;
   const subtitleAgent =
     snapshot?.live.subtitleAgent ?? emptySubtitleAgentState();
+  // Manual lyric layer: a song's phrase shown as subtitle on its own layer
+  // over the live video/audio, stepped by the operator (independent of the clock).
+  const lyricLayer = snapshot?.live.lyricLayer ?? null;
+  const lyricAgent = useMemo(() => {
+    if (!lyricLayer || !snapshot || subtitleAgent.enabled) {
+      return null;
+    }
+    const song = snapshot.playlist.items.find((i) => i.id === lyricLayer.itemId);
+    if (!song || song.type !== "text") {
+      return null;
+    }
+    const slide = resolveProjectionTextSlides(song.payload)[lyricLayer.index];
+    const text = slide?.lines.join("\n").trim();
+    if (!text) {
+      return null;
+    }
+    return {
+      ...emptySubtitleAgentState(),
+      enabled: true,
+      status: "ready" as const,
+      timingMode: "exact" as const,
+      fontSize: subtitleAgent.fontSize,
+      cues: [
+        { id: `lyric-${song.id}-${lyricLayer.index}`, startMs: 0, endMs: 1, text },
+      ],
+      cueIndex: 0,
+    };
+  }, [lyricLayer, snapshot, subtitleAgent.enabled, subtitleAgent.fontSize]);
   const themeStyle = themeSurfaceStyle(themeId, themeOverrides);
   const liveItemKey = liveItem?.id ?? "__empty__";
   const OutputRenderer = liveItem
@@ -476,6 +505,14 @@ export function OutputPage() {
               itemId={liveItem?.id ?? null}
               transitionEffect={transitionEffect}
             />
+            {lyricAgent ? (
+              <SubtitleOverlay
+                agent={lyricAgent}
+                mediaClock={null}
+                itemId={null}
+                transitionEffect={transitionEffect}
+              />
+            ) : null}
             <SceneOverlay
               mode={sceneMode}
               effect={transitionEffect}

@@ -369,6 +369,12 @@ export function useSessionConnection(role: ClientRole) {
     [send],
   );
 
+  const setLyricLayer = useCallback(
+    (patch: { itemId?: string | null; delta?: -1 | 1 }): boolean =>
+      send("live.setLyricLayer", patch),
+    [send],
+  );
+
   const setVideoCover = useCallback(
     (patch: {
       assetId?: string | null;
@@ -433,6 +439,7 @@ export function useSessionConnection(role: ClientRole) {
     setTheme,
     setSubtitleAgent,
     setVideoCover,
+    setLyricLayer,
     prepareSubtitleAgent,
     saveSubtitleLyrics,
     nudgeSubtitleCancionero,

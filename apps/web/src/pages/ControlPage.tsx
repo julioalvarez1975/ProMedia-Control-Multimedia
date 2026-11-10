@@ -772,6 +772,32 @@ export function ControlPage() {
   const liveIsAv = Boolean(
     liveItem && (liveItem.type === "video" || liveItem.type === "audio"),
   );
+  // Manual lyric layer: song (text item) as subtitles over the live A/V,
+  // stepped with ←/→. Only while the karaoke agent is off.
+  const lyricLayer = session.snapshot?.live.lyricLayer ?? null;
+  const lyricLayerCanStart = Boolean(
+    liveIsAv &&
+      !subtitleAgent.enabled &&
+      selectedItem?.type === "text",
+  );
+  const toggleLyricLayer = () => {
+    if (!ensureWsOrHint()) {
+      return;
+    }
+    if (lyricLayer) {
+      session.setLyricLayer({ itemId: null });
+      return;
+    }
+    if (lyricLayerCanStart && selectedItem) {
+      session.setLyricLayer({ itemId: selectedItem.id });
+    }
+  };
+  const stepLyricLayer = (delta: -1 | 1): boolean => {
+    if (!lyricLayer || subtitleAgent.enabled) {
+      return false;
+    }
+    return session.setLyricLayer({ delta });
+  };
   const [coverDialogOpen, setCoverDialogOpen] = useState(false);
   const [coverBusy, setCoverBusy] = useState(false);
   const [coverError, setCoverError] = useState<string | null>(null);
@@ -859,6 +885,9 @@ export function ControlPage() {
     toggleVideoCover,
     setTheme: (id) => session.setTheme({ themeId: id }),
     prevSlide: () => {
+      if (stepLyricLayer(-1)) {
+        return;
+      }
       if (liveItem && itemHasSlides(liveItem)) {
         const next = Math.max(0, liveSlideIndex - 1);
         session.setSlide(next);
@@ -868,6 +897,9 @@ export function ControlPage() {
       }
     },
     nextSlide: () => {
+      if (stepLyricLayer(1)) {
+        return;
+      }
       if (liveItem && itemHasSlides(liveItem)) {
         const max = Math.max(itemProjectionSlideCount(liveItem) - 1, 0);
         const next = Math.min(max, liveSlideIndex + 1);
@@ -1663,6 +1695,9 @@ export function ControlPage() {
   };
 
   const previewGoPrev = () => {
+    if (stepLyricLayer(-1)) {
+      return;
+    }
     if (
       selectedItem &&
       itemHasSlides(selectedItem) &&
@@ -1680,6 +1715,9 @@ export function ControlPage() {
   };
 
   const previewGoNext = () => {
+    if (stepLyricLayer(1)) {
+      return;
+    }
     if (
       selectedItem &&
       itemHasSlides(selectedItem) &&
@@ -2556,6 +2594,31 @@ export function ControlPage() {
                 </span>
                 <span className="preview-tb-scene-label">
                   {t("control.videoCover")}
+                </span>
+              </button>
+              <button
+                type="button"
+                className={[
+                  "btn preview-tb-btn preview-tb-scene",
+                  lyricLayer ? "is-active" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                disabled={!canMutate || (!lyricLayer && !lyricLayerCanStart)}
+                title={
+                  lyricLayer || lyricLayerCanStart
+                    ? t("control.lyricLayerHint")
+                    : t("control.lyricLayerNeeds")
+                }
+                aria-label={t("control.lyricLayer")}
+                aria-pressed={Boolean(lyricLayer)}
+                onClick={toggleLyricLayer}
+              >
+                <span className="preview-tb-scene-glyph" aria-hidden>
+                  ♪
+                </span>
+                <span className="preview-tb-scene-label">
+                  {t("control.lyricLayer")}
                 </span>
               </button>
               <span className="preview-tb-spacer" />
