@@ -342,27 +342,6 @@ export function IconAbout(props: IconProps) {
   );
 }
 
-/** Teach / correct karaoke cancionero mapping. */
-export function IconTeach(props: IconProps) {
-  return (
-    <svg {...svgProps({ ...props, size: props.size ?? 20 })}>
-      <path
-        d="M12 20h9"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-      <path
-        d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
 export function IconSubtitles(props: IconProps) {
   return (
     <svg {...svgProps({ ...props, size: props.size ?? 20 })}>

@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { readFile, rm, stat } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { Hono } from "hono";
 import type {
@@ -22,8 +22,15 @@ import {
 import { broadcastSession } from "./broadcast.js";
 import { libraryStore } from "./library-store.js";
 import { playlistStore } from "./playlist-store.js";
+import { maybeAutoPrepare } from "./subtitle-agent.js";
+import {
+  WATERMARK_MAX_BYTES,
+  getWatermark,
+  putWatermark,
+} from "./watermark-store.js";
 import { clientIpFromHeaders, rateLimitAllow } from "./rate-limit.js";
 import { sessionStore } from "./session-store.js";
+import { downloadYoutubeVideoFile } from "./subtitle-youtube.js";
 
 /** Session media upload cap (bytes) — prevents LAN DoS filling disk. */
 const SESSION_ASSET_MAX_BYTES = 512 * 1024 * 1024;
@@ -319,6 +326,88 @@ export function createApiRoutes(): Hono {
     return c.json({ logo: result }, 201);
   });
 
+  /** Independent watermark file (not the logo). Same auth as the logo. */
+  api.get("/branding/watermark", async (c) => {
+    const credential =
+      bearerToken(c.req.header("authorization")) ?? c.req.query("credential");
+    let sessionId = (c.req.query("sessionId") ?? "").trim();
+    if (!sessionId && credential) {
+      const ticket = sessionStore.getTicket(credential);
+      if (ticket) sessionId = ticket.sessionId;
+    }
+    if (!sessionId) {
+      return c.json({ error: "missing_session" }, 400);
+    }
+    const access = authorizeSessionAccess(sessionId, {
+      credential,
+      code: c.req.query("code"),
+      accessToken: c.req.query("accessToken") ?? c.req.query("token"),
+    });
+    if (!access.ok) {
+      return c.json({ error: access.error }, access.status);
+    }
+    const wm = await getWatermark();
+    if (!wm) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    return new Response(new Uint8Array(wm.bytes), {
+      status: 200,
+      headers: {
+        "Content-Type": wm.meta.mime,
+        "Cache-Control": "private, max-age=30",
+        "X-Watermark-Updated-At": wm.meta.updatedAt,
+      },
+    });
+  });
+
+  /**
+   * Upload / replace the watermark (control only). Multipart field `file`:
+   * image, animated image (gif/webp/apng) or short video (mp4/webm). It also
+   * switches the watermark on.
+   */
+  api.post("/branding/watermark", async (c) => {
+    const sessionId = c.req.query("sessionId") ?? "";
+    const credential =
+      bearerToken(c.req.header("authorization")) ?? c.req.query("credential");
+    if (!sessionId) {
+      return c.json({ error: "missing_session" }, 400);
+    }
+    const access = authorizeSessionAccess(sessionId, {
+      credential,
+      accessToken: c.req.query("accessToken") ?? c.req.query("token"),
+      requireRole: "control",
+    });
+    if (!access.ok) {
+      return c.json({ error: access.error }, access.status);
+    }
+    let body: Record<string, string | File>;
+    try {
+      body = (await c.req.parseBody({ all: true })) as Record<string, string | File>;
+    } catch {
+      return c.json({ error: "invalid_multipart" }, 400);
+    }
+    const file = body.file;
+    if (!file || typeof file === "string") {
+      return c.json({ error: "missing_file" }, 400);
+    }
+    if (file.size > WATERMARK_MAX_BYTES) {
+      return c.json({ error: "file_too_large" }, 400);
+    }
+    const bytes = Buffer.from(await file.arrayBuffer());
+    const result = await putWatermark({
+      bytes,
+      mime: file.type || "application/octet-stream",
+      originalName: file.name,
+    });
+    if ("error" in result) {
+      return c.json({ error: result.error }, 400);
+    }
+    for (const msg of sessionStore.applyWatermarkUpdated(result)) {
+      broadcastSession(msg.sessionId, msg);
+    }
+    return c.json({ watermark: result }, 201);
+  });
+
   /**
    * Upload image or video asset (control only). Multipart field `file`.
    * Auth: Authorization Bearer <wsTicket> or query ?credential=
@@ -371,6 +460,65 @@ export function createApiRoutes(): Hono {
       return c.json({ error: result.error }, 400);
     }
     return c.json({ asset: result }, 201);
+  });
+
+  /**
+   * Download ONE YouTube video as a local mp4 asset (control only). Used when
+   * the owner blocks embedding (IFrame 101/150). Body: { videoId }.
+   * Same auth as asset upload; the URL is built server-side from the id.
+   */
+  api.post("/sessions/:sessionId/youtube-download", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const credential =
+      bearerToken(c.req.header("authorization")) ?? c.req.query("credential");
+    const access = authorizeSessionAccess(sessionId, {
+      credential,
+      accessToken: c.req.query("accessToken") ?? c.req.query("token"),
+      requireRole: "control",
+    });
+    if (!access.ok) {
+      return c.json({ error: access.error }, access.status);
+    }
+
+    let videoId = "";
+    try {
+      const body = (await c.req.json()) as { videoId?: unknown };
+      videoId = typeof body.videoId === "string" ? body.videoId : "";
+    } catch {
+      return c.json({ error: "invalid_json" }, 400);
+    }
+    if (!/^[\w-]{11}$/.test(videoId)) {
+      return c.json({ error: "youtube_invalid_id" }, 400);
+    }
+
+    let downloaded: Awaited<ReturnType<typeof downloadYoutubeVideoFile>>;
+    try {
+      downloaded = await downloadYoutubeVideoFile(videoId);
+    } catch (err) {
+      const hint = err instanceof Error ? err.message : "youtube_download_failed";
+      return c.json({ error: hint }, 502);
+    }
+    try {
+      const info = await stat(downloaded.filePath);
+      if (info.size > SESSION_ASSET_MAX_BYTES) {
+        return c.json({ error: "file_too_large" }, 400);
+      }
+      const bytes = await readFile(downloaded.filePath);
+      const result = await assetStore.putVideo(
+        sessionId,
+        bytes,
+        "video/mp4",
+        `${videoId}.mp4`,
+      );
+      if ("error" in result) {
+        return c.json({ error: result.error }, 400);
+      }
+      return c.json({ asset: result }, 201);
+    } finally {
+      await rm(downloaded.dir, { recursive: true, force: true }).catch(
+        () => undefined,
+      );
+    }
   });
 
   /**
@@ -534,13 +682,17 @@ export function createApiRoutes(): Hono {
         order,
       };
     });
-    const result = sessionStore.replacePlaylist(session, cloned);
+    // A file is ADDED to what is already in the Guion, never replacing it.
+    const result = sessionStore.appendToPlaylist(session, cloned);
     if ("error" in result) {
       return c.json({ error: result.error }, 400);
     }
     broadcastSession(sessionId, result.message);
+    // New A/V rows prepare themselves (no-op when the agent is off).
+    maybeAutoPrepare(sessionId);
     return c.json({
       snapshot: sessionStore.toSnapshot(session),
+      added: result.added,
       skipped: result.skipped,
       name: typeof body.name === "string" ? body.name : undefined,
       note: "File image/video assets are session-scoped; missing media were skipped.",

@@ -2356,7 +2356,8 @@ body {
   object-fit: contain;
   object-position: right top;
   filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.45));
-  opacity: 0.92;
+  /* Faint on purpose: a corner mark must not compete with the content. */
+  opacity: 0.5;
 }
 
 .scene-watermark-fallback {
@@ -4334,10 +4335,6 @@ body.output-route #root {
   opacity: 0.75;
 }
 
-.toolbar-cancionero-teach .toolbar-icon-btn-label {
-  max-width: 7.5rem;
-}
-
 .video-preview,
 .video-live-panel,
 .video-output {
@@ -4938,4 +4935,50 @@ body.output-route #root {
 
 .pm-tx-leave {
   animation-direction: reverse;
+}
+
+.video-yt-local {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+.video-yt-local .preview-toolbar-note {
+  flex: 1;
+  margin: 0;
+}
+
+/* Karaoke readiness per Guion row: yellow rising %, green at 100, red on error. */
+.schedule-karaoke-pct {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 0 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  border-radius: 3px;
+}
+.schedule-karaoke-pct.is-busy {
+  color: #f5c542;
+}
+.schedule-karaoke-pct.is-stale {
+  color: #f5c542;
+  opacity: 0.45;
+}
+.schedule-karaoke-pct.is-ready {
+  color: #4ade80;
+}
+.schedule-karaoke-pct.is-failed {
+  color: #ff6b6b;
+}
+
+.schedule-karaoke-pct.is-pending {
+  color: #f5c542;
+  opacity: 0.45;
+}
+
+/* "Fondo" cover with no image: the animated stage background itself. Its own
+   stacking context (z 3): above the video plane, below the captions (z 4). */
+.video-cover-layer.video-cover-bg {
+  background: var(--pm-bg, #000);
 }

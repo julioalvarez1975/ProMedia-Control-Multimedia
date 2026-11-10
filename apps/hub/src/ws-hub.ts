@@ -21,6 +21,7 @@ import {
   normalizeThemeOverrides,
 } from "@promedia/shared";
 import {
+  maybeAutoPrepare,
   maybeRefreshSubtitleAgent,
   maybeStartKaraokeOnGuionItem,
   nudgeSubtitleCancionero,
@@ -328,8 +329,12 @@ function parseClientMessage(raw: string): ClientToHubMessage | null {
       return { type: "live.setSceneMode", payload: { sceneMode } };
     }
     if (type === "live.setVideoCover") {
-      const p = payload as { assetId?: unknown; active?: unknown } | undefined;
-      const out: { assetId?: string | null; active?: boolean } = {};
+      const p = payload as
+        | { assetId?: unknown; active?: unknown; background?: unknown }
+        | undefined;
+      const out: { assetId?: string | null; active?: boolean; background?: boolean } = {};
+      if (p?.background === true) out.background = true;
+      else if (p?.background !== undefined) return null;
       if (p?.assetId === null) out.assetId = null;
       else if (typeof p?.assetId === "string" && p.assetId.length > 0 && p.assetId.length <= 64) {
         out.assetId = p.assetId;
@@ -338,7 +343,7 @@ function parseClientMessage(raw: string): ClientToHubMessage | null {
       }
       if (typeof p?.active === "boolean") out.active = p.active;
       else if (p?.active !== undefined) return null;
-      if (out.assetId === undefined && out.active === undefined) return null;
+      if (out.assetId === undefined && out.active === undefined && !out.background) return null;
       return { type: "live.setVideoCover", payload: out };
     }
     if (type === "live.setWatermark") {
@@ -700,6 +705,7 @@ export class WsHub {
           `[hub] live.clear from=${conn.role} was=${session.live.currentItemId ?? "-"}`,
         );
         this.applyResult(conn, session, sessionStore.clearLive(session));
+        maybeAutoPrepare(session.id);
         return;
       case "live.setSlide":
         this.applyResult(

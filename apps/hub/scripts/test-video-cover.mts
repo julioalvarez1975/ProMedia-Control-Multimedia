@@ -62,6 +62,20 @@ store.goLive(session, "a1");
 assert.equal(session.live.videoCover, null, "new live item starts clean");
 assert.ok(!("error" in store.setVideoCover(session, { assetId: imgId })), "audio items accept a cover too");
 
+// "Fondo" with no image: the animated stage background over the video.
+store.goLive(session, "v1");
+assert.ok(!("error" in store.setVideoCover(session, { background: true })), "background cover accepted");
+assert.deepEqual(session.live.videoCover, { assetId: null, active: true }, "background cover has no image");
+store.setVideoCover(session, { active: false });
+assert.deepEqual(session.live.videoCover, { assetId: null, active: false }, "background cover toggles off");
+store.setVideoCover(session, { background: true });
+assert.equal(session.live.videoCover?.active, true, "background cover toggles back on");
+store.goLive(session, "a1");
+assert.equal(session.live.videoCover, null, "background cover is cleared with the live item");
+store.goLive(session, "t1");
+assert.deepEqual(store.setVideoCover(session, { background: true }), { error: "no_av_live" }, "needs live A/V");
+store.goLive(session, "a1");
+
 // Forget / clear.
 store.setVideoCover(session, { assetId: null });
 assert.equal(session.live.videoCover, null);

@@ -60,6 +60,17 @@ export function LinkAddDialog({
       setError(t("link.invalid"));
       return;
     }
+    // A YouTube / YouTube Music link without a video id (playlist, channel,
+    // search…) must not silently become a text item — it would never play.
+    const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
+    if (
+      host === "youtu.be" ||
+      host === "youtube.com" ||
+      host.endsWith(".youtube.com")
+    ) {
+      setError(t("link.youtubeNoVideo"));
+      return;
+    }
     onAddGenericLink(parsed.toString());
   };
 

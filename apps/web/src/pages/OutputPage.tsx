@@ -20,7 +20,11 @@ import {
 } from "../components/StageBackground";
 import { SubtitleOverlay } from "../components/SubtitleOverlay";
 import { useSessionConnection } from "../hooks/useSessionConnection";
-import { buildAssetUrl, buildBrandingLogoUrl } from "../lib/assets";
+import {
+  buildAssetUrl,
+  buildBrandingLogoUrl,
+  buildWatermarkUrl,
+} from "../lib/assets";
 import {
   OUTPUT_BROADCAST_CHANNEL,
   pickSecondaryScreen,
@@ -167,6 +171,7 @@ export function OutputPage() {
   const sceneMode: SceneMode = snapshot?.live.sceneMode ?? "normal";
   const watermarkEnabled = snapshot?.live.watermarkEnabled === true;
   const logoUpdatedAt = snapshot?.live.logoUpdatedAt ?? null;
+  const watermarkUpdatedAt = snapshot?.live.watermarkUpdatedAt ?? null;
   const themeId: ThemeId = snapshot?.live.themeId ?? DEFAULT_THEME_ID;
   const themeOverrides = snapshot?.live.themeOverrides ?? null;
   const themeBackground = normalizeThemeBackground(
@@ -193,13 +198,15 @@ export function OutputPage() {
       : undefined;
 
   const videoCover = snapshot?.live.videoCover ?? null;
+  const coverOn =
+    Boolean(videoCover?.active) &&
+    (liveItem?.type === "video" || liveItem?.type === "audio");
   const videoCoverSrc =
-    videoCover?.active &&
-    sessionId &&
-    wsTicket &&
-    (liveItem?.type === "video" || liveItem?.type === "audio")
+    coverOn && videoCover?.assetId && sessionId && wsTicket
       ? buildAssetUrl(sessionId, videoCover.assetId, wsTicket)
       : null;
+  /** "Fondo" with no image: the animated stage background over the video. */
+  const coverIsBackground = coverOn && videoCover?.assetId == null;
 
   const assetSrc = (() => {
     if (!liveItem || !sessionId || !wsTicket) {
@@ -439,10 +446,24 @@ export function OutputPage() {
                 the stage effect on the way in and out, like scene overlays. */}
             <TransitionStack
               effect={transitionEffect}
-              layerKey={videoCoverSrc ? `cover:${videoCover?.assetId ?? ""}` : null}
+              layerKey={
+                coverIsBackground
+                  ? "cover:stage-background"
+                  : videoCoverSrc
+                    ? `cover:${videoCover?.assetId ?? ""}`
+                    : null
+              }
               zIndex={3}
               node={
-                videoCoverSrc ? (
+                coverIsBackground ? (
+                  <div className="video-cover-layer video-cover-bg" aria-hidden>
+                    <StageBackground
+                      background={themeBackground}
+                      assetSrc={themeBgAssetSrc}
+                      showDots={dotsOverlay}
+                    />
+                  </div>
+                ) : videoCoverSrc ? (
                   <div className="video-cover-layer" aria-hidden>
                     <img className="video-cover-img" src={videoCoverSrc} alt="" />
                   </div>
@@ -471,15 +492,12 @@ export function OutputPage() {
             <WatermarkOverlay
               enabled={watermarkEnabled}
               sceneBlocksWatermark={sceneMode !== "normal"}
-              logoSrc={
-                logoUpdatedAt && sessionId && wsTicket
-                  ? buildBrandingLogoUrl(
-                      sessionId,
-                      wsTicket,
-                      logoUpdatedAt,
-                    )
+              src={
+                watermarkUpdatedAt && sessionId && wsTicket
+                  ? buildWatermarkUrl(sessionId, wsTicket, watermarkUpdatedAt)
                   : null
               }
+              mime={snapshot?.live.watermarkMime ?? null}
             />
           </>
         )}

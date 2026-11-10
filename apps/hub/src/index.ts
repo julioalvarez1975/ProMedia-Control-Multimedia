@@ -4,6 +4,7 @@ import { cors } from "hono/cors";
 import type { Server } from "node:http";
 import { SHARED_PACKAGE_VERSION } from "@promedia/shared";
 import { initBrandingStore } from "./branding-store.js";
+import { initWatermarkStore } from "./watermark-store.js";
 import { setSessionBroadcaster } from "./broadcast.js";
 import { listLanIPv4, resolveHubListenHost } from "./lan.js";
 import { ensureLibraryLayout } from "./library-store.js";
@@ -13,6 +14,11 @@ import { ensureSubtitleDirs } from "./subtitle-paths.js";
 import { assetStore } from "./asset-store.js";
 import { sessionStore } from "./session-store.js";
 import { disposeSubtitleSession } from "./subtitle-agent.js";
+import {
+  flushPersistedAgents,
+  purgeStaleAlignedCache,
+} from "./subtitle-aligned-store.js";
+import { purgeStaleAsrCache } from "./subtitle-asr.js";
 import { forgetClockReports, WsHub } from "./ws-hub.js";
 
 const app = new Hono();
@@ -39,6 +45,16 @@ try {
   const sub = await ensureSubtitleDirs();
   console.log(`[hub] subtitle models: ${sub.models}`);
   console.log(`[hub] youtube-cache: ${sub.youtubeCache}`);
+  // Results calculated by an older procedure are dropped and made again.
+  const [staleAligned, staleAsr] = await Promise.all([
+    purgeStaleAlignedCache(),
+    purgeStaleAsrCache(),
+  ]);
+  if (staleAligned + staleAsr > 0) {
+    console.log(
+      `[hub] removed old karaoke calculations (aligned=${staleAligned}, transcripts=${staleAsr}) — they will be recalculated`,
+    );
+  }
 } catch (err) {
   console.error(
     "[hub] WARN: no se pudo crear data/models|youtube-cache (subtítulos):",
@@ -56,6 +72,16 @@ try {
 } catch (err) {
   console.error(
     "[hub] WARN: no se pudo crear data/branding (logo):",
+    err instanceof Error ? err.message : err,
+  );
+}
+
+try {
+  const wm = await initWatermarkStore();
+  if (wm) console.log(`[hub] watermark ready (${wm.mime}, ${wm.size} bytes)`);
+} catch (err) {
+  console.error(
+    "[hub] WARN: no se pudo preparar la marca de agua:",
     err instanceof Error ? err.message : err,
   );
 }
@@ -169,8 +195,11 @@ function shutdown(signal: string): void {
   shuttingDown = true;
   console.log(`[hub] ${signal}: closing sessions and sockets…`);
   hub.shutdown();
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 2_000).unref();
+  // Save every finished karaoke still waiting on its write-behind timer.
+  void flushPersistedAgents().finally(() => {
+    server.close(() => process.exit(0));
+  });
+  setTimeout(() => process.exit(0), 3_000).unref();
 }
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));

@@ -46,6 +46,14 @@ export type MediaTypeModule = {
     durationMsHint?: number;
     /** Local scrub/playhead (ms) before Go Live — drives Preview karaoke overlay. */
     onLocalPositionMs?: (ms: number) => void;
+    /** YouTube blocked embed: download it and swap the item for a local file. */
+    onYoutubeToLocal?: () => Promise<void>;
+    youtubeToLocalLabels?: {
+      button: string;
+      busy: string;
+      note: string;
+      failed: string;
+    };
   }>;
   LivePanel: ComponentType<{
     item: PlaylistItem;

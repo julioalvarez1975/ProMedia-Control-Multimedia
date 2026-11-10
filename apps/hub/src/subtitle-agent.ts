@@ -1,3 +1,10 @@
+import {
+  forgetItemProgress,
+  isItemReady,
+  markItemsReady,
+  setBgProgress,
+} from "./subtitle-item-progress.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type {
   AudioPlaylistItem,
   HubMessage,
@@ -16,6 +23,7 @@ import {
   DEFAULT_SUBTITLE_LEAD_MS,
   emptySubtitleAgentState,
   normalizeSubtitleLeadMs,
+  subtitleOverallPercent,
 } from "@promedia/shared";
 import { rm } from "node:fs/promises";
 import { assetStore } from "./asset-store.js";
@@ -78,6 +86,7 @@ import { songIdentityKey } from "./quelea-import.js";
 import {
   forgetReadyAgent,
   recallReadyAgent,
+  rememberReadyAgent,
 } from "./subtitle-ready-cache.js";
 import {
   clearPersistMeta,
@@ -87,6 +96,8 @@ import {
   loadPersistedAgent,
   resolveCacheKey,
   lyricsHash,
+  persistReadyAgent,
+  flushPersistedAgents,
   setPersistMeta,
   type PersistedAgent,
 } from "./subtitle-aligned-store.js";
@@ -137,12 +148,19 @@ const ytHardFailUntil = new Map<string, number>();
  * generation and stops).
  */
 export function disposeSubtitleSession(sessionId: string): void {
+  bumpBg(sessionId);
+  bgGeneration.delete(sessionId);
+  bgQueued.delete(sessionId);
+  bgCurrent.delete(sessionId);
+  void flushPersistedAgents();
   bumpJob(sessionId);
   jobGeneration.delete(sessionId);
   prepareTokens.delete(sessionId);
   inflightJobs.delete(sessionId);
   pendingAdds.delete(sessionId);
   forgetReadyAgent(sessionId);
+  forgetItemProgress(sessionId);
+  autoPrepareRunning.delete(sessionId);
 }
 
 function bumpJob(sessionId: string): number {
@@ -151,8 +169,52 @@ function bumpJob(sessionId: string): number {
   return next;
 }
 
+/**
+ * Background row jobs (the hub's own Guion queue) use NEGATIVE generations on a
+ * separate counter: selecting rows / Go Live (which bump `jobGeneration`) never
+ * cancels them; only disabling the agent or cancelling the queue does.
+ */
+const bgGeneration = new Map<string, number>();
+let bgCounter = 0;
+
+function bumpBg(sessionId: string): number {
+  bgCounter += 1;
+  const next = -bgCounter;
+  bgGeneration.set(sessionId, next);
+  return next;
+}
+
 function isCurrent(sessionId: string, gen: number): boolean {
+  if (gen < 0) return bgGeneration.get(sessionId) === gen;
   return jobGeneration.get(sessionId) === gen;
+}
+
+/** Private agent state of the background row job running in this async context. */
+type BgCtx = { itemId: string; agent: SubtitleAgentState };
+const bgStore = new AsyncLocalStorage<BgCtx>();
+/** Rows waiting for / being processed by the background queue, per session. */
+const bgQueued = new Map<string, Set<string>>();
+const bgCurrent = new Map<string, string | null>();
+
+/** Test hook: run `fn` as a background row job with a private agent state. */
+export function runInBackgroundContextForTest<T>(
+  itemId: string,
+  agent: SubtitleAgentState,
+  fn: () => T,
+): T {
+  return bgStore.run({ itemId, agent }, fn);
+}
+
+/** Test hook. */
+export function patchAgentForTest(
+  session: SessionRecord,
+  patch: Partial<SubtitleAgentState>,
+): void {
+  patchAndBroadcast(session, patch);
+}
+
+function isRowQueued(sessionId: string, itemId: string): boolean {
+  return bgQueued.get(sessionId)?.has(itemId) === true || bgCurrent.get(sessionId) === itemId;
 }
 
 function isHardYoutubeHint(hint: string | null | undefined): boolean {
@@ -180,10 +242,97 @@ function ytHardFailInBackoff(sessionId: string): boolean {
   return true;
 }
 
+/**
+ * yt-dlp download percent → agent state (drives the Guion row percentage).
+ * Throttled to whole-percent changes; ignored once the job is superseded.
+ */
+function ytDownloadProgress(
+  sessionId: string,
+  gen: number,
+): (percent: number) => void {
+  let last = -1;
+  return (percent) => {
+    const pct = Math.max(0, Math.min(100, Math.round(percent)));
+    if (pct === last || (pct < 100 && last >= 0 && pct - last < 2)) return;
+    if (!isCurrent(sessionId, gen)) return;
+    last = pct;
+    const live = sessionStore.get(sessionId);
+    if (!live?.live.subtitleAgent?.enabled) return;
+    patchAndBroadcast(live, { downloadPercent: pct });
+  };
+}
+
+/**
+ * A background row job reports into its OWN agent state. It never touches the
+ * agent the operator sees; when the job finishes the result goes to the
+ * per-item caches (memory + disk) and, if that row is the focused one, onto the
+ * screen. Progress feeds the Guion row percentage.
+ */
+function applyBackgroundPatch(
+  session: SessionRecord,
+  bg: BgCtx,
+  patch: Partial<SubtitleAgentState>,
+): void {
+  bg.agent = {
+    ...bg.agent,
+    ...patch,
+    itemId: bg.itemId,
+    updatedAt: new Date().toISOString(),
+  };
+  const a = bg.agent;
+  let changed = false;
+  if (a.status === "ready" && a.cues.length > 0) {
+    rememberReadyAgent(session.id, a);
+    persistReadyAgent(a);
+    changed = setBgProgress(session.id, bg.itemId, { percent: 100, ready: true });
+  } else if (a.status === "error" || a.status === "unsupported") {
+    changed = setBgProgress(session.id, bg.itemId, { percent: 0, ready: false, failed: true });
+  } else {
+    changed = setBgProgress(session.id, bg.itemId, {
+      percent: subtitleOverallPercent(a.status, a.downloadPercent),
+      ready: false,
+    });
+  }
+  const live = session.live.subtitleAgent;
+  let mirrored = false;
+  // The operator is looking at this row: show its progress / its finished cues.
+  if (live?.enabled && live.itemId === bg.itemId) {
+    session.live.subtitleAgent =
+      a.status === "ready" && a.cues.length > 0
+        ? {
+            ...live,
+            ...a,
+            enabled: true,
+            fontSize: live.fontSize,
+            leadMs: a.leadMs ?? live.leadMs,
+            prepare: live.prepare,
+            itemProgress: live.itemProgress,
+            updatedAt: new Date().toISOString(),
+          }
+        : {
+            ...live,
+            status: a.status,
+            hint: a.hint,
+            assetId: a.assetId ?? live.assetId,
+            downloadPercent: a.downloadPercent,
+            updatedAt: new Date().toISOString(),
+          };
+    mirrored = true;
+  }
+  if (changed || mirrored) {
+    broadcastSession(session.id, sessionStore.touchSubtitleAgent(session));
+  }
+}
+
 function patchAndBroadcast(
   session: SessionRecord,
   patch: Partial<SubtitleAgentState>,
 ): void {
+  const bg = bgStore.getStore();
+  if (bg) {
+    applyBackgroundPatch(session, bg, patch);
+    return;
+  }
   const prev = session.live.subtitleAgent ?? emptySubtitleAgentState();
   session.live.subtitleAgent = {
     ...prev,
@@ -534,6 +683,7 @@ async function fetchSilenceSpeechOnsets(options: {
         const yt = await ensureYoutubeAudio({
           videoId: resolved.youtube.videoId,
           sourceUrl: resolved.youtube.sourceUrl,
+          onProgress: ytDownloadProgress(sessionId, gen),
         });
         if (!isCurrent(sessionId, gen)) return null;
         mediaPath = yt.mediaPath;
@@ -626,6 +776,7 @@ async function fetchCancioneroTimingCues(options: {
       const yt = await ensureYoutubeAudio({
         videoId: resolved.youtube.videoId,
         sourceUrl: resolved.youtube.sourceUrl,
+        onProgress: ytDownloadProgress(sessionId, gen),
       });
       if (!isCurrent(sessionId, gen)) return null;
       mediaPath = yt.mediaPath;
@@ -918,6 +1069,7 @@ async function tryCancioneroLyricPath(options: {
         const yt = await ensureYoutubeAudio({
           videoId: resolved.youtube.videoId,
           sourceUrl: resolved.youtube.sourceUrl,
+          onProgress: ytDownloadProgress(sessionId, gen),
         });
         if (!isCurrent(sessionId, gen)) return true;
         mediaPath = yt.mediaPath;
@@ -997,7 +1149,7 @@ async function tryCancioneroLyricPath(options: {
     });
     if (okPub) {
       const liveSrc = sessionStore.get(sessionId);
-      if (liveSrc?.live.subtitleAgent?.itemId === item.id) {
+      if (liveSrc && (bgStore.getStore() || liveSrc.live.subtitleAgent?.itemId === item.id)) {
         patchAndBroadcast(liveSrc, { lyricsSource: lyricsFrom });
       }
       return true;
@@ -1067,7 +1219,15 @@ async function tryCancioneroLyricPath(options: {
     timingSpeech[0]?.startMs ?? null,
   );
 
-  const withVoiceAndBlank = (cues: SubtitleCue[]): SubtitleCue[] =>
+  const withVoiceAndBlank = (cues: SubtitleCue[]): SubtitleCue[] => {
+    if (cues.length > 0 && firstVoiceMs != null) {
+      console.log(
+        `[subtitle] voice anchor: first line at ${Math.round(cues[0]!.startMs)}ms, voice onset ${Math.round(firstVoiceMs)}ms → shift ${Math.round(firstVoiceMs - cues[0]!.startMs)}ms (silence onsets=${silence?.onsetsMs?.length ?? 0})`,
+      );
+    }
+    return withVoiceAndBlankInner(cues);
+  };
+  const withVoiceAndBlankInner = (cues: SubtitleCue[]): SubtitleCue[] =>
     blankCuesAtPhraseSilence(
       anchorFirstCueToVoiceOnset(cues, firstVoiceMs),
       phraseSilences,
@@ -1464,6 +1624,7 @@ export function setSubtitleAgent(
     patch.itemId === undefined;
 
   if (!enabled) {
+    bumpBg(session.id);
     bumpJob(session.id);
     clearYtHardFail(session.id);
     session.live.subtitleAgent = {
@@ -1519,6 +1680,7 @@ export function setSubtitleAgent(
     force: wasOff,
     source: "toggle_or_set",
   });
+  if (wasOff) maybeAutoPrepare(session.id);
 
   return message;
 }
@@ -1606,9 +1768,8 @@ function setPrepareState(
 }
 
 /**
- * Operator asks to pre-align the whole Guion (queue, one item at a time).
- * Refused while an A/V item is projecting: the agent holds one item's cues
- * and processing another would blank the live karaoke.
+ * "Preparar Guion": run the background queue now (also retries rows that
+ * failed before). The queue also starts by itself — see `maybeAutoPrepare`.
  */
 export function prepareSubtitleAgent(
   session: SessionRecord,
@@ -1618,81 +1779,150 @@ export function prepareSubtitleAgent(
 
   if (patch.cancel) {
     prepareTokens.set(session.id, (prepareTokens.get(session.id) ?? 0) + 1);
+    bumpBg(session.id);
     return setPrepareState(
       session,
       prev.prepare ? { ...prev.prepare, running: false, currentItemId: null } : null,
     );
   }
   if (prev.prepare?.running) return { error: "prepare_running" };
-
-  const liveItem = session.live.currentItemId
-    ? session.playlist.items.find((i) => i.id === session.live.currentItemId)
-    : null;
-  if (liveItem && (liveItem.type === "video" || liveItem.type === "audio")) {
-    return { error: "live_av_busy" };
+  if (!session.playlist.items.some(isPrepareTarget)) {
+    return { error: "no_av_items" };
   }
-  const ids = session.playlist.items.filter(isPrepareTarget).map((i) => i.id);
-  if (ids.length === 0) return { error: "no_av_items" };
-
-  const token = (prepareTokens.get(session.id) ?? 0) + 1;
-  prepareTokens.set(session.id, token);
   session.live.subtitleAgent = { ...prev, enabled: true };
-  const message = setPrepareState(session, {
-    running: true,
-    total: ids.length,
-    done: 0,
-    failed: 0,
-    currentItemId: null,
-  });
-  void runPrepare(session.id, ids, token);
+  const message = sessionStore.touchSubtitleAgent(session);
+  maybeAutoPrepare(session.id);
   return message;
 }
 
-async function runPrepare(
-  sessionId: string,
-  ids: string[],
-  token: number,
-): Promise<void> {
-  let done = 0;
-  let failed = 0;
-  console.log(`[subtitle] prepare start items=${ids.length}`);
-  for (const id of ids) {
-    const session = sessionStore.get(sessionId);
-    if (!session || prepareTokens.get(sessionId) !== token) return;
-    const live = session.live.currentItemId
-      ? session.playlist.items.find((i) => i.id === session.live.currentItemId)
-      : null;
-    if (live && (live.type === "video" || live.type === "audio")) {
-      console.log("[subtitle] prepare aborted: an A/V item went live");
-      break;
-    }
-    setPrepareState(session, {
-      running: true,
-      total: ids.length,
-      done,
-      failed,
-      currentItemId: id,
-    });
-    try {
-      await runSubtitleJob(sessionId, id, { force: true, source: "prepare" });
-      const st = sessionStore.get(sessionId)?.live.subtitleAgent;
-      if (!st || st.itemId !== id || st.status !== "ready") failed += 1;
-    } catch {
-      failed += 1;
-    }
-    done += 1;
-  }
+/**
+ * One Guion row, independent of the screen: runs the whole karaoke pipeline
+ * with a PRIVATE agent state (see `applyBackgroundPatch`), so selecting rows,
+ * Go Live or what is projecting never cancels it. When it finishes the result
+ * lives in the per-item memory cache and on disk (own file per song).
+ */
+async function runRowJob(sessionId: string, itemId: string): Promise<void> {
   const session = sessionStore.get(sessionId);
-  if (session && prepareTokens.get(sessionId) === token) {
-    setPrepareState(session, {
-      running: false,
-      total: ids.length,
-      done,
-      failed,
-      currentItemId: null,
-    });
-    console.log(`[subtitle] prepare done ok=${done - failed} failed=${failed}`);
+  const live = session?.live.subtitleAgent;
+  if (!session || !live?.enabled) return;
+  const gen = bumpBg(sessionId);
+  const ctx: BgCtx = {
+    itemId,
+    agent: {
+      ...emptySubtitleAgentState(live.targetLang),
+      enabled: true,
+      status: "idle",
+      fontSize: live.fontSize,
+      leadMs: live.leadMs,
+      itemId,
+    },
+  };
+  await bgStore.run(ctx, () =>
+    runSubtitleJobInner(sessionId, itemId, { force: true, source: "prepare" }),
+  );
+  // The job returned without publishing a result and was not cancelled.
+  if (isCurrent(sessionId, gen) && !isItemReady(sessionId, itemId)) {
+    if (setBgProgress(sessionId, itemId, { percent: 0, ready: false, failed: true })) {
+      const s = sessionStore.get(sessionId);
+      if (s?.live.subtitleAgent?.enabled) {
+        broadcastSession(sessionId, sessionStore.touchSubtitleAgent(s));
+      }
+    }
   }
+}
+
+const autoPrepareRunning = new Set<string>();
+
+/**
+ * The hub prepares the Guion by itself, in playlist order, one row at a time:
+ * cached songs turn green at once, the rest are downloaded, transcribed
+ * (faster-whisper when missing from the cancionero) and aligned — each row
+ * writing its OWN cache entry the moment it finishes. The queue re-reads the
+ * Guion after every row, so links added meanwhile are picked up. Triggers:
+ * agent turned on, link added, projection cleared, "Preparar Guion".
+ */
+export function maybeAutoPrepare(sessionId: string): void {
+  if (autoPrepareRunning.has(sessionId)) return;
+  if (!sessionStore.get(sessionId)?.live.subtitleAgent?.enabled) return;
+  autoPrepareRunning.add(sessionId);
+  {
+    const s0 = sessionStore.get(sessionId);
+    bgQueued.set(
+      sessionId,
+      new Set(
+        (s0?.playlist.items ?? [])
+          .filter(isPrepareTarget)
+          .map((i) => i.id)
+          .filter((id) => !isItemReady(sessionId, id)),
+      ),
+    );
+  }
+  void (async () => {
+    const attempted = new Set<string>();
+    let done = 0;
+    let failed = 0;
+    const token = (prepareTokens.get(sessionId) ?? 0) + 1;
+    prepareTokens.set(sessionId, token);
+    try {
+      await precheckGuionReady(sessionId);
+      for (;;) {
+        const session = sessionStore.get(sessionId);
+        if (
+          !session ||
+          !session.live.subtitleAgent?.enabled ||
+          prepareTokens.get(sessionId) !== token
+        ) {
+          break;
+        }
+        const pending = session.playlist.items
+          .filter(isPrepareTarget)
+          .map((i) => i.id)
+          .filter((id) => !isItemReady(sessionId, id) && !attempted.has(id));
+        bgQueued.set(sessionId, new Set(pending));
+        const id = pending[0];
+        if (!id) break;
+        attempted.add(id);
+        bgQueued.get(sessionId)?.delete(id);
+        bgCurrent.set(sessionId, id);
+        if (attempted.size === 1) {
+          console.log(`[subtitle] auto-prepare Guion items=${pending.length}`);
+        }
+        setPrepareState(session, {
+          running: true,
+          total: attempted.size + pending.length - 1,
+          done,
+          failed,
+          currentItemId: id,
+        });
+        try {
+          await runRowJob(sessionId, id);
+        } catch (err) {
+          console.warn(
+            `[subtitle] row job failed item=${id}:`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+        bgCurrent.set(sessionId, null);
+        done += 1;
+        if (!isItemReady(sessionId, id)) failed += 1;
+      }
+    } finally {
+      bgCurrent.delete(sessionId);
+      bgQueued.delete(sessionId);
+      const s = sessionStore.get(sessionId);
+      if (s?.live.subtitleAgent?.enabled && attempted.size > 0) {
+        setPrepareState(s, {
+          running: false,
+          total: attempted.size,
+          done,
+          failed,
+          currentItemId: null,
+        });
+        console.log(`[subtitle] auto-prepare done ok=${done - failed} failed=${failed}`);
+      }
+      autoPrepareRunning.delete(sessionId);
+    }
+  })();
 }
 
 // ── Guardar la letra de LRCLIB en la Biblioteca (sugerida) ───────────────
@@ -1797,6 +2027,8 @@ export function maybeStartKaraokeOnGuionItem(
     console.log(
       `[subtitle] skip prefetch item=${item.id} (live item ${liveId} is projecting)`,
     );
+    // Background rows never touch what is projecting: still prepare it.
+    maybeAutoPrepare(session.id);
     return;
   }
 
@@ -1814,7 +2046,75 @@ export function maybeStartKaraokeOnGuionItem(
   };
   const message = sessionStore.touchSubtitleAgent(session);
   broadcastSession(session.id, message);
-  void runSubtitleJob(session.id, item.id, { force: true, source: "guion_add" });
+  // The row prepares itself in the background queue (own cache, never
+  // cancelled by selecting other rows).
+  maybeAutoPrepare(session.id);
+}
+
+/**
+ * Look at every A/V row of the Guion (playlist order) and mark green 100 % the
+ * ones whose aligned karaoke already exists (in-memory cache or on disk), so
+ * the operator sees at a glance which songs are ready without selecting them.
+ * Only reads caches: no download, no ASR, and the agent state is untouched.
+ */
+export async function precheckGuionReady(sessionId: string): Promise<void> {
+  const session = sessionStore.get(sessionId);
+  const agent = session?.live.subtitleAgent;
+  if (!session || !agent?.enabled) return;
+  const targetLang = agent.targetLang;
+  const ready: string[] = [];
+  for (const item of session.playlist.items) {
+    if (item.type !== "video" && item.type !== "audio") continue;
+    const resolved = resolveMediaSource(session, item.id);
+    if (!resolved.ok) continue;
+    if (recallReadyAgent(sessionId, item.id, resolved.assetId, targetLang)) {
+      ready.push(item.id);
+      continue;
+    }
+    try {
+      const key = await resolveCacheKey(resolved.assetId, resolved.mediaPath);
+      if (!key) continue;
+      const saved = await loadPersistedAgent(key, targetLang);
+      if (saved && (await persistedStillValid(saved))) ready.push(item.id);
+    } catch {
+      // unreadable cache entry: leave the row as not prepared
+    }
+  }
+  const live = sessionStore.get(sessionId);
+  if (!live?.live.subtitleAgent?.enabled) return;
+  if (markItemsReady(sessionId, ready)) {
+    broadcastSession(sessionId, sessionStore.touchSubtitleAgent(live));
+  }
+  // The row on screen is cached: show its cues now (it was waiting for us).
+  const cur = live.live.subtitleAgent;
+  const focusId = cur.itemId;
+  if (focusId && ready.includes(focusId) && cur.status !== "ready") {
+    const rr = resolveMediaSource(live, focusId);
+    if (rr.ok) {
+      const hit = recallReadyAgent(sessionId, focusId, rr.assetId, targetLang);
+      if (hit) {
+        live.live.subtitleAgent = {
+          ...hit,
+          enabled: true,
+          fontSize: cur.fontSize,
+          leadMs: cur.leadMs,
+          cueIndex: null,
+          prepare: cur.prepare,
+          updatedAt: new Date().toISOString(),
+        };
+        broadcastSession(sessionId, sessionStore.touchSubtitleAgent(live));
+      } else {
+        await restorePersistedAgent(
+          sessionId,
+          focusId,
+          rr.assetId,
+          rr.mediaPath,
+          targetLang,
+          false,
+        );
+      }
+    }
+  }
 }
 
 /** In-flight job per session — lets non-forced triggers join instead of restart. */
@@ -2000,6 +2300,34 @@ async function runSubtitleJob(
     }
   }
 
+  // This row is being (or about to be) prepared by the background queue: do
+  // not start a second, cancellable foreground job. Show it as waiting; the
+  // queue publishes the cues here when the row finishes. Go Live is explicit,
+  // so it still runs its own job (the queue skips the row once it is ready).
+  if (
+    peekSession &&
+    peekAgent &&
+    peekResolved?.ok &&
+    source !== "go_live" &&
+    !options?.teachSongId &&
+    isRowQueued(sessionId, peekResolved.item.id)
+  ) {
+    if (peekAgent.itemId !== peekResolved.item.id) {
+      patchAndBroadcast(peekSession, {
+        enabled: true,
+        itemId: peekResolved.item.id,
+        assetId: peekResolved.assetId,
+        status: "idle",
+        cues: [],
+        cueIndex: null,
+        hint: "cancionero_align",
+        translated: false,
+        sourceLang: null,
+      });
+    }
+    return;
+  }
+
   const running = inflightJobs.get(sessionId);
 
   // Guion adds while another item is being processed wait their turn instead
@@ -2077,12 +2405,14 @@ async function runSubtitleJobInner(
     // Same hard YT failure — wait for backoff or user toggle-on.
     return;
   }
-  const gen = bumpJob(sessionId);
+  const bg = bgStore.getStore();
+  const gen = bg ? (bgGeneration.get(sessionId) ?? 0) : bumpJob(sessionId);
   const session = sessionStore.get(sessionId);
   if (!session) return;
 
-  const agent = session.live.subtitleAgent;
-  if (!agent?.enabled) return;
+  if (!session.live.subtitleAgent?.enabled) return;
+  // Background rows work on their own private agent state.
+  const agent = bg ? bg.agent : session.live.subtitleAgent;
 
   const targetLang = agent.targetLang;
   const resolved = resolveMediaSource(session, preferredItemId);
@@ -2236,6 +2566,7 @@ async function runSubtitleJobInner(
       const yt = await ensureYoutubeAudio({
         videoId: resolved.youtube.videoId,
         sourceUrl: resolved.youtube.sourceUrl,
+        onProgress: ytDownloadProgress(sessionId, gen),
       });
       if (!isCurrent(sessionId, gen)) return;
       mediaPath = yt.mediaPath;

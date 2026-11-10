@@ -1,3 +1,5 @@
+import { getWatermarkMeta } from "./watermark-store.js";
+import { deriveItemProgress } from "./subtitle-item-progress.js";
 import { persistReadyAgent } from "./subtitle-aligned-store.js";
 import { rememberReadyAgent } from "./subtitle-ready-cache.js";
 import type {
@@ -115,6 +117,8 @@ export class SessionStore {
 
     const live = emptyLiveState();
     live.logoUpdatedAt = getBrandingLogoUpdatedAt();
+    live.watermarkUpdatedAt = getWatermarkMeta()?.updatedAt ?? null;
+    live.watermarkMime = getWatermarkMeta()?.mime ?? null;
     const session: SessionRecord = {
       id,
       code,
@@ -233,6 +237,11 @@ export class SessionStore {
     if (brandingAt && session.live.logoUpdatedAt !== brandingAt) {
       session.live.logoUpdatedAt = brandingAt;
     }
+    const wm = getWatermarkMeta();
+    if (wm && session.live.watermarkUpdatedAt !== wm.updatedAt) {
+      session.live.watermarkUpdatedAt = wm.updatedAt;
+      session.live.watermarkMime = wm.mime;
+    }
     if (typeof session.live.watermarkEnabled !== "boolean") {
       session.live.watermarkEnabled = false;
     }
@@ -258,6 +267,18 @@ export class SessionStore {
    * Stamp every live session with a new branding logo time and bump seq
    * so Control/Output refresh the logo image URL.
    */
+  /** New watermark file: stamp every session, show it, bump seq. */
+  applyWatermarkUpdated(meta: { updatedAt: string; mime: string }): HubMessage[] {
+    const messages: HubMessage[] = [];
+    for (const session of this.byId.values()) {
+      session.live.watermarkUpdatedAt = meta.updatedAt;
+      session.live.watermarkMime = meta.mime;
+      session.live.watermarkEnabled = true;
+      messages.push(this.bumpUpdated(session));
+    }
+    return messages;
+  }
+
   applyBrandingLogoUpdatedAt(updatedAt: string): HubMessage[] {
     const messages: HubMessage[] = [];
     for (const session of this.byId.values()) {
@@ -339,6 +360,14 @@ export class SessionStore {
     rememberReadyAgent(session.id, session.live.subtitleAgent);
     // …and on disk for YouTube videos, so a hub restart does not lose them.
     persistReadyAgent(session.live.subtitleAgent);
+    session.live.subtitleAgent = {
+      ...session.live.subtitleAgent,
+      itemProgress: deriveItemProgress(
+        session.id,
+        session.live.subtitleAgent,
+        session.playlist.items.map((i) => i.id),
+      ),
+    };
     return this.bumpUpdated(session);
   }
 
@@ -389,6 +418,45 @@ export class SessionStore {
       session.live.videoCover = null;
     }
     return { message: this.bumpUpdated(session), skipped };
+  }
+
+  /**
+   * ADD items from a guion file to the END of the current playlist (nothing is
+   * removed, the live item and its clock are untouched). Items are re-id'd by
+   * the caller; ones whose session asset no longer exists are skipped.
+   */
+  appendToPlaylist(
+    session: SessionRecord,
+    rawItems: unknown[],
+  ):
+    | { message: HubMessage; added: number; skipped: number }
+    | { error: string } {
+    const toAdd: PlaylistItem[] = [];
+    let skipped = 0;
+    const base = session.playlist.items.reduce(
+      (max, i) => Math.max(max, i.order),
+      -1,
+    );
+    for (const raw of rawItems) {
+      const item = validatePlaylistItem(raw);
+      if (!item) {
+        return { error: "invalid_item" };
+      }
+      if (session.playlist.items.some((i) => i.id === item.id)) {
+        return { error: "duplicate_id" };
+      }
+      const assetErr = this.requireAsset(session, item);
+      if (assetErr) {
+        if (assetErr.error === "unknown_asset") {
+          skipped += 1;
+          continue;
+        }
+        return assetErr;
+      }
+      toAdd.push({ ...item, order: base + 1 + toAdd.length });
+    }
+    session.playlist.items = sortItems([...session.playlist.items, ...toAdd]);
+    return { message: this.bumpUpdated(session), added: toAdd.length, skipped };
   }
 
   addItem(session: SessionRecord, rawItem: unknown): HubMessage | { error: string } {
@@ -604,7 +672,7 @@ export class SessionStore {
    */
   setVideoCover(
     session: SessionRecord,
-    patch: { assetId?: string | null; active?: boolean },
+    patch: { assetId?: string | null; active?: boolean; background?: boolean },
   ): HubMessage | { error: string } {
     const live = session.live;
     const current = live.currentItemId
@@ -612,6 +680,12 @@ export class SessionStore {
       : null;
     if (!current || (current.type !== "video" && current.type !== "audio")) {
       return { error: "no_av_live" };
+    }
+    // The animated stage background itself (no image): above the video, under
+    // the subtitle.
+    if (patch.background === true) {
+      live.videoCover = { assetId: null, active: patch.active !== false };
+      return this.bumpUpdated(session);
     }
     if (patch.assetId === null) {
       live.videoCover = null;

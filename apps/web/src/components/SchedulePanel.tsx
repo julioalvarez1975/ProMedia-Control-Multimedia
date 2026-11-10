@@ -1,6 +1,6 @@
 import { useRef, useState, type ReactNode } from "react";
 import { useLocale } from "../locale/LocaleContext";
-import type { PlaylistItem } from "@promedia/shared";
+import type { PlaylistItem, SubtitleItemProgress } from "@promedia/shared";
 import { itemLabel } from "@promedia/shared";
 import {
   ScheduleTypeIcon,
@@ -20,6 +20,8 @@ import {
 } from "./UiIcons";
 
 export type SchedulePanelProps = {
+  /** Karaoke readiness per item (percent → green at 100 = ready to project). */
+  karaokeProgress?: Record<string, SubtitleItemProgress>;
   items: PlaylistItem[];
   selectedItemId: string | null;
   liveItemId: string | null;
@@ -58,6 +60,41 @@ export type SchedulePanelProps = {
   editor?: ReactNode;
 };
 
+/** Yellow rising percent; green at 100 (ready to project); red on failure. */
+function KaraokePercent({
+  progress,
+  t,
+}: {
+  progress: SubtitleItemProgress & { pending?: boolean };
+  t: (key: string) => string;
+}) {
+  const state = progress.failed
+    ? "failed"
+    : progress.ready
+      ? "ready"
+      : progress.pending
+        ? "pending"
+        : progress.stale
+          ? "stale"
+          : "busy";
+  const titleKey = {
+    failed: "playlist.karaokeFailed",
+    ready: "playlist.karaokeReady",
+    stale: "playlist.karaokeStale",
+    pending: "playlist.karaokePending",
+    busy: "playlist.karaokeBusy",
+  }[state];
+  return (
+    <span
+      className={`schedule-karaoke-pct is-${state}`}
+      title={t(titleKey)}
+      data-testid="karaoke-progress"
+    >
+      {state === "failed" ? "!" : `${progress.percent}%`}
+    </span>
+  );
+}
+
 function kindLabelKey(kind: ScheduleKind): string {
   if (kind === "youtube") {
     return "itemTypes.youtube";
@@ -74,6 +111,7 @@ function kindLabelKey(kind: ScheduleKind): string {
  * Toolbar: add solapas (action tabs) + files / load / save icons.
  */
 export function SchedulePanel({
+  karaokeProgress,
   items,
   selectedItemId,
   liveItemId,
@@ -448,6 +486,19 @@ export function SchedulePanel({
                       <span className="schedule-row-label">
                         {itemLabel(item)}
                       </span>
+                      {karaokeProgress &&
+                      (item.type === "video" || item.type === "audio") ? (
+                        <KaraokePercent
+                          progress={
+                            karaokeProgress[item.id] ?? {
+                              percent: 0,
+                              ready: false,
+                              pending: true,
+                            }
+                          }
+                          t={t}
+                        />
+                      ) : null}
                       {isLive ? (
                         <span className="schedule-live-badge">
                           {t("playlist.liveBadge")}

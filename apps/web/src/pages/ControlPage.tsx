@@ -35,13 +35,14 @@ import {
 import { AboutDialog } from "../components/AboutDialog";
 import { BibliotecaDialog } from "../components/BibliotecaDialog";
 import { BibleDialog } from "../components/BibleDialog";
-import { CancioneroNoMatchDialog } from "../components/CancioneroNoMatchDialog";
-import { CancioneroTeachDialog } from "../components/CancioneroTeachDialog";
 import { ControlAdBanner } from "../components/ControlAdBanner";
 import { ControlHeaderToolbar } from "../components/ControlHeaderToolbar";
 import { LanRemoteHint } from "../components/LanRemoteHint";
 import { LinkAddDialog } from "../components/LinkAddDialog";
-import { SavedPlaylistPanel } from "../components/SavedPlaylistPanel";
+import {
+  SavedPlaylistPanel,
+  type SavedPlaylistPanelHandle,
+} from "../components/SavedPlaylistPanel";
 import { SchedulePanel } from "../components/SchedulePanel";
 import { SongEditor } from "../components/SongEditor";
 import {
@@ -70,6 +71,8 @@ import {
   LARGE_VIDEO_WARN_BYTES,
   buildAssetUrl,
   uploadBrandingLogo,
+  uploadWatermark,
+  downloadYoutubeAsAsset,
   uploadSessionAsset,
 } from "../lib/assets";
 import {
@@ -157,14 +160,15 @@ export function ControlPage() {
   const [songEditorOpen, setSongEditorOpen] = useState(false);
   const [songBusy, setSongBusy] = useState(false);
   const [songError, setSongError] = useState<string | null>(null);
-  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
-  const [loadDialogOpen, setLoadDialogOpen] = useState(false);
+  const guionPanelRef = useRef<SavedPlaylistPanelHandle>(null);
   /** Soft action hints (pair / upload / remote Control). */
   const [uploadHint, setUploadHint] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadingBackground, setUploadingBackground] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const logoFileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadingWatermark, setUploadingWatermark] = useState(false);
+  const watermarkFileInputRef = useRef<HTMLInputElement>(null);
   /** Phone/LAN opened /control without token — wait for code/token pair. */
   const [needsRemotePair, setNeedsRemotePair] = useState(false);
   const [pairCode, setPairCode] = useState("");
@@ -180,9 +184,6 @@ export function ControlPage() {
     }>
   >([]);
   const [aboutOpen, setAboutOpen] = useState(false);
-  const [cancioneroNoMatchOpen, setCancioneroNoMatchOpen] = useState(false);
-  const [cancioneroTeachOpen, setCancioneroTeachOpen] = useState(false);
-  const [cancioneroTeachBusy, setCancioneroTeachBusy] = useState(false);
   /** Local Preview playhead (ms) before Go Live — karaoke overlay + ←/→ teach. */
   const [previewLocalPositionMs, setPreviewLocalPositionMs] = useState(0);
   /** YouTube items already probed for oEmbed title (avoid repeat fetches). */
@@ -290,11 +291,9 @@ export function ControlPage() {
         i.type === "audio" ||
         (i.type === "video" && i.payload.sourceKind === "youtube"),
     );
-    const liveAv = Boolean(
-      liveItem && (liveItem.type === "video" || liveItem.type === "audio"),
-    );
-    return hasTarget && !liveAv;
-  }, [session.snapshot?.playlist.items, liveItem]);
+    // The hub prepares rows in the background: allowed while something plays.
+    return hasTarget;
+  }, [session.snapshot?.playlist.items]);
   const subtitleAgentTitle = useMemo(() => {
     if (subtitleAgent.enabled) {
       const st = subtitleAgent.status;
@@ -505,12 +504,17 @@ export function ControlPage() {
   /** Playlist chrome needs a session; mutations need WS (auto-reconnects if down). */
   const canMutate = sessionReady && wsReady;
 
-  // Cancionero miss no longer opens a blocking modal — Whisper/captions
-  // auto-generate subtitle text. Teach UI remains available from the toolbar.
+  // Cancionero miss does not open a modal — Whisper/captions auto-generate
+  // the subtitle text.
 
   // When agent is on, re-target ASR if focus item changed (live preferred).
   useEffect(() => {
     if (!subtitleAgent.enabled || !canMutate) {
+      return;
+    }
+    // The hub is preparing the Guion in order: re-targeting here would
+    // supersede the running item and restart the queue.
+    if (subtitleAgent.prepare?.running && !liveItemId) {
       return;
     }
     const focusId = liveItemId || selectedItemId;
@@ -530,6 +534,7 @@ export function ControlPage() {
   }, [
     subtitleAgent.enabled,
     subtitleAgent.itemId,
+    subtitleAgent.prepare?.running,
     liveItemId,
     selectedItemId,
     canMutate,
@@ -810,8 +815,8 @@ export function ControlPage() {
       return;
     }
     if (!videoCover) {
-      setCoverError(null);
-      setCoverDialogOpen(true);
+      // First tap: the animated background goes over the video (under captions).
+      session.setVideoCover({ background: true });
       return;
     }
     session.setVideoCover({ active: !videoCover.active });
@@ -1121,6 +1126,39 @@ export function ControlPage() {
       setUploadHint(t("bible.addedFromCache"));
     } else {
       setUploadHint(null);
+    }
+  };
+
+  /**
+   * YouTube blocked embed (101/150): download the video through the hub and
+   * swap the Guion item for a local file (same id/position/title) so Preview,
+   * Output and the karaoke agent use the file path.
+   */
+  const youtubeToLocal = async (item: PlaylistItem): Promise<void> => {
+    if (
+      item.type !== "video" ||
+      item.payload.sourceKind !== "youtube" ||
+      !session.sessionId ||
+      !session.wsTicket
+    ) {
+      throw new Error("not_ready");
+    }
+    const asset = await downloadYoutubeAsAsset(
+      session.sessionId,
+      session.wsTicket,
+      item.payload.videoId,
+    );
+    const payload: VideoPayload = {
+      sourceKind: "file",
+      assetId: asset.id,
+      title: item.payload.title,
+      autoplay: item.payload.autoplay,
+      loop: item.payload.loop,
+      muted: item.payload.muted,
+      fit: item.payload.fit,
+    };
+    if (!session.updateItem(item.id, { payload })) {
+      throw new Error("ws_disconnected");
     }
   };
 
@@ -1548,6 +1586,45 @@ export function ControlPage() {
     session.setWatermark(!watermarkEnabled);
   };
 
+  /** Right-click / Alt+click on Marca de agua: choose the watermark file. */
+  const openWatermarkFilePicker = () => {
+    if (!canMutate || uploadingWatermark) {
+      return;
+    }
+    watermarkFileInputRef.current?.click();
+  };
+
+  const onWatermarkFileChosen = async (file: File | null) => {
+    if (!file || !session.sessionId || !session.wsTicket) {
+      return;
+    }
+    const okType =
+      file.type.startsWith("image/") ||
+      file.type === "video/mp4" ||
+      file.type === "video/webm";
+    if (!okType) {
+      setUploadHint(t("control.watermarkBadType"));
+      return;
+    }
+    setUploadingWatermark(true);
+    try {
+      // The hub stores it, switches the watermark on and broadcasts it.
+      await uploadWatermark(session.sessionId, session.wsTicket, file);
+      setUploadHint(t("control.watermarkSaved"));
+    } catch (err) {
+      setUploadHint(
+        err instanceof Error
+          ? `${t("control.watermarkUploadFailed")}: ${err.message}`
+          : t("control.watermarkUploadFailed"),
+      );
+    } finally {
+      setUploadingWatermark(false);
+      if (watermarkFileInputRef.current) {
+        watermarkFileInputRef.current.value = "";
+      }
+    }
+  };
+
   const toggleDotsOverlay = () => {
     if (!ensureWsOrHint()) {
       return;
@@ -1799,7 +1876,6 @@ export function ControlPage() {
                   });
                 }
               }}
-              onTeachCancionero={() => setCancioneroTeachOpen(true)}
               subtitlePrepare={subtitleAgent.prepare ?? null}
               canPrepareGuion={canPrepareGuion}
               onPrepareGuion={() =>
@@ -1871,71 +1947,6 @@ export function ControlPage() {
       </div>
 
       <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
-
-      <CancioneroNoMatchDialog
-        open={cancioneroNoMatchOpen}
-        onClose={() => setCancioneroNoMatchOpen(false)}
-        hint={subtitleAgent.hint}
-        mediaTitle={(() => {
-          const id = subtitleAgent.itemId;
-          const it = id
-            ? items.find((i) => i.id === id) ?? subtitleFocusItem
-            : subtitleFocusItem;
-          if (!it) return null;
-          if (it.type === "audio") {
-            return it.payload.title?.trim() || null;
-          }
-          if (it.type === "video" && it.payload.sourceKind === "youtube") {
-            return (
-              it.payload.title?.trim() ||
-              `YouTube ${it.payload.videoId || ""}`.trim() ||
-              null
-            );
-          }
-          return null;
-        })()}
-        onTeach={() => {
-          setCancioneroNoMatchOpen(false);
-          setCancioneroTeachOpen(true);
-        }}
-      />
-
-      <CancioneroTeachDialog
-        open={cancioneroTeachOpen}
-        busy={cancioneroTeachBusy}
-        onClose={() => {
-          if (!cancioneroTeachBusy) setCancioneroTeachOpen(false);
-        }}
-        mediaTitle={(() => {
-          const id = subtitleAgent.itemId || liveItemId || selectedItemId;
-          const it = id ? items.find((i) => i.id === id) : null;
-          if (!it) return null;
-          if (it.type === "audio" || it.type === "video") {
-            return it.payload.title?.trim() || null;
-          }
-          return null;
-        })()}
-        matchedSongTitle={null}
-        onTeach={(songId) => {
-          setCancioneroTeachBusy(true);
-          const ok = session.teachSubtitleCancionero({
-            songId,
-            itemId:
-              subtitleAgent.itemId ||
-              liveItemId ||
-              selectedItemId ||
-              undefined,
-          });
-          setCancioneroTeachBusy(false);
-          if (ok) {
-            setCancioneroTeachOpen(false);
-            setUploadHint(t("control.cancioneroTeachSaving"));
-          } else {
-            setUploadHint(t("control.wsDisconnectedHint"));
-            session.reconnect();
-          }
-        }}
-      />
 
       {popupBlockedUrl ? (
         <div className="control-banner control-banner-compact" role="status">
@@ -2205,6 +2216,9 @@ export function ControlPage() {
         {/* Left column: Guion list (full height). Live goes via Output / En vivo. */}
         <div className="control-guion-column">
           <SchedulePanel
+            karaokeProgress={
+              subtitleAgent.enabled ? subtitleAgent.itemProgress : undefined
+            }
             items={items}
             selectedItemId={selectedItemId}
             liveItemId={liveItemId}
@@ -2287,13 +2301,13 @@ export function ControlPage() {
               if (!session.hasSession) {
                 return;
               }
-              setLoadDialogOpen(true);
+              guionPanelRef.current?.openLoad();
             }}
             onOpenSave={() => {
               if (!canMutate) {
                 return;
               }
-              setSaveDialogOpen(true);
+              guionPanelRef.current?.openSave();
             }}
             onFilesDropped={(files) => {
               if (!sessionReady) {
@@ -2309,16 +2323,12 @@ export function ControlPage() {
             saveLoadDialogs={
               session.hasSession && session.sessionId && session.wsTicket ? (
                 <SavedPlaylistPanel
+                  ref={guionPanelRef}
                   sessionId={session.sessionId}
                   wsTicket={session.wsTicket}
                   items={items}
                   disabled={!canMutate}
                   onHint={setUploadHint}
-                  dialogMode
-                  saveOpen={saveDialogOpen}
-                  loadOpen={loadDialogOpen}
-                  onSaveOpenChange={setSaveDialogOpen}
-                  onLoadOpenChange={setLoadDialogOpen}
                 />
               ) : null
             }
@@ -2471,6 +2481,15 @@ export function ControlPage() {
               >
                 <IconUploadLogo />
               </button>
+              <input
+                ref={watermarkFileInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif,image/apng,image/svg+xml,video/mp4,video/webm"
+                hidden
+                onChange={(e) => {
+                  void onWatermarkFileChosen(e.target.files?.[0] ?? null);
+                }}
+              />
               <button
                 type="button"
                 className={[
@@ -2483,7 +2502,18 @@ export function ControlPage() {
                 title={t("control.sceneWatermarkHint")}
                 aria-label={t("control.sceneWatermark")}
                 aria-pressed={watermarkEnabled}
-                onClick={toggleWatermark}
+                onClick={(e) => {
+                  if (e.altKey || e.metaKey || e.ctrlKey) {
+                    e.preventDefault();
+                    openWatermarkFilePicker();
+                    return;
+                  }
+                  toggleWatermark();
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  openWatermarkFilePicker();
+                }}
               >
                 <span className="preview-tb-scene-glyph" aria-hidden>
                   <IconWatermark />
@@ -2642,6 +2672,18 @@ export function ControlPage() {
                         ? setPreviewLocalPositionMs
                         : undefined
                     }
+                    onYoutubeToLocal={
+                      selectedItem.type === "video" &&
+                      selectedItem.payload.sourceKind === "youtube"
+                        ? () => youtubeToLocal(selectedItem)
+                        : undefined
+                    }
+                    youtubeToLocalLabels={{
+                      button: t("video.ytLocalButton"),
+                      busy: t("video.ytLocalBusy"),
+                      note: t("video.ytLocalNote"),
+                      failed: t("video.ytLocalFailed"),
+                    }}
                   />
                   {previewVideoPlaneDots ? <StageDotsOverlay /> : null}
                 </div>

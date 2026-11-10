@@ -1,9 +1,10 @@
 /**
- * Smoke: default ASR must prefer whisper.cpp exclusively (never Xenova on auto).
+ * Smoke: auto ASR prefers faster-whisper when installed, else whisper.cpp (never Xenova on auto).
  * Does not download models or spawn real ASR.
  */
 import {
   asrBackendPreference,
+  pickAsrEngine,
   classifyWhisperLoadError,
 } from "../src/subtitle-asr.ts";
 import { resolveWhisperCliBin } from "../src/subtitle-bins.ts";
@@ -29,6 +30,13 @@ async function main(): Promise<void> {
     throw new Error("AUTO should normalize to auto");
   }
 
+  // Engine choice: auto prefers faster-whisper when installed, else whisper.cpp.
+  if (pickAsrEngine("auto", true) !== "faster_whisper") throw new Error("auto+fw should pick faster_whisper");
+  if (pickAsrEngine("auto", false) !== "whisper_cpp") throw new Error("auto without fw should pick whisper_cpp");
+  if (pickAsrEngine("whisper_cpp", true) !== "whisper_cpp") throw new Error("forced whisper_cpp ignored");
+  if (pickAsrEngine("faster_whisper", false) !== "faster_whisper") throw new Error("forced faster_whisper ignored");
+  if (pickAsrEngine("transformers", true) !== "transformers") throw new Error("forced transformers ignored");
+
   if (prev === undefined) delete process.env.SUBTITLE_ASR_BACKEND;
   else process.env.SUBTITLE_ASR_BACKEND = prev;
 
@@ -43,7 +51,7 @@ async function main(): Promise<void> {
   if (c !== "model_path_error") throw new Error(`classify=${c}`);
 
   console.log(
-    "SMOKE_OK (asr backend select: auto→whisper_cpp exclusive; transformers opt-in only)",
+    "SMOKE_OK (asr backend select: auto→faster-whisper, fallback whisper.cpp; transformers opt-in only)",
   );
 }
 

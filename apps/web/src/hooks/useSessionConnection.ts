@@ -370,8 +370,11 @@ export function useSessionConnection(role: ClientRole) {
   );
 
   const setVideoCover = useCallback(
-    (patch: { assetId?: string | null; active?: boolean }): boolean =>
-      send("live.setVideoCover", patch),
+    (patch: {
+      assetId?: string | null;
+      active?: boolean;
+      background?: boolean;
+    }): boolean => send("live.setVideoCover", patch),
     [send],
   );
 
@@ -383,12 +386,6 @@ export function useSessionConnection(role: ClientRole) {
 
   const saveSubtitleLyrics = useCallback(
     (): boolean => send("live.subtitleAgent.saveLyrics", {}),
-    [send],
-  );
-
-  const teachSubtitleCancionero = useCallback(
-    (patch: { songId: string; itemId?: string }): boolean =>
-      send("live.subtitleAgent.teach", patch),
     [send],
   );
 
@@ -438,7 +435,6 @@ export function useSessionConnection(role: ClientRole) {
     setVideoCover,
     prepareSubtitleAgent,
     saveSubtitleLyrics,
-    teachSubtitleCancionero,
     nudgeSubtitleCancionero,
     isWsOpen,
     hasSession: Boolean(sessionId && wsTicket),

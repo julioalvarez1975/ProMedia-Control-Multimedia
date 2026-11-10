@@ -26,6 +26,43 @@ export function buildBrandingLogoUrl(
   return `${hubHttpBase()}/api/v1/branding/logo?${q}`;
 }
 
+/** Independent watermark file URL (cache-busted by updatedAt). */
+export function buildWatermarkUrl(
+  sessionId: string,
+  credential: string,
+  updatedAt?: string | null,
+): string {
+  const q = new URLSearchParams({ sessionId, credential });
+  if (updatedAt) {
+    q.set("v", updatedAt);
+  }
+  return `${hubHttpBase()}/api/v1/branding/watermark?${q}`;
+}
+
+/** Upload / replace the watermark (image, animated image or short video). */
+export async function uploadWatermark(
+  sessionId: string,
+  credential: string,
+  file: File,
+): Promise<{ mime: string; updatedAt: string; size: number }> {
+  const form = new FormData();
+  form.append("file", file);
+  const q = new URLSearchParams({ sessionId });
+  const res = await fetch(`${hubHttpBase()}/api/v1/branding/watermark?${q}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${credential}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `watermark_upload_failed_${res.status}`);
+  }
+  const data = (await res.json()) as {
+    watermark: { mime: string; updatedAt: string; size: number };
+  };
+  return data.watermark;
+}
+
 /** Upload / replace the permanent branding logo (survives sessions). */
 export async function uploadBrandingLogo(
   sessionId: string,
@@ -83,6 +120,36 @@ export async function uploadSessionAsset(
       size?: number;
       originalName?: string;
     };
+  };
+  return data.asset;
+}
+
+/**
+ * Ask the hub to download ONE YouTube video as a local mp4 asset (used when
+ * the owner blocks embedding). Can take a minute; rejects with the hub hint.
+ */
+export async function downloadYoutubeAsAsset(
+  sessionId: string,
+  credential: string,
+  videoId: string,
+): Promise<{ id: string; mime: string; size?: number; originalName?: string }> {
+  const res = await fetch(
+    `${hubHttpBase()}/api/v1/sessions/${encodeURIComponent(sessionId)}/youtube-download`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${credential}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ videoId }),
+    },
+  );
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `youtube_download_failed_${res.status}`);
+  }
+  const data = (await res.json()) as {
+    asset: { id: string; mime: string; size?: number; originalName?: string };
   };
   return data.asset;
 }
