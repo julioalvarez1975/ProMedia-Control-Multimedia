@@ -108,7 +108,10 @@ function baseNameOf(fileName: string): string {
  * browsers fall back to a download, which cannot replace an existing file.
  * Returns the base name the operator chose, so the next save suggests it.
  */
-export async function saveGuionToDisk(file: GuionFile): Promise<string> {
+export async function saveGuionToDisk(
+  file: GuionFile,
+  auth?: { sessionId: string; credential: string },
+): Promise<string> {
   const suggested = `${sanitizeFileBase(file.name)}.promedia-guion.json`;
   const jsonFor = (name: string) =>
     `${JSON.stringify({ ...file, name }, null, 2)}\n`;
@@ -137,6 +140,35 @@ export async function saveGuionToDisk(file: GuionFile): Promise<string> {
         throw err;
       }
       // Some browsers throw NotAllowedError — fall through to download.
+    }
+  }
+  // No browser save picker (Safari / Firefox): ask the hub (same Mac) to open
+  // the system "Guardar como" dialog instead of dropping into Downloads.
+  const host = window.location.hostname;
+  if (auth && (host === "localhost" || host === "127.0.0.1")) {
+    try {
+      const res = await fetch(
+        `${hubHttpBase()}/api/v1/guion/save-native?sessionId=${encodeURIComponent(auth.sessionId)}`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${auth.credential}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ name: file.name, json: jsonFor(file.name) }),
+        },
+      );
+      if (res.ok) {
+        const data = (await res.json()) as { cancelled?: boolean; name?: string };
+        if (data.cancelled) {
+          throw new DOMException("cancelled", "AbortError");
+        }
+        return data.name || file.name;
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        throw err;
+      }
     }
   }
   const blob = new Blob([jsonFor(file.name)], { type: "application/json" });

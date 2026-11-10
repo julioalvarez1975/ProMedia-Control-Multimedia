@@ -88,7 +88,10 @@ export const SavedPlaylistPanel = forwardRef<
     setNameOpen(false);
     try {
       // Runs inside the confirm click: the browser allows its save dialog.
-      const saved = await saveGuionToDisk(buildGuionFile(label, items));
+      const saved = await saveGuionToDisk(buildGuionFile(label, items), {
+        sessionId,
+        credential: wsTicket,
+      });
       rememberName(saved);
       onHint?.(t("playlist.savedFileOk"));
     } catch (err) {

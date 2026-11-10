@@ -361,6 +361,55 @@ export function createApiRoutes(): Hono {
   });
 
   /**
+   * Native "Guardar como" dialog for the guion file (macOS, hub on the same
+   * machine as the browser). Used when the browser has no save picker and
+   * would otherwise drop the file straight into Downloads.
+   */
+  api.post("/guion/save-native", async (c) => {
+    const sessionId = c.req.query("sessionId") ?? "";
+    const credential =
+      bearerToken(c.req.header("authorization")) ?? c.req.query("credential");
+    const access = authorizeSessionAccess(sessionId, {
+      credential,
+      accessToken: c.req.query("accessToken") ?? c.req.query("token"),
+      requireRole: "control",
+    });
+    if (!access.ok) {
+      return c.json({ error: access.error }, access.status);
+    }
+    if (process.platform !== "darwin") {
+      return c.json({ error: "unsupported" }, 501);
+    }
+    const body = (await c.req.json().catch(() => ({}))) as {
+      name?: string;
+      json?: string;
+    };
+    if (typeof body.json !== "string" || !body.json) {
+      return c.json({ error: "missing_json" }, 400);
+    }
+    const base =
+      String(body.name ?? "guion")
+        .replace(/[\\/:"*?<>|\u0000-\u001f]+/g, " ")
+        .trim()
+        .slice(0, 80) || "guion";
+    const { execFile } = await import("node:child_process");
+    const { writeFile } = await import("node:fs/promises");
+    const script = `POSIX path of (choose file name with prompt "Guardar guion" default name "${base.replace(/"/g, "")}.promedia-guion.json")`;
+    const chosen = await new Promise<string | null>((resolve) => {
+      execFile("osascript", ["-e", script], { timeout: 300_000 }, (err, out) =>
+        resolve(err ? null : String(out).trim() || null),
+      );
+    });
+    if (!chosen) {
+      return c.json({ cancelled: true });
+    }
+    const path = /\.json$/i.test(chosen) ? chosen : `${chosen}.promedia-guion.json`;
+    await writeFile(path, body.json, "utf8");
+    const file = path.split("/").pop() ?? path;
+    return c.json({ path, name: file.replace(/\.promedia-guion\.json$/i, "").replace(/\.json$/i, "") });
+  });
+
+  /**
    * Upload / replace the watermark (control only). Multipart field `file`:
    * image, animated image (gif/webp/apng) or short video (mp4/webm). It also
    * switches the watermark on.
