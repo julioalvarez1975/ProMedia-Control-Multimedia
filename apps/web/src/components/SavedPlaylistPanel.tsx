@@ -1,508 +1,124 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { PlaylistItem } from "@promedia/shared";
 import { useLocale } from "../locale/LocaleContext";
 import {
   buildGuionFile,
-  deleteSavedPlaylist,
   importGuionToSession,
-  listSavedPlaylists,
-  loadSavedPlaylist,
   pickGuionFromDisk,
   saveGuionToDisk,
-  renameSavedPlaylist,
-  saveSessionPlaylist,
-  type SavedPlaylistSummary,
 } from "../lib/playlists";
-import { DialogBrand } from "./DialogBrand";
 
 export type SavedPlaylistPanelProps = {
   sessionId: string;
   wsTicket: string;
-  /** Current Guion items — exported to the on-disk file. */
+  /** Current Guion items — exported to the file. */
   items: readonly PlaylistItem[];
   disabled?: boolean;
   onHint?: (msg: string | null) => void;
-  /** Compact layout for playlist column (legacy inline). */
-  compact?: boolean;
-  /** Dialog mode opened from Guion toolbar icons. */
-  dialogMode?: boolean;
+  /** Set to true by the Guion toolbar: runs the action and resets itself. */
   saveOpen?: boolean;
   loadOpen?: boolean;
   onSaveOpenChange?: (open: boolean) => void;
   onLoadOpenChange?: (open: boolean) => void;
 };
 
+const LAST_NAME_KEY = "promedia.guion.lastName";
+
 function isAbort(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
 }
 
+function readLastName(): string {
+  try {
+    return window.localStorage.getItem(LAST_NAME_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function rememberName(name: string): void {
+  try {
+    window.localStorage.setItem(LAST_NAME_KEY, name);
+  } catch {
+    // storage unavailable: the suggestion just falls back to the default
+  }
+}
+
+/**
+ * Headless: Guardar / Cargar open the DEVICE's own file dialog straight away
+ * (no list of saved guiones). The guion lives in a local file; saving with the
+ * same name replaces that file, and the last name is suggested next time.
+ */
 export function SavedPlaylistPanel({
   sessionId,
   wsTicket,
   items,
   disabled,
   onHint,
-  compact,
-  dialogMode,
   saveOpen = false,
   loadOpen = false,
   onSaveOpenChange,
   onLoadOpenChange,
 }: SavedPlaylistPanelProps) {
   const { t } = useLocale();
-
-  const [name, setName] = useState("");
-  const [list, setList] = useState<SavedPlaylistSummary[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState("");
-
-  const refresh = useCallback(async () => {
-    try {
-      setList(await listSavedPlaylists());
-    } catch {
-      // Hub list is optional; file save/load is the primary path.
-      setList([]);
-    }
-  }, []);
+  const running = useRef(false);
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  useEffect(() => {
-    if ((saveOpen || loadOpen) && dialogMode) {
-      void refresh();
-    }
-  }, [saveOpen, loadOpen, dialogMode, refresh]);
-
-  const onSaveToFile = async () => {
-    if (disabled) {
+    if (!saveOpen) {
       return;
     }
-    const label = name.trim() || t("playlist.defaultFileName");
-    setBusy(true);
-    try {
-      const file = buildGuionFile(label, items);
-      await saveGuionToDisk(file);
-      // Also mirror into hub store when possible (same LAN / resume).
+    // Always reset the flag so the toolbar button works again next click.
+    onSaveOpenChange?.(false);
+    if (disabled || running.current) {
+      return;
+    }
+    running.current = true;
+    void (async () => {
       try {
-        await saveSessionPlaylist(sessionId, wsTicket, file.name);
-        await refresh();
-      } catch {
-        // Disk save already succeeded.
+        const label = readLastName() || t("playlist.defaultFileName");
+        const saved = await saveGuionToDisk(buildGuionFile(label, items));
+        rememberName(saved);
+        onHint?.(t("playlist.savedFileOk"));
+      } catch (err) {
+        if (!isAbort(err)) {
+          onHint?.(String(err));
+        }
+      } finally {
+        running.current = false;
       }
-      setName("");
-      onHint?.(t("playlist.savedFileOk"));
-      onSaveOpenChange?.(false);
-    } catch (err) {
-      if (!isAbort(err)) {
-        onHint?.(String(err));
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saveOpen]);
 
-  const onOpenFile = async () => {
-    if (disabled) {
+  useEffect(() => {
+    if (!loadOpen) {
       return;
     }
-    setBusy(true);
-    try {
-      const guion = await pickGuionFromDisk();
-      const { skipped } = await importGuionToSession(
-        sessionId,
-        wsTicket,
-        guion,
-      );
-      onHint?.(
-        skipped > 0
-          ? t("playlist.loadedSkipped").replace("{n}", String(skipped))
-          : t("playlist.loadedOk"),
-      );
-      onLoadOpenChange?.(false);
-    } catch (err) {
-      if (!isAbort(err)) {
-        onHint?.(String(err));
+    onLoadOpenChange?.(false);
+    if (disabled || running.current) {
+      return;
+    }
+    running.current = true;
+    void (async () => {
+      try {
+        const guion = await pickGuionFromDisk();
+        const { skipped } = await importGuionToSession(sessionId, wsTicket, guion);
+        rememberName(guion.name);
+        onHint?.(
+          skipped > 0
+            ? t("playlist.loadedSkipped").replace("{n}", String(skipped))
+            : t("playlist.loadedOk"),
+        );
+      } catch (err) {
+        if (!isAbort(err)) {
+          onHint?.(String(err));
+        }
+      } finally {
+        running.current = false;
       }
-    } finally {
-      setBusy(false);
-    }
-  };
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadOpen]);
 
-  const onLoadHub = async (id: string) => {
-    setBusy(true);
-    try {
-      const { skipped } = await loadSavedPlaylist(sessionId, wsTicket, id);
-      onHint?.(
-        skipped > 0
-          ? t("playlist.loadedSkipped").replace("{n}", String(skipped))
-          : t("playlist.loadedOk"),
-      );
-      onLoadOpenChange?.(false);
-    } catch (err) {
-      onHint?.(String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  /** Replace a saved guion with the current Guion (same id, same name). */
-  const onOverwrite = async (p: SavedPlaylistSummary) => {
-    if (disabled || items.length === 0) {
-      return;
-    }
-    if (!window.confirm(t("playlist.overwriteConfirm").replace("{name}", p.name))) {
-      return;
-    }
-    setBusy(true);
-    try {
-      await saveSessionPlaylist(sessionId, wsTicket, p.name, p.id);
-      await refresh();
-      onHint?.(t("playlist.overwriteOk").replace("{name}", p.name));
-      onSaveOpenChange?.(false);
-    } catch (err) {
-      onHint?.(String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const startRename = (p: SavedPlaylistSummary) => {
-    setRenamingId(p.id);
-    setRenameValue(p.name);
-  };
-
-  const onRenameSave = async () => {
-    const id = renamingId;
-    const next = renameValue.trim();
-    if (!id || !next) {
-      return;
-    }
-    setBusy(true);
-    try {
-      await renameSavedPlaylist(id, next, wsTicket);
-      await refresh();
-      setRenamingId(null);
-      onHint?.(t("playlist.renamedOk"));
-    } catch (err) {
-      onHint?.(String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const onDelete = async (id: string) => {
-    setBusy(true);
-    try {
-      await deleteSavedPlaylist(id);
-      await refresh();
-    } catch (err) {
-      onHint?.(String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  if (dialogMode) {
-    return (
-      <>
-        {saveOpen ? (
-          <div
-            className="promedia-dialog-backdrop"
-            role="presentation"
-            onClick={(e) => {
-              if (e.target === e.currentTarget) {
-                onSaveOpenChange?.(false);
-              }
-            }}
-          >
-            <div
-              className="promedia-dialog"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="playlist-save-title"
-            >
-              <DialogBrand id="playlist-save-title">
-                {t("playlist.save")}
-              </DialogBrand>
-              <p className="promedia-dialog-hint">{t("playlist.saveFileHint")}</p>
-              <label className="promedia-dialog-field">
-                {t("playlist.saveName")}
-                <input
-                  value={name}
-                  disabled={disabled || busy}
-                  autoFocus
-                  placeholder={t("playlist.saveName")}
-                  onChange={(e) => setName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      void onSaveToFile();
-                    } else if (e.key === "Escape") {
-                      onSaveOpenChange?.(false);
-                    }
-                  }}
-                />
-              </label>
-              {list.length > 0 ? (
-                <>
-                  <p className="promedia-dialog-hint">
-                    {t("playlist.existingTitle")}
-                  </p>
-                  <ul className="saved-playlist-list saved-playlist-list-dialog">
-                    {list.map((p) => (
-                      <li key={p.id}>
-                        {renamingId === p.id ? (
-                          <input
-                            className="saved-playlist-rename"
-                            value={renameValue}
-                            autoFocus
-                            disabled={busy}
-                            onChange={(e) => setRenameValue(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                void onRenameSave();
-                              } else if (e.key === "Escape") {
-                                setRenamingId(null);
-                              }
-                            }}
-                          />
-                        ) : (
-                          <span className="saved-playlist-name">
-                            {p.name}{" "}
-                            <span className="footer-muted">({p.itemCount})</span>
-                          </span>
-                        )}
-                        <div className="playlist-row-actions">
-                          {renamingId === p.id ? (
-                            <>
-                              <button
-                                type="button"
-                                className="btn btn-primary"
-                                disabled={busy || !renameValue.trim()}
-                                onClick={() => void onRenameSave()}
-                              >
-                                {t("playlist.renameSave")}
-                              </button>
-                              <button
-                                type="button"
-                                className="btn btn-ghost"
-                                disabled={busy}
-                                onClick={() => setRenamingId(null)}
-                              >
-                                {t("text.cancel")}
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <button
-                                type="button"
-                                className="btn btn-primary"
-                                disabled={disabled || busy || items.length === 0}
-                                onClick={() => void onOverwrite(p)}
-                              >
-                                {t("playlist.overwrite")}
-                              </button>
-                              <button
-                                type="button"
-                                className="btn"
-                                disabled={busy}
-                                onClick={() => startRename(p)}
-                              >
-                                {t("playlist.rename")}
-                              </button>
-                              <button
-                                type="button"
-                                className="btn btn-ghost"
-                                disabled={busy}
-                                onClick={() => void onDelete(p.id)}
-                              >
-                                {t("playlist.remove")}
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              ) : null}
-              <div className="promedia-dialog-actions">
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => onSaveOpenChange?.(false)}
-                >
-                  {t("text.cancel")}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={disabled || busy || items.length === 0}
-                  onClick={() => void onSaveToFile()}
-                >
-                  {t("playlist.saveToFile")}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {loadOpen ? (
-          <div
-            className="promedia-dialog-backdrop"
-            role="presentation"
-            onClick={(e) => {
-              if (e.target === e.currentTarget) {
-                onLoadOpenChange?.(false);
-              }
-            }}
-          >
-            <div
-              className="promedia-dialog"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="playlist-load-title"
-            >
-              <DialogBrand id="playlist-load-title">
-                {t("playlist.load")}
-              </DialogBrand>
-              <p className="promedia-dialog-hint">{t("playlist.loadFileHint")}</p>
-              <div className="promedia-dialog-actions" style={{ justifyContent: "stretch" }}>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={disabled || busy}
-                  onClick={() => void onOpenFile()}
-                  style={{ width: "100%" }}
-                >
-                  {t("playlist.openFile")}
-                </button>
-              </div>
-              {list.length > 0 ? (
-                <>
-                  <p className="promedia-dialog-hint">
-                    {t("playlist.hubCopies")}
-                  </p>
-                  <ul className="saved-playlist-list saved-playlist-list-dialog">
-                    {list.map((p) => (
-                      <li key={p.id}>
-                        <span className="saved-playlist-name">
-                          {p.name}{" "}
-                          <span className="footer-muted">({p.itemCount})</span>
-                        </span>
-                        <div className="playlist-row-actions">
-                          <button
-                            type="button"
-                            className="btn btn-primary"
-                            disabled={disabled || busy}
-                            onClick={() => void onLoadHub(p.id)}
-                          >
-                            {t("playlist.load")}
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-ghost"
-                            disabled={busy}
-                            onClick={() => void onDelete(p.id)}
-                          >
-                            {t("playlist.remove")}
-                          </button>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              ) : null}
-              <div className="promedia-dialog-actions">
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => onLoadOpenChange?.(false)}
-                >
-                  {t("text.cancel")}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-      </>
-    );
-  }
-
-  return (
-    <div
-      className={
-        compact
-          ? "saved-playlist-panel saved-playlist-panel-compact"
-          : "saved-playlist-panel"
-      }
-    >
-      <h3 className="theme-controls-title">
-        {t(compact ? "playlist.saveLoadTitle" : "playlist.savedTitle")}
-      </h3>
-      <div className="saved-playlist-save">
-        <input
-          value={name}
-          disabled={disabled || busy}
-          placeholder={t("playlist.saveName")}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              void onSaveToFile();
-            }
-          }}
-        />
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={disabled || busy || items.length === 0}
-          onClick={() => void onSaveToFile()}
-        >
-          {t("playlist.saveToFile")}
-        </button>
-        <button
-          type="button"
-          className="btn"
-          disabled={disabled || busy}
-          onClick={() => void onOpenFile()}
-        >
-          {t("playlist.openFile")}
-        </button>
-      </div>
-      {list.length === 0 ? (
-        <p className="zone-empty">{t("playlist.savedEmpty")}</p>
-      ) : (
-        <ul className="saved-playlist-list">
-          {list.map((p) => (
-            <li key={p.id}>
-              <span className="saved-playlist-name">
-                {p.name}{" "}
-                <span className="footer-muted">({p.itemCount})</span>
-              </span>
-              <div className="playlist-row-actions">
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={disabled || busy}
-                  onClick={() => void onLoadHub(p.id)}
-                >
-                  {t("playlist.load")}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  disabled={busy}
-                  onClick={() => void onDelete(p.id)}
-                >
-                  {t("playlist.remove")}
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
+  return null;
 }

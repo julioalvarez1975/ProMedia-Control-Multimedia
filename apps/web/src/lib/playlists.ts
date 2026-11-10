@@ -78,6 +78,7 @@ type SavePickerWindow = Window & {
       accept: Record<string, string[]>;
     }>;
   }) => Promise<{
+    name?: string;
     createWritable: () => Promise<{
       write: (data: string | Blob) => Promise<void>;
       close: () => Promise<void>;
@@ -96,10 +97,21 @@ type SavePickerWindow = Window & {
   >;
 };
 
-/** Write guion JSON via native save dialog, or download fallback. */
-export async function saveGuionToDisk(file: GuionFile): Promise<void> {
+/** File name without the guion extensions. */
+function baseNameOf(fileName: string): string {
+  return fileName.replace(/\.promedia-guion\.json$/i, "").replace(/\.json$/i, "");
+}
+
+/**
+ * Write the guion through the device's own save dialog (Chrome / Edge: the
+ * system asks to replace when the name already exists in that folder). Other
+ * browsers fall back to a download, which cannot replace an existing file.
+ * Returns the base name the operator chose, so the next save suggests it.
+ */
+export async function saveGuionToDisk(file: GuionFile): Promise<string> {
   const suggested = `${sanitizeFileBase(file.name)}.promedia-guion.json`;
-  const json = `${JSON.stringify(file, null, 2)}\n`;
+  const jsonFor = (name: string) =>
+    `${JSON.stringify({ ...file, name }, null, 2)}\n`;
   const w = window as SavePickerWindow;
   if (typeof w.showSaveFilePicker === "function") {
     try {
@@ -114,10 +126,11 @@ export async function saveGuionToDisk(file: GuionFile): Promise<void> {
           },
         ],
       });
+      const chosen = baseNameOf(handle.name ?? suggested) || file.name;
       const writable = await handle.createWritable();
-      await writable.write(json);
+      await writable.write(jsonFor(chosen));
       await writable.close();
-      return;
+      return chosen;
     } catch (err) {
       // User cancel — AbortError; rethrow others after fallback attempt skip.
       if (err instanceof DOMException && err.name === "AbortError") {
@@ -126,7 +139,7 @@ export async function saveGuionToDisk(file: GuionFile): Promise<void> {
       // Some browsers throw NotAllowedError — fall through to download.
     }
   }
-  const blob = new Blob([json], { type: "application/json" });
+  const blob = new Blob([jsonFor(file.name)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -136,6 +149,7 @@ export async function saveGuionToDisk(file: GuionFile): Promise<void> {
   a.click();
   a.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 2_000);
+  return file.name;
 }
 
 /** Open native file picker (or hidden input) and parse a guion JSON. */

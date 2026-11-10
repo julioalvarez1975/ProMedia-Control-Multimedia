@@ -2284,7 +2284,6 @@ export function ControlPage() {
                   items={items}
                   disabled={!canMutate}
                   onHint={setUploadHint}
-                  dialogMode
                   saveOpen={saveDialogOpen}
                   loadOpen={loadDialogOpen}
                   onSaveOpenChange={setSaveDialogOpen}
