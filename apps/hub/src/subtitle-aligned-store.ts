@@ -18,7 +18,16 @@ import path from "node:path";
 import type { SubtitleAgentState, SubtitleTargetLang } from "@promedia/shared";
 import { subtitleDataRoot } from "./subtitle-paths.js";
 
-const VERSION = 1;
+/**
+ * Version of the PROCEDURE that produces a saved result. Bump it whenever the
+ * alignment / timing logic changes in a way that makes old results wrong: every
+ * file saved with another version is ignored and deleted at hub start
+ * (`purgeStaleAlignedCache`), and the song is calculated again.
+ *   1 → 2: results made before per-row background jobs, faster-whisper and the
+ *          voice-anchor diagnostics (e.g. out-of-sync "El Gran Yo Soy").
+ */
+export const ALIGNED_CACHE_VERSION = 2;
+const VERSION = ALIGNED_CACHE_VERSION;
 /** `yt_<videoId>` or `fh_<sha1 of the local file>`. */
 const SAFE_KEY = /^(?:yt_[A-Za-z0-9_-]{6,20}|fh_[0-9a-f]{40})$/;
 const HASH_HEAD_BYTES = 4 * 1024 * 1024;
@@ -237,6 +246,36 @@ export async function loadPersistedAgent(
   } catch {
     return null;
   }
+}
+
+/**
+ * Delete saved results from an older procedure (or unreadable ones) so they are
+ * recalculated. Returns how many files were removed.
+ */
+export async function purgeStaleAlignedCache(): Promise<number> {
+  let names: string[];
+  try {
+    names = await readdir(alignedDir());
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    const file = path.join(alignedDir(), name);
+    let stale = false;
+    try {
+      const parsed = JSON.parse(await readFile(file, "utf8")) as { version?: unknown };
+      stale = parsed?.version !== VERSION;
+    } catch {
+      stale = true;
+    }
+    if (stale) {
+      await rm(file, { force: true }).catch(() => undefined);
+      removed += 1;
+    }
+  }
+  return removed;
 }
 
 /** Forget a video (operator taught another song, lyrics changed…). */

@@ -13,7 +13,11 @@ import { ensureSubtitleDirs } from "./subtitle-paths.js";
 import { assetStore } from "./asset-store.js";
 import { sessionStore } from "./session-store.js";
 import { disposeSubtitleSession } from "./subtitle-agent.js";
-import { flushPersistedAgents } from "./subtitle-aligned-store.js";
+import {
+  flushPersistedAgents,
+  purgeStaleAlignedCache,
+} from "./subtitle-aligned-store.js";
+import { purgeStaleAsrCache } from "./subtitle-asr.js";
 import { forgetClockReports, WsHub } from "./ws-hub.js";
 
 const app = new Hono();
@@ -40,6 +44,16 @@ try {
   const sub = await ensureSubtitleDirs();
   console.log(`[hub] subtitle models: ${sub.models}`);
   console.log(`[hub] youtube-cache: ${sub.youtubeCache}`);
+  // Results calculated by an older procedure are dropped and made again.
+  const [staleAligned, staleAsr] = await Promise.all([
+    purgeStaleAlignedCache(),
+    purgeStaleAsrCache(),
+  ]);
+  if (staleAligned + staleAsr > 0) {
+    console.log(
+      `[hub] removed old karaoke calculations (aligned=${staleAligned}, transcripts=${staleAsr}) — they will be recalculated`,
+    );
+  }
 } catch (err) {
   console.error(
     "[hub] WARN: no se pudo crear data/models|youtube-cache (subtítulos):",

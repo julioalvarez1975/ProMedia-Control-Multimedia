@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import wavefile from "wavefile";
 import type { SubtitleCue, SubtitleTargetLang } from "@promedia/shared";
@@ -48,7 +48,16 @@ export type AsrResult = {
   whisperTranslatedToEn: boolean;
 };
 
+/**
+ * Version of the transcription procedure (engine / options). Bump it to make
+ * every cached transcript be ignored and removed at hub start.
+ *   2: transcripts made before faster-whisper became the default engine.
+ */
+export const ASR_CACHE_VERSION = 2;
+
 type CachedAsr = {
+  /** Procedure version that produced this transcript. */
+  procVersion?: number;
   assetId: string;
   sourceHash: string;
   sourceLang: string | null;
@@ -488,6 +497,7 @@ export async function transcribeLocalFile(options: {
     const cached = JSON.parse(raw) as CachedAsr;
     if (
       cached &&
+      cached.procVersion === ASR_CACHE_VERSION &&
       cached.sourceHash === sourceHash &&
       Array.isArray(cached.cues)
     ) {
@@ -598,6 +608,7 @@ export async function transcribeLocalFile(options: {
   // Only cache when we have real speech/lyric cues — never persist `[MUSIC]`-only.
   if (asr.cues.length > 0) {
     const payload: CachedAsr = {
+      procVersion: ASR_CACHE_VERSION,
       assetId,
       sourceHash,
       sourceLang: asr.sourceLang,
@@ -617,4 +628,34 @@ export async function mediaFileExists(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Delete cached transcripts made by an older procedure so they are redone.
+ * Only files shaped like an ASR cache entry are touched. Returns the count.
+ */
+export async function purgeStaleAsrCache(): Promise<number> {
+  const dirs = await ensureSubtitleDirs();
+  let names: string[];
+  try {
+    names = await readdir(dirs.cache);
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    const file = path.join(dirs.cache, name);
+    try {
+      const parsed = JSON.parse(await readFile(file, "utf8")) as Partial<CachedAsr>;
+      const looksLikeAsr = Array.isArray(parsed?.cues) && typeof parsed?.sourceHash === "string";
+      if (looksLikeAsr && parsed.procVersion !== ASR_CACHE_VERSION) {
+        await rm(file, { force: true });
+        removed += 1;
+      }
+    } catch {
+      // not ours / unreadable: leave it alone
+    }
+  }
+  return removed;
 }
