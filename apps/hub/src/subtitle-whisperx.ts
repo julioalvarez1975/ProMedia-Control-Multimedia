@@ -33,6 +33,8 @@ async function resolveWhisperxPython(): Promise<string | null> {
 
 /** True when the WhisperX venv + package are ready for karaoke align. */
 export async function whisperxAvailable(): Promise<boolean> {
+  // Heavy: it froze the hub while live. Opt-in only (PROMEDIA_WHISPERX=1).
+  if (process.env.PROMEDIA_WHISPERX !== "1") return false;
   if (cachedAvailable !== undefined) return cachedAvailable;
   if (!(await fileExists(ALIGN_SCRIPT))) {
     cachedAvailable = false;
