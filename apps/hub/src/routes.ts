@@ -22,6 +22,11 @@ import {
 import { broadcastSession } from "./broadcast.js";
 import { libraryStore } from "./library-store.js";
 import { playlistStore } from "./playlist-store.js";
+import {
+  WATERMARK_MAX_BYTES,
+  getWatermark,
+  putWatermark,
+} from "./watermark-store.js";
 import { clientIpFromHeaders, rateLimitAllow } from "./rate-limit.js";
 import { sessionStore } from "./session-store.js";
 import { downloadYoutubeVideoFile } from "./subtitle-youtube.js";
@@ -318,6 +323,88 @@ export function createApiRoutes(): Hono {
     }
 
     return c.json({ logo: result }, 201);
+  });
+
+  /** Independent watermark file (not the logo). Same auth as the logo. */
+  api.get("/branding/watermark", async (c) => {
+    const credential =
+      bearerToken(c.req.header("authorization")) ?? c.req.query("credential");
+    let sessionId = (c.req.query("sessionId") ?? "").trim();
+    if (!sessionId && credential) {
+      const ticket = sessionStore.getTicket(credential);
+      if (ticket) sessionId = ticket.sessionId;
+    }
+    if (!sessionId) {
+      return c.json({ error: "missing_session" }, 400);
+    }
+    const access = authorizeSessionAccess(sessionId, {
+      credential,
+      code: c.req.query("code"),
+      accessToken: c.req.query("accessToken") ?? c.req.query("token"),
+    });
+    if (!access.ok) {
+      return c.json({ error: access.error }, access.status);
+    }
+    const wm = await getWatermark();
+    if (!wm) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    return new Response(new Uint8Array(wm.bytes), {
+      status: 200,
+      headers: {
+        "Content-Type": wm.meta.mime,
+        "Cache-Control": "private, max-age=30",
+        "X-Watermark-Updated-At": wm.meta.updatedAt,
+      },
+    });
+  });
+
+  /**
+   * Upload / replace the watermark (control only). Multipart field `file`:
+   * image, animated image (gif/webp/apng) or short video (mp4/webm). It also
+   * switches the watermark on.
+   */
+  api.post("/branding/watermark", async (c) => {
+    const sessionId = c.req.query("sessionId") ?? "";
+    const credential =
+      bearerToken(c.req.header("authorization")) ?? c.req.query("credential");
+    if (!sessionId) {
+      return c.json({ error: "missing_session" }, 400);
+    }
+    const access = authorizeSessionAccess(sessionId, {
+      credential,
+      accessToken: c.req.query("accessToken") ?? c.req.query("token"),
+      requireRole: "control",
+    });
+    if (!access.ok) {
+      return c.json({ error: access.error }, access.status);
+    }
+    let body: Record<string, string | File>;
+    try {
+      body = (await c.req.parseBody({ all: true })) as Record<string, string | File>;
+    } catch {
+      return c.json({ error: "invalid_multipart" }, 400);
+    }
+    const file = body.file;
+    if (!file || typeof file === "string") {
+      return c.json({ error: "missing_file" }, 400);
+    }
+    if (file.size > WATERMARK_MAX_BYTES) {
+      return c.json({ error: "file_too_large" }, 400);
+    }
+    const bytes = Buffer.from(await file.arrayBuffer());
+    const result = await putWatermark({
+      bytes,
+      mime: file.type || "application/octet-stream",
+      originalName: file.name,
+    });
+    if ("error" in result) {
+      return c.json({ error: result.error }, 400);
+    }
+    for (const msg of sessionStore.applyWatermarkUpdated(result)) {
+      broadcastSession(msg.sessionId, msg);
+    }
+    return c.json({ watermark: result }, 201);
   });
 
   /**

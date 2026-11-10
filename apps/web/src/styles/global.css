@@ -2356,7 +2356,8 @@ body {
   object-fit: contain;
   object-position: right top;
   filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.45));
-  opacity: 0.92;
+  /* Faint on purpose: a corner mark must not compete with the content. */
+  opacity: 0.5;
 }
 
 .scene-watermark-fallback {

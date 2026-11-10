@@ -20,7 +20,11 @@ import {
 } from "../components/StageBackground";
 import { SubtitleOverlay } from "../components/SubtitleOverlay";
 import { useSessionConnection } from "../hooks/useSessionConnection";
-import { buildAssetUrl, buildBrandingLogoUrl } from "../lib/assets";
+import {
+  buildAssetUrl,
+  buildBrandingLogoUrl,
+  buildWatermarkUrl,
+} from "../lib/assets";
 import {
   OUTPUT_BROADCAST_CHANNEL,
   pickSecondaryScreen,
@@ -167,6 +171,7 @@ export function OutputPage() {
   const sceneMode: SceneMode = snapshot?.live.sceneMode ?? "normal";
   const watermarkEnabled = snapshot?.live.watermarkEnabled === true;
   const logoUpdatedAt = snapshot?.live.logoUpdatedAt ?? null;
+  const watermarkUpdatedAt = snapshot?.live.watermarkUpdatedAt ?? null;
   const themeId: ThemeId = snapshot?.live.themeId ?? DEFAULT_THEME_ID;
   const themeOverrides = snapshot?.live.themeOverrides ?? null;
   const themeBackground = normalizeThemeBackground(
@@ -487,15 +492,12 @@ export function OutputPage() {
             <WatermarkOverlay
               enabled={watermarkEnabled}
               sceneBlocksWatermark={sceneMode !== "normal"}
-              logoSrc={
-                logoUpdatedAt && sessionId && wsTicket
-                  ? buildBrandingLogoUrl(
-                      sessionId,
-                      wsTicket,
-                      logoUpdatedAt,
-                    )
+              src={
+                watermarkUpdatedAt && sessionId && wsTicket
+                  ? buildWatermarkUrl(sessionId, wsTicket, watermarkUpdatedAt)
                   : null
               }
+              mime={snapshot?.live.watermarkMime ?? null}
             />
           </>
         )}

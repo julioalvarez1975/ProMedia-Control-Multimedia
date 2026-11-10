@@ -714,6 +714,13 @@ export type SessionLiveState = {
    */
   logoUpdatedAt: string | null;
   /**
+   * Independent watermark file (image / animated image / short video) saved on
+   * the hub; null = none uploaded (the built-in default mark is used).
+   */
+  watermarkUpdatedAt: string | null;
+  /** MIME of that file — `video/*` renders as a looping muted <video>. */
+  watermarkMime: string | null;
+  /**
    * Corner watermark: show branding logo top-right over live content.
    * Independent of sceneMode (works with "normal"; hidden under full logo/black).
    */
@@ -989,6 +996,8 @@ export function emptyLiveState(): SessionLiveState {
     mediaClock: null,
     subtitleAgent: emptySubtitleAgentState(),
     logoUpdatedAt: null,
+    watermarkUpdatedAt: null,
+    watermarkMime: null,
     watermarkEnabled: false,
     videoCover: null,
   };

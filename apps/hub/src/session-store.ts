@@ -1,3 +1,4 @@
+import { getWatermarkMeta } from "./watermark-store.js";
 import { deriveItemProgress } from "./subtitle-item-progress.js";
 import { persistReadyAgent } from "./subtitle-aligned-store.js";
 import { rememberReadyAgent } from "./subtitle-ready-cache.js";
@@ -116,6 +117,8 @@ export class SessionStore {
 
     const live = emptyLiveState();
     live.logoUpdatedAt = getBrandingLogoUpdatedAt();
+    live.watermarkUpdatedAt = getWatermarkMeta()?.updatedAt ?? null;
+    live.watermarkMime = getWatermarkMeta()?.mime ?? null;
     const session: SessionRecord = {
       id,
       code,
@@ -234,6 +237,11 @@ export class SessionStore {
     if (brandingAt && session.live.logoUpdatedAt !== brandingAt) {
       session.live.logoUpdatedAt = brandingAt;
     }
+    const wm = getWatermarkMeta();
+    if (wm && session.live.watermarkUpdatedAt !== wm.updatedAt) {
+      session.live.watermarkUpdatedAt = wm.updatedAt;
+      session.live.watermarkMime = wm.mime;
+    }
     if (typeof session.live.watermarkEnabled !== "boolean") {
       session.live.watermarkEnabled = false;
     }
@@ -259,6 +267,18 @@ export class SessionStore {
    * Stamp every live session with a new branding logo time and bump seq
    * so Control/Output refresh the logo image URL.
    */
+  /** New watermark file: stamp every session, show it, bump seq. */
+  applyWatermarkUpdated(meta: { updatedAt: string; mime: string }): HubMessage[] {
+    const messages: HubMessage[] = [];
+    for (const session of this.byId.values()) {
+      session.live.watermarkUpdatedAt = meta.updatedAt;
+      session.live.watermarkMime = meta.mime;
+      session.live.watermarkEnabled = true;
+      messages.push(this.bumpUpdated(session));
+    }
+    return messages;
+  }
+
   applyBrandingLogoUpdatedAt(updatedAt: string): HubMessage[] {
     const messages: HubMessage[] = [];
     for (const session of this.byId.values()) {

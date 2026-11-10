@@ -4,6 +4,7 @@ import { cors } from "hono/cors";
 import type { Server } from "node:http";
 import { SHARED_PACKAGE_VERSION } from "@promedia/shared";
 import { initBrandingStore } from "./branding-store.js";
+import { initWatermarkStore } from "./watermark-store.js";
 import { setSessionBroadcaster } from "./broadcast.js";
 import { listLanIPv4, resolveHubListenHost } from "./lan.js";
 import { ensureLibraryLayout } from "./library-store.js";
@@ -71,6 +72,16 @@ try {
 } catch (err) {
   console.error(
     "[hub] WARN: no se pudo crear data/branding (logo):",
+    err instanceof Error ? err.message : err,
+  );
+}
+
+try {
+  const wm = await initWatermarkStore();
+  if (wm) console.log(`[hub] watermark ready (${wm.mime}, ${wm.size} bytes)`);
+} catch (err) {
+  console.error(
+    "[hub] WARN: no se pudo preparar la marca de agua:",
     err instanceof Error ? err.message : err,
   );
 }

@@ -68,6 +68,7 @@ import {
   LARGE_VIDEO_WARN_BYTES,
   buildAssetUrl,
   uploadBrandingLogo,
+  uploadWatermark,
   downloadYoutubeAsAsset,
   uploadSessionAsset,
 } from "../lib/assets";
@@ -164,6 +165,8 @@ export function ControlPage() {
   const [uploadingBackground, setUploadingBackground] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const logoFileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadingWatermark, setUploadingWatermark] = useState(false);
+  const watermarkFileInputRef = useRef<HTMLInputElement>(null);
   /** Phone/LAN opened /control without token — wait for code/token pair. */
   const [needsRemotePair, setNeedsRemotePair] = useState(false);
   const [pairCode, setPairCode] = useState("");
@@ -1581,6 +1584,45 @@ export function ControlPage() {
     session.setWatermark(!watermarkEnabled);
   };
 
+  /** Right-click / Alt+click on Marca de agua: choose the watermark file. */
+  const openWatermarkFilePicker = () => {
+    if (!canMutate || uploadingWatermark) {
+      return;
+    }
+    watermarkFileInputRef.current?.click();
+  };
+
+  const onWatermarkFileChosen = async (file: File | null) => {
+    if (!file || !session.sessionId || !session.wsTicket) {
+      return;
+    }
+    const okType =
+      file.type.startsWith("image/") ||
+      file.type === "video/mp4" ||
+      file.type === "video/webm";
+    if (!okType) {
+      setUploadHint(t("control.watermarkBadType"));
+      return;
+    }
+    setUploadingWatermark(true);
+    try {
+      // The hub stores it, switches the watermark on and broadcasts it.
+      await uploadWatermark(session.sessionId, session.wsTicket, file);
+      setUploadHint(t("control.watermarkSaved"));
+    } catch (err) {
+      setUploadHint(
+        err instanceof Error
+          ? `${t("control.watermarkUploadFailed")}: ${err.message}`
+          : t("control.watermarkUploadFailed"),
+      );
+    } finally {
+      setUploadingWatermark(false);
+      if (watermarkFileInputRef.current) {
+        watermarkFileInputRef.current.value = "";
+      }
+    }
+  };
+
   const toggleDotsOverlay = () => {
     if (!ensureWsOrHint()) {
       return;
@@ -2440,6 +2482,15 @@ export function ControlPage() {
               >
                 <IconUploadLogo />
               </button>
+              <input
+                ref={watermarkFileInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif,image/apng,image/svg+xml,video/mp4,video/webm"
+                hidden
+                onChange={(e) => {
+                  void onWatermarkFileChosen(e.target.files?.[0] ?? null);
+                }}
+              />
               <button
                 type="button"
                 className={[
@@ -2452,7 +2503,18 @@ export function ControlPage() {
                 title={t("control.sceneWatermarkHint")}
                 aria-label={t("control.sceneWatermark")}
                 aria-pressed={watermarkEnabled}
-                onClick={toggleWatermark}
+                onClick={(e) => {
+                  if (e.altKey || e.metaKey || e.ctrlKey) {
+                    e.preventDefault();
+                    openWatermarkFilePicker();
+                    return;
+                  }
+                  toggleWatermark();
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  openWatermarkFilePicker();
+                }}
               >
                 <span className="preview-tb-scene-glyph" aria-hidden>
                   <IconWatermark />
