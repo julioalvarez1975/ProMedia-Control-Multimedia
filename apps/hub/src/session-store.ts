@@ -420,6 +420,45 @@ export class SessionStore {
     return { message: this.bumpUpdated(session), skipped };
   }
 
+  /**
+   * ADD items from a guion file to the END of the current playlist (nothing is
+   * removed, the live item and its clock are untouched). Items are re-id'd by
+   * the caller; ones whose session asset no longer exists are skipped.
+   */
+  appendToPlaylist(
+    session: SessionRecord,
+    rawItems: unknown[],
+  ):
+    | { message: HubMessage; added: number; skipped: number }
+    | { error: string } {
+    const toAdd: PlaylistItem[] = [];
+    let skipped = 0;
+    const base = session.playlist.items.reduce(
+      (max, i) => Math.max(max, i.order),
+      -1,
+    );
+    for (const raw of rawItems) {
+      const item = validatePlaylistItem(raw);
+      if (!item) {
+        return { error: "invalid_item" };
+      }
+      if (session.playlist.items.some((i) => i.id === item.id)) {
+        return { error: "duplicate_id" };
+      }
+      const assetErr = this.requireAsset(session, item);
+      if (assetErr) {
+        if (assetErr.error === "unknown_asset") {
+          skipped += 1;
+          continue;
+        }
+        return assetErr;
+      }
+      toAdd.push({ ...item, order: base + 1 + toAdd.length });
+    }
+    session.playlist.items = sortItems([...session.playlist.items, ...toAdd]);
+    return { message: this.bumpUpdated(session), added: toAdd.length, skipped };
+  }
+
   addItem(session: SessionRecord, rawItem: unknown): HubMessage | { error: string } {
     const item = validatePlaylistItem(rawItem);
     if (!item) {

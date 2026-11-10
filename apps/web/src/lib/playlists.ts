@@ -267,7 +267,7 @@ export async function importGuionToSession(
   sessionId: string,
   credential: string,
   guion: GuionFile,
-): Promise<{ skipped: number }> {
+): Promise<{ added: number; skipped: number }> {
   const res = await fetch(
     `${hubHttpBase()}/api/v1/sessions/${encodeURIComponent(sessionId)}/playlists/import`,
     {
@@ -283,8 +283,8 @@ export async function importGuionToSession(
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(body.error ?? `import_failed_${res.status}`);
   }
-  const data = (await res.json()) as { skipped?: number };
-  return { skipped: data.skipped ?? 0 };
+  const data = (await res.json()) as { added?: number; skipped?: number };
+  return { added: data.added ?? 0, skipped: data.skipped ?? 0 };
 }
 
 export async function deleteSavedPlaylist(id: string): Promise<void> {

@@ -39,7 +39,10 @@ import { ControlAdBanner } from "../components/ControlAdBanner";
 import { ControlHeaderToolbar } from "../components/ControlHeaderToolbar";
 import { LanRemoteHint } from "../components/LanRemoteHint";
 import { LinkAddDialog } from "../components/LinkAddDialog";
-import { SavedPlaylistPanel } from "../components/SavedPlaylistPanel";
+import {
+  SavedPlaylistPanel,
+  type SavedPlaylistPanelHandle,
+} from "../components/SavedPlaylistPanel";
 import { SchedulePanel } from "../components/SchedulePanel";
 import { SongEditor } from "../components/SongEditor";
 import {
@@ -157,8 +160,7 @@ export function ControlPage() {
   const [songEditorOpen, setSongEditorOpen] = useState(false);
   const [songBusy, setSongBusy] = useState(false);
   const [songError, setSongError] = useState<string | null>(null);
-  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
-  const [loadDialogOpen, setLoadDialogOpen] = useState(false);
+  const guionPanelRef = useRef<SavedPlaylistPanelHandle>(null);
   /** Soft action hints (pair / upload / remote Control). */
   const [uploadHint, setUploadHint] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -2299,13 +2301,13 @@ export function ControlPage() {
               if (!session.hasSession) {
                 return;
               }
-              setLoadDialogOpen(true);
+              guionPanelRef.current?.openLoad();
             }}
             onOpenSave={() => {
               if (!canMutate) {
                 return;
               }
-              setSaveDialogOpen(true);
+              guionPanelRef.current?.openSave();
             }}
             onFilesDropped={(files) => {
               if (!sessionReady) {
@@ -2321,15 +2323,12 @@ export function ControlPage() {
             saveLoadDialogs={
               session.hasSession && session.sessionId && session.wsTicket ? (
                 <SavedPlaylistPanel
+                  ref={guionPanelRef}
                   sessionId={session.sessionId}
                   wsTicket={session.wsTicket}
                   items={items}
                   disabled={!canMutate}
                   onHint={setUploadHint}
-                  saveOpen={saveDialogOpen}
-                  loadOpen={loadDialogOpen}
-                  onSaveOpenChange={setSaveDialogOpen}
-                  onLoadOpenChange={setLoadDialogOpen}
                 />
               ) : null
             }
