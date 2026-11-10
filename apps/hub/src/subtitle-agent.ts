@@ -64,7 +64,6 @@ import {
   packKaraokeDisplayCues,
   probeMediaDurationMs,
   resolveCancioneroSongById,
-  resolveFirstVoiceOnsetMs,
   scoreSongLyricOverlap,
   scoreSongMatch,
   songCancioneroLines,
@@ -1211,13 +1210,11 @@ async function tryCancioneroLyricPath(options: {
     assetId = silence.assetId || assetId;
     mediaPath = silence.mediaPath || mediaPath;
   }
-  const phraseSilences = silence?.silences ?? [];
-  const timingSpeech = timing ? filterSpeechCues(timing.cues) : [];
-  const firstVoiceMs = resolveFirstVoiceOnsetMs(
-    phraseSilences,
-    silence?.onsetsMs ?? [],
-    timingSpeech[0]?.startMs ?? null,
-  );
+  // Silence scan no longer shifts or blanks the lyric chart: it mistook the
+  // first instrumental sound for the voice and moved every line early.
+  // The scan is kept only for duration / media path.
+  const phraseSilences: import("./subtitle-silence.js").SilenceRegion[] = [];
+  const firstVoiceMs: number | null = null;
 
   const withVoiceAndBlank = (cues: SubtitleCue[]): SubtitleCue[] => {
     if (cues.length > 0 && firstVoiceMs != null) {
@@ -1294,12 +1291,7 @@ async function tryCancioneroLyricPath(options: {
     if (!isCurrent(sessionId, gen)) return true;
     if (wx && wx.cues.length > 0) {
       // Prefer WhisperX first-word clock when silence has no leading quiet.
-      const wxVoice =
-        resolveFirstVoiceOnsetMs(
-          phraseSilences,
-          silence?.onsetsMs ?? [],
-          wx.cues[0]?.startMs ?? null,
-        ) ?? firstVoiceMs;
+      const wxVoice: number | null = null;
       lineCues = blankCuesAtPhraseSilence(
         anchorFirstCueToVoiceOnset(wx.cues, wxVoice),
         phraseSilences,
