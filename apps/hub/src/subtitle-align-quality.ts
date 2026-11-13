@@ -1,22 +1,8 @@
 /**
- * Karaoke align quality gates: coverage %, timeline plausibility, stale-cache
- * detection. Used after Fast Whisper / LRCLIB so false “100%” intro packs are
- * not published or restored.
+ * Karaoke align quality gates: timeline plausibility and stale-cache
+ * detection for LRCLIB / caption charts.
  */
 import type { SubtitleCue } from "@promedia/shared";
-
-/** Fast Whisper must cover this % of lyric lines to publish ASR clocks. */
-export const KARAOKE_MIN_ALIGN_PERCENT = 99;
-
-export function alignPercentMeetsTarget(
-  alignedCount: number,
-  lineCount: number,
-  minPercent: number = KARAOKE_MIN_ALIGN_PERCENT,
-): boolean {
-  const n = Math.max(0, Math.trunc(lineCount));
-  if (n <= 0) return false;
-  return (Math.max(0, alignedCount) / n) * 100 >= minPercent;
-}
 
 /**
  * Reject charts that open long before the first real post-silence voice

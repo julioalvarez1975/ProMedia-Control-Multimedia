@@ -16,10 +16,6 @@ import {
   subtitleModelsRoot,
 } from "./subtitle-paths.js";
 import { filterSpeechCues } from "./subtitle-cue-text.js";
-import {
-  fasterWhisperAvailable,
-  transcribeWithFasterWhisper,
-} from "./subtitle-faster-whisper.js";
 import { shapeLyricLikeCues } from "./subtitle-lyric-shape.js";
 import {
   assertWhisperCliOrThrow,
@@ -353,35 +349,29 @@ async function getWhisper(): Promise<WhisperPipeline> {
   return whisperPromise;
 }
 
-type AsrBackend = "auto" | "transformers" | "whisper_cpp" | "faster_whisper";
+type AsrBackend = "auto" | "transformers" | "whisper_cpp";
 
 function asrBackendPref(): AsrBackend {
   const raw = (process.env.SUBTITLE_ASR_BACKEND || "auto").trim().toLowerCase();
-  if (
-    raw === "transformers" ||
-    raw === "whisper_cpp" ||
-    raw === "faster_whisper" ||
-    raw === "auto"
-  ) {
+  if (raw === "transformers" || raw === "whisper_cpp" || raw === "auto") {
     return raw;
   }
+  // Legacy env value — Fast Whisper was removed; use whisper.cpp.
+  if (raw === "faster_whisper") return "whisper_cpp";
   return "auto";
 }
 
 /**
- * Which engine runs first. `auto` prefers faster-whisper when its sidecar is
- * installed (songs missing from the cancionero get downloaded + subtitled by
- * it) and falls back to whisper.cpp; an explicit setting is always honored.
+ * Which engine runs. `auto` uses whisper.cpp. Fast Whisper was removed from
+ * the karaoke stack (LRCLIB clocks + cancionero text).
  * Exported for the smoke test.
  */
 export function pickAsrEngine(
   backend: AsrBackend,
-  fasterWhisperReady: boolean,
-): "transformers" | "faster_whisper" | "whisper_cpp" {
+  _fasterWhisperReady = false,
+): "transformers" | "whisper_cpp" {
   if (backend === "transformers") return "transformers";
-  if (backend === "faster_whisper") return "faster_whisper";
-  if (backend === "whisper_cpp") return "whisper_cpp";
-  return fasterWhisperReady ? "faster_whisper" : "whisper_cpp";
+  return "whisper_cpp";
 }
 
 /** Exported for smoke tests. */
@@ -541,34 +531,8 @@ export async function transcribeLocalFile(options: {
         throw new Error(classifyWhisperLoadError(tfErr));
       }
     }
-    const engine = pickAsrEngine(
-      backend,
-      backend === "auto" ? await fasterWhisperAvailable() : false,
-    );
-    if (engine === "faster_whisper") {
-      try {
-        const fw = await transcribeWithFasterWhisper({
-          wavPath,
-          translateToEn: forceTranslateToEn,
-          languageHint: hint,
-          prompt,
-          onStatus,
-        });
-        return {
-          cues: fw.cues,
-          sourceLang: fw.sourceLang,
-          whisperTranslatedToEn: fw.whisperTranslatedToEn,
-        };
-      } catch (fwErr) {
-        // Forced setting: surface the error. `auto`: fall back to whisper.cpp.
-        if (backend === "faster_whisper") throw fwErr;
-        console.warn(
-          "[subtitle] faster-whisper failed — falling back to whisper.cpp:",
-          fwErr instanceof Error ? fwErr.message : fwErr,
-        );
-      }
-    }
-    // whisper.cpp (fallback / forced): whisper-cli only. Never fall into Xenova.
+    void pickAsrEngine(backend);
+    // whisper.cpp only (Fast Whisper removed). Never fall into Xenova in auto.
     const cliPresent = await whisperCliAvailable();
     if (!cliPresent) {
       console.warn(

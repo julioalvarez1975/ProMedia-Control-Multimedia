@@ -1,7 +1,6 @@
 /**
- * Shared Python sidecar plumbing for the karaoke agent: one place that finds
- * the WhisperX venv, checks that a module imports, and runs a JSON-in/JSON-out
- * script. Used by WhisperX alignment and the faster-whisper ASR backend.
+ * Shared Python sidecar plumbing (legacy). Karaoke no longer runs Python ASR;
+ * kept for optional tooling / future scripts.
  */
 import { spawn } from "node:child_process";
 import { access, constants } from "node:fs/promises";

@@ -13,7 +13,6 @@ import {
   resolveYtDlpBin,
 } from "./subtitle-bins.js";
 import { subtitleDataRoot } from "./subtitle-paths.js";
-import { resolvePythonFor } from "./subtitle-python.js";
 import { fileLooksComplete, whisperCppModelPath } from "./subtitle-whisper-cpp.js";
 
 export type CheckStatus = "ok" | "warn" | "fail";
@@ -143,8 +142,6 @@ export async function runStartupChecks(
     fileLooksComplete(whisperCppModelPath()),
     writable(subtitleDataRoot()),
   ]);
-  const fwPython = await resolvePythonFor("faster_whisper");
-
   return [
     result(
       "ffmpeg",
@@ -178,15 +175,6 @@ export async function runStartupChecks(
       whisperCppModelPath(),
       `falta o está incompleto (${whisperCppModelPath()})`,
       "Se descargará solo al primer uso con internet; o copiá el .bin a data/models/whisper/.",
-      "warn",
-    ),
-    result(
-      "faster-whisper",
-      "faster-whisper (ASR karaoke)",
-      Boolean(fwPython),
-      fwPython ?? "",
-      "no se puede importar faster_whisper",
-      "Creá el venv: python3.12 -m venv data/models/whisperx-venv && data/models/whisperx-venv/bin/pip install -r apps/hub/python/requirements-whisperx.txt. Sin él se usa whisper.cpp / LRCLIB.",
       "warn",
     ),
     result(

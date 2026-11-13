@@ -87,9 +87,9 @@ Orden de la **letra** (la primera que exista):
 
 1. Cancionero de la Biblioteca (memoria por medio/título o coincidencia difusa). Esa letra es la que se proyecta; el reconocedor de voz no la reemplaza.
 2. [LRCLIB](https://lrclib.net) si `PROMEDIA_LRCLIB` no es `0`.
-3. Captions de YouTube, pista `.srt`/`.vtt`, o transcripción (faster-whisper o whisper.cpp).
+3. Captions de YouTube, pista `.srt`/`.vtt`, o transcripción (whisper.cpp) como último recurso.
 
-Orden de los **tiempos**: Fast Whisper (≥99 % de renglones), relojes LRC de LRCLIB + texto del cancionero, subtítulos oficiales o sidecars, reparto uniforme. WhisperX (wav2vec2) fue retirado.
+Orden de los **tiempos**: relojes LRC de LRCLIB + texto del cancionero, subtítulos oficiales o sidecars, reparto uniforme. WhisperX y Fast Whisper fueron retirados.
 
 Los silencios solo blanquean la pantalla entre frases. El detalle de instalación está en el README raíz y en `apps/hub/python/README.md`.
 

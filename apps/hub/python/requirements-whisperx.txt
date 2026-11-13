@@ -1,9 +1,3 @@
-# Karaoke ASR (Fast Whisper). Venv path kept as data/models/whisperx-venv for
-# compatibility with existing installs:
-#   python3.12 -m venv data/models/whisperx-venv
-#   data/models/whisperx-venv/bin/pip install -U pip
-#   data/models/whisperx-venv/bin/pip install -r apps/hub/python/requirements-whisperx.txt
-#
-# WhisperX (wav2vec2 forced align) was removed — karaoke uses LRCLIB clocks and
-# Fast Whisper (≥99% line match) instead.
-faster-whisper>=1.0.0,<2
+# Deprecated — Fast Whisper and WhisperX were removed from the karaoke stack.
+# Timed lyrics use LRCLIB (LRC) + cancionero text; last-resort ASR is whisper.cpp.
+# This file is kept empty so old install docs do not pull Python ASR into the venv.

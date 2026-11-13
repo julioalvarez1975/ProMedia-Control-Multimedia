@@ -236,26 +236,25 @@ También: `node scripts/import-bibles.mjs` (crea `bibles/import` si falta y llam
 - Con **Agente karaoke** activo, las cues sincronizadas con `mediaClock` se ven en **Vista previa**, **En vivo** y **Output**
 - **En vivo** (botón, doble clic o `G`) es un **interruptor**: si el ítem ya está en vivo, volver a pulsarlo para la proyección y deja Output en negro
 
-### Agente karaoke (cancionero + LRCLIB + Fast Whisper — por defecto)
+### Agente karaoke (cancionero + LRCLIB — por defecto)
 
-El agente pone la **letra** en pantalla sincronizada con la canción (audio del Guion y YouTube). Casi todo corre **en local** (`yt-dlp`, `ffmpeg`, Fast Whisper / whisper.cpp); la única consulta a internet es la búsqueda opcional de letras/tiempos en **LRCLIB** (se apaga con `PROMEDIA_LRCLIB=0`). El iframe de YouTube sigue solo en Output.
+El agente pone la **letra** en pantalla sincronizada con la canción (audio del Guion y YouTube). Lo local es `yt-dlp` + `ffmpeg` (audio/silencios); los **tiempos efectivos** salen de **LRCLIB** (LRC). Se apaga con `PROMEDIA_LRCLIB=0`. El iframe de YouTube sigue solo en Output.
 
-**WhisperX (wav2vec2) se eliminó:** empaquetaba la letra en la intro en muchas canciones de culto.
+**Fast Whisper y WhisperX se eliminaron:** no aportaban el subtitulado que funcionó en sala (empaquetaban la intro o acertaban poco la letra).
 
 #### Cómo decide la letra y los tiempos
 
 **Letra** (en este orden; la primera que exista):
 
-1. **Cancionero** (Biblioteca → Canciones): por canción enseñada a mano, memoria de coincidencias previas o título. La letra proyectada es **siempre** la del cancionero, nunca la de un reconocedor de voz.
-2. **LRCLIB** ([lrclib.net](https://lrclib.net), base comunitaria abierta): si el cancionero no tiene la canción, el hub busca por artista, título y duración (±6 s) y usa esa letra. Si trae tiempos por línea, también los usa.
-3. **Subtítulos de YouTube o ASR:** como último recurso transcribe con **Fast Whisper** (o whisper.cpp). La letra transcrita puede traer errores de oído.
+1. **Cancionero** (Biblioteca → Canciones): memoria / título. La letra proyectada es **siempre** la del cancionero cuando hay match.
+2. **LRCLIB** ([lrclib.net](https://lrclib.net)): si el cancionero no tiene la canción, busca por artista, título y duración (±6 s).
+3. **Subtítulos de YouTube o whisper.cpp:** último recurso (puede errar al oír).
 
 **Tiempos** (de más a menos fiable):
 
-1. **Fast Whisper** mapeando la letra del cancionero al audio — solo si acierta **≥ 99 %** de renglones y el timeline es plausible.
-2. Relojes sincronizados de **LRCLIB** (LRC) con el **texto del cancionero** (también cuando la canción ya está en Biblioteca).
-3. Subtítulos oficiales de YouTube o pistas locales `.srt` / `.vtt`.
-4. Reparto uniforme como último recurso.
+1. Relojes sincronizados de **LRCLIB** (LRC) con el **texto del cancionero** (también si la canción ya está en Biblioteca).
+2. Subtítulos oficiales de YouTube o pistas locales `.srt` / `.vtt`.
+3. Reparto uniforme como último recurso.
 
 El **silencio** del audio solo sirve para **blanquear** la pantalla cuando el cantante respira, y la siguiente línea aparece un poco antes (~700 ms) de que vuelva la voz.
 
@@ -275,13 +274,7 @@ brew install yt-dlp ffmpeg whisper-cpp
 
 Reiniciá el hub tras instalar. Overrides: `FFMPEG_PATH`, `YT_DLP_PATH`, `WHISPER_CPP_PATH`.
 
-En el modo por defecto (`SUBTITLE_ASR_BACKEND=auto`) el hub transcribe con **faster-whisper** cuando está instalado (venv en `data/models/whisperx-venv/`) y, si no está o falla, con **whisper.cpp** (`whisper-cli`). **No carga** Xenova/ONNX en `auto`. Sin ninguno de los dos, falla con `whisper_cpp_missing` — salvo que haya **pistas locales** (abajo) o captions de YouTube.
-
-**Fast Whisper (ASR karaoke)**
-
-- Venv: `data/models/whisperx-venv/` (nombre histórico). Instalación: `pip install -r apps/hub/python/requirements-whisperx.txt`.
-- Otro intérprete: `SUBTITLE_WHISPERX_PYTHON=/ruta/a/python`.
-- En cancionero: solo publica el mapa ASR si el acierto de renglones es **≥ 99 %**; si no, usa relojes LRCLIB.
+En el modo por defecto (`SUBTITLE_ASR_BACKEND=auto`) el hub transcribe con **whisper.cpp** (`whisper-cli`) solo cuando hace falta inventar letra (sin cancionero/LRCLIB/captions). **No carga** Xenova/ONNX en `auto`.
 
 #### Agente alternativo local (recomendado si Whisper falla en Mac)
 
@@ -311,8 +304,7 @@ YouTube con captions oficiales en el idioma de Control es el camino de referenci
 - Sin whisper-cli: error `whisper_cpp_missing` → `brew install whisper-cpp` (no Xenova por defecto).
 - Caché: `data/subtitles/cache/`, `wav/`, `youtube-cache/` (gitignore)
 - Requiere **`ffmpeg`** + **`whisper-cli`**; YouTube también **`yt-dlp`**
-- Backend: `SUBTITLE_ASR_BACKEND=auto|whisper_cpp|transformers|faster_whisper` (default `auto` = faster-whisper si está instalado, si no whisper-cli)
-- `faster_whisper`: venv en `data/models/whisperx-venv/`. En Apple Silicon es **más lento** que whisper.cpp con Metal. Para forzar whisper.cpp: `SUBTITLE_ASR_BACKEND=whisper_cpp`. Env: `SUBTITLE_FASTER_WHISPER_MODEL` (base), `SUBTITLE_FASTER_WHISPER_COMPUTE` (int8), `SUBTITLE_FASTER_WHISPER_TIMEOUT_MS`.
+- Backend: `SUBTITLE_ASR_BACKEND=auto|whisper_cpp|transformers` (default `auto` = whisper-cli)
 
 **Traducción**
 
@@ -404,8 +396,6 @@ Ver `.env.example`. Las más relevantes:
 | `FFMPEG_PATH` | Binario ffmpeg para extraer audio (default `ffmpeg`) |
 | `YT_DLP_PATH` | Binario yt-dlp para audio de YouTube (default `yt-dlp`) |
 | `PROMEDIA_LRCLIB` | `0` apaga la búsqueda de letras en LRCLIB (default: activa) |
-| `SUBTITLE_WHISPERX_PYTHON` | Intérprete del venv Fast Whisper (default `data/models/whisperx-venv/bin/python`) |
-
 Tamaños GAM del header: 970×90, 728×90, 320×50, 320×100 (+ fluid).
 
 ---
@@ -479,9 +469,6 @@ No son paquetes npm. El hub los busca en el PATH.
 1. **ffmpeg** — audio, silencios (`silencedetect`) y pistas embebidas.
 2. **yt-dlp** — audio de un YouTube público.
 3. **whisper.cpp** (`whisper-cli`) — transcripción local si no hay letra ni subtítulos.
-4. **Python 3.12** (opcional), venv en `data/models/whisperx-venv`, requisitos en `apps/hub/python/requirements-whisperx.txt`:
-   1. **faster-whisper** — ASR karaoke / backend `auto` o `faster_whisper`.
-
 ### Servicios externos (sin librería npm)
 
 1. **LRCLIB** (`lrclib.net`) — letra y relojes LRC (también para canciones ya en Biblioteca). Se apaga con `PROMEDIA_LRCLIB=0`.
@@ -493,7 +480,7 @@ No son paquetes npm. El hub los busca en el PATH.
 - Guion multi-tipo con drag, multi-select, guardar/cargar
 - Texto: import PDF (hub), XML, `.txt`/`.md` → slides
 - Preview ≠ live; transporte vídeo + `mediaClock`
-- **Agente karaoke** (cancionero + LRCLIB clocks + Fast Whisper ≥99%; caché por canción)
+- **Agente karaoke** (cancionero + relojes LRCLIB; caché por canción)
 - Escenas, temas, transiciones 0,5 s en Output
 - i18n ES · EN · PT · FR · ZH
 - Banner GAM opcional en Control

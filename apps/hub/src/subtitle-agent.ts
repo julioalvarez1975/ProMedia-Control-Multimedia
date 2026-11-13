@@ -27,16 +27,11 @@ import { rm } from "node:fs/promises";
 import { assetStore } from "./asset-store.js";
 import { broadcastSession } from "./broadcast.js";
 import {
-  extractWav16k,
   ffmpegAvailable,
   mediaFileExists,
   transcribeLocalFile,
   whisperCliAvailable,
 } from "./subtitle-asr.js";
-import {
-  fasterWhisperAvailable,
-  transcribeWithFasterWhisper,
-} from "./subtitle-faster-whisper.js";
 import { isMissingBinHint, missingBinHintFromError } from "./subtitle-bins.js";
 import { tryLocalCaptionTracks } from "./subtitle-local-tracks.js";
 import { ensureSubtitleDirs } from "./subtitle-paths.js";
@@ -81,7 +76,6 @@ import {
   SILENCE_AIR_ANTICIPATION_MS,
 } from "./subtitle-silence.js";
 import {
-  alignPercentMeetsTarget,
   audioAlignTimelinePlausible,
   cuesSuspiciouslyEarly,
 } from "./subtitle-align-quality.js";
@@ -1048,13 +1042,13 @@ async function tryCancioneroLyricPath(options: {
     });
   };
 
-  // Download audio first — Fast Whisper / silence analysis. Silence blanks breaths.
+  // Download audio for silence blanks; timed clocks come from LRCLIB / captions.
   let mediaPath = resolved.mediaPath;
   let assetId = resolved.assetId;
   if (resolved.youtube) {
     const haveLocal = mediaPath ? await mediaFileExists(mediaPath) : false;
     if (!haveLocal) {
-      statusPatch("downloading", "faster_whisper");
+      statusPatch("downloading", "silence_scan");
       try {
         const yt = await ensureYoutubeAudio({
           videoId: resolved.youtube.videoId,
@@ -1082,40 +1076,19 @@ async function tryCancioneroLyricPath(options: {
     ? lrclib.syncedCues.map((c) => ({ ...c }))
     : songToSubtitleCues(match.song, durationMs);
   let synced = false;
-  /** Lyric clocks confirmed (Fast Whisper ≥99% or LRCLIB / captions). */
+  /** Lyric clocks confirmed (LRCLIB LRC or captions). */
   let textSynced = false;
   let timingModeHint = "cancionero_match";
   let published = false;
 
-  // Download is for analysis: silence map + captions (lyric identity) in parallel.
-  const silencePromise = fetchSilenceSpeechOnsets({
+  // Silence map for breath blanks (not for inventing lyric clocks).
+  statusPatch("extracting", "cancionero_align");
+  const silence = await fetchSilenceSpeechOnsets({
     sessionId,
     gen,
     resolved: { ...resolved, mediaPath, assetId },
     onStatus: statusPatch,
   });
-
-  // Do NOT publish equal-time placeholders. Keep status busy until real sync.
-  statusPatch("extracting", "cancionero_align");
-  if (!isCurrent(sessionId, gen)) return true;
-
-  let timing:
-    | { cues: import("@promedia/shared").SubtitleCue[]; assetId: string }
-    | null = null;
-  {
-    const alignPrompt = buildKaraokeAlignPrompt(lines);
-    timing = await fetchCancioneroTimingCues({
-      sessionId,
-      gen,
-      targetLang,
-      resolved: { ...resolved, mediaPath, assetId },
-      alignPrompt,
-      onStatus: statusPatch,
-    });
-    if (!isCurrent(sessionId, gen)) return true;
-  }
-
-  const silence = await silencePromise;
   if (!isCurrent(sessionId, gen)) return true;
   if (silence && silence.durationMs > 0) {
     durationMs = Math.max(durationMs, silence.durationMs);
@@ -1123,11 +1096,10 @@ async function tryCancioneroLyricPath(options: {
     mediaPath = silence.mediaPath || mediaPath;
   }
   const phraseSilences = silence?.silences ?? [];
-  const timingSpeech = timing ? filterSpeechCues(timing.cues) : [];
 
   // Word clocks from the chart; silence only floors intro quiet + blanks breaths.
   const withVoiceAndBlank = (cues: SubtitleCue[]): SubtitleCue[] => {
-    const wordHint = cues[0]?.startMs ?? timingSpeech[0]?.startMs ?? null;
+    const wordHint = cues[0]?.startMs ?? null;
     const voiceMs = resolveFirstVoiceOnsetMs(
       phraseSilences,
       silence?.onsetsMs ?? [],
@@ -1150,7 +1122,6 @@ async function tryCancioneroLyricPath(options: {
     nextLineCues: SubtitleCue[],
     hint: string,
   ): Promise<boolean> => {
-    // Raw word clocks in → blank breaths / floor intro once (never double-air).
     const voiceLocked = withVoiceAndBlank(nextLineCues);
     let nextCues = packKaraokeDisplayCues(
       ensureCancioneroCueTexts(voiceLocked, lines),
@@ -1222,57 +1193,7 @@ async function tryCancioneroLyricPath(options: {
     return true;
   };
 
-  /** Place cancionero TEXT on Fast Whisper ASR clocks from the downloaded audio. */
-  const alignWithFasterWhisper = async (): Promise<{
-    cues: SubtitleCue[];
-    alignedCount: number;
-    alignPercent: number;
-  } | null> => {
-    if (!mediaPath) return null;
-    if (!(await fasterWhisperAvailable())) {
-      console.warn("[subtitle] faster-whisper unavailable for karaoke align");
-      return null;
-    }
-    statusPatch("transcribing", "faster_whisper");
-    try {
-      const dirs = await ensureSubtitleDirs();
-      const wavPath = `${dirs.wav}/fw_karaoke_${assetId || "media"}.wav`;
-      statusPatch("extracting", "faster_whisper");
-      await extractWav16k(mediaPath, wavPath);
-      if (!isCurrent(sessionId, gen)) return null;
-      const fw = await transcribeWithFasterWhisper({
-        wavPath,
-        translateToEn: false,
-        languageHint: targetLang === "en" ? "en" : "es",
-        prompt: buildKaraokeAlignPrompt(lines),
-        onStatus: (st) => statusPatch(st, "faster_whisper"),
-      });
-      if (!isCurrent(sessionId, gen)) return null;
-      const aligned = alignCancioneroLinesToTiming(
-        lines,
-        fw.cues,
-        durationMs,
-      );
-      const lineCount = Math.max(1, lines.length);
-      const alignedCount = aligned.alignedCount;
-      const alignPercent =
-        Math.round((1000 * alignedCount) / lineCount) / 10;
-      console.log(
-        `[subtitle] karaoke faster-whisper align hit=${alignedCount}/${lines.length} (${alignPercent}%) cues=${aligned.cues.length} asr=${fw.cues.length}`,
-      );
-      if (!aligned.cues.length) return null;
-      return { cues: aligned.cues, alignedCount, alignPercent };
-    } catch (err) {
-      console.warn(
-        "[subtitle] faster-whisper karaoke align failed:",
-        err instanceof Error ? err.message : err,
-      );
-      return null;
-    }
-  };
-
-  // Biblioteca songs still need timed clocks — LRCLIB often has synced LRC for
-  // the same title even when we already have cancionero TEXT.
+  // 1) PRIMARY — LRCLIB synced LRC clocks + cancionero/Biblioteca text.
   let lrclibClocks: SubtitleCue[] | null =
     lrclib?.syncedCues?.map((c) => ({ ...c })) ?? null;
   if (!lrclibClocks) {
@@ -1293,61 +1214,7 @@ async function tryCancioneroLyricPath(options: {
     }
   }
 
-  // 1) PRIMARY — Fast Whisper on downloaded audio. Must hit ≥99% line match.
-  //    Weak ASR (misheard worship lyrics) must NOT publish — use LRCLIB clocks.
-  let bestAudioAlign: {
-    cues: SubtitleCue[];
-    alignedCount: number;
-    alignPercent: number;
-    source: "faster_whisper";
-  } | null = null;
-
-  if (!mediaPath) {
-    console.warn(
-      "[subtitle] no local audio — cannot run faster-whisper; falling back to LRCLIB/captions",
-    );
-  } else {
-    const fw = await alignWithFasterWhisper();
-    if (!isCurrent(sessionId, gen)) return true;
-    if (fw && fw.cues.length > 0) {
-      const plausible = audioAlignTimelinePlausible(
-        fw.cues,
-        silence?.onsetsMs ?? [],
-        durationMs,
-      );
-      const hit99 = alignPercentMeetsTarget(fw.alignedCount, lines.length);
-      console.log(
-        `[subtitle] karaoke faster-whisper primary hit=${fw.alignedCount}/${lines.length} (${fw.alignPercent}%) plausible=${plausible} hit99=${hit99} first=${fw.cues[0]?.startMs ?? "n/a"}`,
-      );
-      if (hit99 && plausible) {
-        bestAudioAlign = {
-          cues: fw.cues,
-          alignedCount: fw.alignedCount,
-          alignPercent: fw.alignPercent,
-          source: "faster_whisper",
-        };
-      } else {
-        console.warn(
-          `[subtitle] faster-whisper below 99% or implausible — not publishing ASR map`,
-        );
-      }
-    }
-  }
-
-  if (bestAudioAlign && bestAudioAlign.cues.length > 0) {
-    lineCues = bestAudioAlign.cues;
-    synced = true;
-    textSynced = true;
-    timingModeHint = "cancionero_match_faster_whisper";
-    console.log(
-      `[subtitle] karaoke audio-align source=faster_whisper synced=true hit=${bestAudioAlign.alignedCount}/${lines.length} (${bestAudioAlign.alignPercent}%) first=${lineCues[0]?.startMs ?? "n/a"}`,
-    );
-    published =
-      (await publishKaraokeCues(lineCues, timingModeHint)) || published;
-  }
-
-  // 2) LRCLIB synced clocks + Biblioteca/cancionero text (voz↔letra timed).
-  if (!textSynced && lrclibClocks && lrclibClocks.length > 0) {
+  if (lrclibClocks && lrclibClocks.length > 0) {
     const clocked = ensureCancioneroCueTexts(lrclibClocks, lines);
     const plausible = audioAlignTimelinePlausible(
       clocked,
@@ -1363,6 +1230,23 @@ async function tryCancioneroLyricPath(options: {
     );
     published =
       (await publishKaraokeCues(lineCues, timingModeHint)) || published;
+  }
+
+  // 2) Captions / local tracks only if LRCLIB had no synced clocks.
+  let timing:
+    | { cues: import("@promedia/shared").SubtitleCue[]; assetId: string }
+    | null = null;
+  if (!textSynced) {
+    const alignPrompt = buildKaraokeAlignPrompt(lines);
+    timing = await fetchCancioneroTimingCues({
+      sessionId,
+      gen,
+      targetLang,
+      resolved: { ...resolved, mediaPath, assetId },
+      alignPrompt,
+      onStatus: statusPatch,
+    });
+    if (!isCurrent(sessionId, gen)) return true;
   }
 
   if (!textSynced && timing && timing.cues.length > 0) {
@@ -1426,35 +1310,24 @@ async function tryCancioneroLyricPath(options: {
         textSynced = false;
         synced = false;
         published = false;
-        // Re-place the new lyric text with Fast Whisper on the downloaded audio.
-        bestAudioAlign = null;
-        if (mediaPath && lines.length > 0) {
-          const fw = await alignWithFasterWhisper();
+        // Re-probe LRCLIB clocks for the switched song; else caption map.
+        try {
+          const lrTiming = await findLrclibSong({
+            titles: [bestLyric.hit.song.title, ...titles],
+            artists,
+            durationMs,
+          });
           if (!isCurrent(sessionId, gen)) return true;
-          if (fw && fw.cues.length > 0) {
-            bestAudioAlign = {
-              cues: fw.cues,
-              alignedCount: fw.alignedCount,
-              alignPercent: fw.alignPercent,
-              source: "faster_whisper",
-            };
+          if (lrTiming?.syncedCues && lrTiming.syncedCues.length > 0) {
+            lineCues = ensureCancioneroCueTexts(lrTiming.syncedCues, lines);
+            textSynced = true;
+            synced = true;
+            timingModeHint = "cancionero_lrclib_synced";
           }
+        } catch {
+          /* fall through to captions */
         }
-        if (bestAudioAlign && bestAudioAlign.cues.length > 0) {
-          lineCues = bestAudioAlign.cues;
-          synced = alignPercentMeetsTarget(
-            bestAudioAlign.alignedCount,
-            lines.length,
-          );
-          textSynced =
-            synced ||
-            bestAudioAlign.alignedCount >=
-              Math.max(1, Math.ceil(lines.length * 0.5));
-          timingModeHint = synced
-            ? "cancionero_match_faster_whisper"
-            : "cancionero_match_faster_whisper_partial";
-        }
-        if (!textSynced && timing.cues.length > 0) {
+        if (!textSynced && timing && timing.cues.length > 0) {
           const realigned = alignCancioneroLinesToTiming(
             lines,
             timing.cues,
