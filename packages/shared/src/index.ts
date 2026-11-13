@@ -19,6 +19,12 @@ export type TextPayload = {
   slides: TextSlide[];
   align?: TextAlign;
   /**
+   * Exact lyric block from the editor, including blank lines between rows.
+   * Projection slides are derived from this; 6-line chunks must not be written
+   * back into the editor as extra blank lines.
+   */
+  body?: string;
+  /**
    * @deprecated Ignored. Older songs stored one big block with `false`; every
    * text item now projects one blank-line-separated phrase per slide (long
    * phrases split every 6 lines), so those legacy items still navigate.
@@ -456,8 +462,6 @@ export type SubtitleAgentState = {
   hint: string | null;
   /** Where the lyric text came from (Biblioteca cancionero vs LRCLIB). */
   lyricsSource?: "cancionero" | "lrclib" | null;
-  /** "Preparar Guion" queue progress (hub-driven). */
-  prepare?: SubtitlePrepareState | null;
   /** Real yt-dlp download progress (0–100) of the item being processed. */
   downloadPercent?: number | null;
   /**
@@ -506,16 +510,6 @@ export function subtitleOverallPercent(
       return 0;
   }
 }
-
-/** Batch pre-alignment of every A/V item in the Guion. */
-export type SubtitlePrepareState = {
-  running: boolean;
-  total: number;
-  done: number;
-  failed: number;
-  /** Item being processed right now. */
-  currentItemId: string | null;
-};
 
 export function emptySubtitleAgentState(
   targetLang: SubtitleTargetLang = "es",
@@ -732,6 +726,18 @@ export type SessionLiveState = {
    * it without forgetting the image. Cleared when the live item changes.
    */
   videoCover: VideoCoverState | null;
+  /**
+   * Manual cancionero line over whatever is already on the output (video or
+   * the stage background). Does not change `currentItemId` or the media
+   * clock, so the video audio keeps playing. `lineIndex` is into
+   * `manualLyricLines` of that text item. Null = hidden.
+   */
+  lyricOverlay: LyricOverlayState | null;
+};
+
+export type LyricOverlayState = {
+  itemId: string;
+  lineIndex: number;
 };
 
 export type VideoCoverState = {
@@ -860,10 +866,6 @@ export type LiveSubtitleAgentSetMessage = {
 };
 
 /**
- * Operator teaches karaoke which Biblioteca song matches the current
- * Audio/YouTube item — saved to cancionero memory and forces a re-align.
- */
-/**
  * Set / toggle the image cover over the live video or audio. Send `assetId`
  * (a session image asset) to choose it (active unless `active:false`), or only
  * `active` to toggle the current one; `assetId:null` forgets it.
@@ -873,26 +875,10 @@ export type LiveSetVideoCoverMessage = {
   payload: { assetId?: string | null; active?: boolean; background?: boolean };
 };
 
-/** Pre-align every A/V item in the Guion (queue). `cancel` stops it. */
-export type LiveSubtitleAgentPrepareMessage = {
-  type: "live.subtitleAgent.prepare";
-  payload: { cancel?: boolean };
-};
-
 /** Save the LRCLIB lyrics used for an item into the Biblioteca (suggested). */
 export type LiveSubtitleAgentSaveLyricsMessage = {
   type: "live.subtitleAgent.saveLyrics";
   payload: { itemId?: string };
-};
-
-export type LiveSubtitleAgentTeachMessage = {
-  type: "live.subtitleAgent.teach";
-  payload: {
-    /** Biblioteca → Canciones item id. */
-    songId: string;
-    /** Playlist item to bind (defaults to live / focused A/V). */
-    itemId?: string;
-  };
 };
 
 /**
@@ -908,6 +894,15 @@ export type LiveSubtitleAgentNudgeMessage = {
     positionMs?: number;
     itemId?: string;
   };
+};
+
+/**
+ * Show one cancionero line over the live video or the stage background.
+ * `itemId: null` hides it. Does not replace the live item or stop audio.
+ */
+export type LiveSetLyricOverlayMessage = {
+  type: "live.setLyricOverlay";
+  payload: { itemId: string | null; lineIndex?: number };
 };
 
 export type LiveSetSceneModeMessage = {
@@ -944,10 +939,9 @@ export type ClientToHubMessage =
   | LiveMediaClockSetMessage
   | LiveSubtitleAgentSetMessage
   | LiveSetVideoCoverMessage
-  | LiveSubtitleAgentPrepareMessage
   | LiveSubtitleAgentSaveLyricsMessage
-  | LiveSubtitleAgentTeachMessage
   | LiveSubtitleAgentNudgeMessage
+  | LiveSetLyricOverlayMessage
   | LiveSetSceneModeMessage
   | LiveSetWatermarkMessage
   | LiveSetThemeMessage;
@@ -1000,6 +994,7 @@ export function emptyLiveState(): SessionLiveState {
     watermarkMime: null,
     watermarkEnabled: false,
     videoCover: null,
+    lyricOverlay: null,
   };
 }
 
@@ -1288,12 +1283,82 @@ export function splitSlidesOnBlankLines(slides: TextSlide[]): TextSlide[] {
   return slides.flatMap((slide) => splitSlideOnBlankLines(slide));
 }
 
+/** `id__2` is a 6-line projection chunk of `id`, not a new phrase. */
+function projectionChunk(id: string): { root: string; index: number } | null {
+  const match = /^(.*)__(\d+)$/.exec(id);
+  if (!match) {
+    return null;
+  }
+  return { root: match[1]!, index: Number(match[2]) };
+}
+
+function continuesProjectionChunk(prevId: string, curId: string): boolean {
+  const cur = projectionChunk(curId);
+  if (!cur || cur.index < 1) {
+    return false;
+  }
+  const prev = projectionChunk(prevId);
+  const prevRoot = prev ? prev.root : prevId;
+  return cur.root === prevRoot;
+}
+
+/**
+ * Rebuild the editor block from stored slides.
+ * Blank lines are phrase breaks. Slides created only to keep ≤6 lines on
+ * screen (`id__1`, `id__2`, …) stay in the same phrase.
+ */
+export function slidesToEditorBlock(slides: readonly TextSlide[]): string {
+  if (!slides.length) {
+    return "";
+  }
+  let block = slides[0]!.lines.join("\n");
+  for (let i = 1; i < slides.length; i += 1) {
+    const prev = slides[i - 1]!;
+    const cur = slides[i]!;
+    const sep = continuesProjectionChunk(prev.id, cur.id) ? "\n" : "\n\n";
+    block += sep + cur.lines.join("\n");
+  }
+  return block;
+}
+
+/** Editor text: the saved block when present, otherwise the slides. */
+export function editorBlockFromTextPayload(payload: {
+  body?: string;
+  slides: readonly TextSlide[];
+}): string {
+  if (typeof payload.body === "string") {
+    return payload.body;
+  }
+  return slidesToEditorBlock(payload.slides);
+}
+
 /** Resolve slides for projection: one phrase per slide, ≤6 lines each. */
 export function resolveProjectionTextSlides(payload: {
   slides: TextSlide[];
   chunkLines?: boolean;
 }): TextSlide[] {
   return projectionTextSlides(payload.slides);
+}
+
+/**
+ * One operator step of a cancionero/text item: each non-empty projected row.
+ * Blank lines stay phrase separators and are not themselves emitted.
+ */
+export function manualLyricLines(item: PlaylistItem): string[] {
+  if (item.type !== "text" && item.type !== "bible") {
+    return [];
+  }
+  const slides = resolveProjectionTextSlides(item.payload);
+  const lines: string[] = [];
+  for (const slide of slides) {
+    for (const line of slide.lines ?? []) {
+      const text = String(line).trim();
+      if (text) {
+        lines.push(text);
+      }
+    }
+  }
+  return lines;
 }
 
 /** Slide count used by ←/→ (text/bible after 6-line chunking; presentation = pages). */
@@ -1342,6 +1407,8 @@ export function songToTextPayload(song: LibrarySongPayload): TextPayload {
   return {
     title: artist ? `${title} — ${artist}` : title || undefined,
     align: "center",
+    // Keep every blank row the operator saved. Slide chunks are for ←/→ only.
+    body: lines.join("\n"),
     slides,
   };
 }

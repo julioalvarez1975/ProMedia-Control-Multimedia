@@ -41,6 +41,9 @@ export function isTextPayload(value: unknown): value is TextPayload {
   if (p.chunkLines !== undefined && typeof p.chunkLines !== "boolean") {
     return false;
   }
+  if (p.body !== undefined && typeof p.body !== "string") {
+    return false;
+  }
   return true;
 }
 
@@ -60,16 +63,31 @@ export function isTextPlaylistItem(value: unknown): value is TextPlaylistItem {
 }
 
 export function normalizeTextPayload(payload: TextPayload): TextPayload {
-  const mapped = payload.slides.map((slide) => ({
-    id: slide.id,
-    lines: slide.lines.map((line) => String(line)),
-  }));
+  const body =
+    typeof payload.body === "string"
+      ? payload.body.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+      : undefined;
+  // Prefer the editor block so blank rows survive save. Slides are only the
+  // projection (phrase splits + 6-line chunks) derived from that block.
+  const mapped =
+    body !== undefined
+      ? [
+          {
+            id: payload.slides[0]?.id || "lyrics",
+            lines: body.split("\n"),
+          },
+        ]
+      : payload.slides.map((slide) => ({
+          id: slide.id,
+          lines: slide.lines.map((line) => String(line)),
+        }));
   // `chunkLines: false` (legacy songs) is dropped: slides are re-split into
   // one blank-line-separated phrase each.
   const slides = resolveProjectionTextSlides({ slides: mapped });
   return {
     title: payload.title?.trim() ? payload.title.trim() : undefined,
     align: payload.align ?? "center",
+    ...(body !== undefined ? { body } : {}),
     slides,
   };
 }

@@ -120,7 +120,9 @@ body {
 /* —— Control shell —— */
 .control-shell {
   height: 100vh;
+  height: 100dvh;
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -394,6 +396,11 @@ body {
 }
 
 /* Long “Agente subtítulos” label must stay readable — not icon-only / clipped. */
+.toolbar-settings {
+  min-width: 4.6rem;
+  max-width: 6.4rem;
+}
+
 .toolbar-subtitle-agent {
   min-width: 5rem;
   max-width: 6.6rem;
@@ -844,6 +851,11 @@ body {
   }
 
   .schedule-toolbar .btn,
+  .schedule-row-actions {
+    flex-wrap: wrap;
+    row-gap: 0.2rem;
+  }
+
   .schedule-row-actions .btn-ghost {
     min-height: 2.25rem;
     padding: 0.3rem 0.45rem;
@@ -1399,6 +1411,7 @@ body {
 .preview-toolbar {
   flex-shrink: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: center;
   gap: 0.35rem;
@@ -1406,6 +1419,7 @@ body {
   border-top: 1px solid var(--border);
   background: #0e1520;
   min-height: 2.6rem;
+  max-width: 100%;
 }
 
 .preview-toolbar-lite {
@@ -1431,6 +1445,82 @@ body {
 .preview-tb-spacer {
   flex: 1 1 auto;
   min-width: 0.35rem;
+}
+
+/* System notices sit in the free space of the preview toolbar. */
+.preview-notices {
+  flex: 1 1 10rem;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  margin-left: 0.35rem;
+}
+
+.preview-notices .control-banner {
+  flex: 1 1 12rem;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  border-radius: 6px;
+  border: 1px solid #5a4a18;
+}
+
+.preview-notices .control-banner-compact,
+.preview-notices .control-banner-hub-down {
+  flex-wrap: nowrap;
+  padding: 0.15rem 0.4rem;
+  min-height: 2rem;
+}
+
+.preview-notices .control-banner-pair {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.45rem;
+}
+
+.preview-notices .control-pair-label input {
+  min-width: 4.5rem;
+  padding: 0.25rem 0.4rem;
+  font-size: 0.95rem;
+}
+
+.preview-notice-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.78rem;
+  line-height: 1.3;
+}
+
+.preview-notices .btn {
+  flex-shrink: 0;
+}
+
+.preview-notices .status-tip-bubble {
+  left: auto;
+  right: 0;
+  bottom: auto;
+  top: calc(100% + 0.4rem);
+  transform: none;
+  white-space: pre-line;
+  max-width: min(22rem, 70vw);
+}
+
+.preview-notices .status-tip-bubble::after {
+  top: auto;
+  bottom: 100%;
+  left: auto;
+  right: 0.55rem;
+  margin-left: 0;
+  border-top-color: transparent;
+  border-bottom-color: #0f1724;
 }
 
 .preview-tb-golive {
@@ -4081,12 +4171,19 @@ body.output-route #root {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 1rem;
+  padding:
+    max(0.75rem, env(safe-area-inset-top))
+    max(0.75rem, env(safe-area-inset-right))
+    max(0.75rem, env(safe-area-inset-bottom))
+    max(0.75rem, env(safe-area-inset-left));
   background: rgba(8, 10, 14, 0.55);
+  overflow: auto;
 }
 
 .promedia-dialog {
   width: min(420px, 100%);
+  max-height: min(92dvh, 900px);
+  overflow: auto;
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
@@ -4096,6 +4193,31 @@ body.output-route #root {
   background: var(--panel, var(--bg-elevated, #1a1d24));
   color: var(--fg);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.settings-dialog {
+  width: min(28rem, 100%);
+}
+
+.settings-option-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.settings-dialog select {
+  width: 100%;
+  min-height: 2.75rem;
+  font-size: 1rem;
+}
+
+.settings-about-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: 2.75rem;
 }
 
 .bible-dialog {
@@ -4258,81 +4380,6 @@ body.output-route #root {
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 0.5rem;
-}
-
-.cancionero-teach-dialog {
-  width: min(28rem, 96vw);
-  max-height: min(36rem, 90vh);
-  display: flex;
-  flex-direction: column;
-}
-
-.cancionero-teach-search {
-  display: block;
-  margin: 0.5rem 0 0.65rem;
-}
-
-.cancionero-teach-search input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 0.45rem 0.65rem;
-  border-radius: var(--radius);
-  border: 1px solid var(--border, #2a3340);
-  background: var(--surface-2, #121820);
-  color: inherit;
-  font: inherit;
-}
-
-.cancionero-teach-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  overflow: auto;
-  flex: 1;
-  min-height: 8rem;
-  max-height: 16rem;
-  border: 1px solid var(--border, #2a3340);
-  border-radius: var(--radius);
-}
-
-.cancionero-teach-empty {
-  padding: 0.85rem 0.75rem;
-  opacity: 0.7;
-  font-size: 0.9rem;
-}
-
-.cancionero-teach-item {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.15rem;
-  width: 100%;
-  padding: 0.55rem 0.7rem;
-  border: 0;
-  border-bottom: 1px solid var(--border, #2a3340);
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  font: inherit;
-  cursor: pointer;
-}
-
-.cancionero-teach-item:last-child {
-  border-bottom: 0;
-}
-
-.cancionero-teach-item:hover:not(:disabled),
-.cancionero-teach-item.is-selected {
-  background: rgba(70, 140, 90, 0.18);
-}
-
-.cancionero-teach-item-title {
-  font-weight: 600;
-}
-
-.cancionero-teach-item-artist {
-  font-size: 0.85rem;
-  opacity: 0.75;
 }
 
 .video-preview,

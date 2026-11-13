@@ -36,6 +36,7 @@ import {
   isThemeId,
   isTransitionEffect,
   itemProjectionSlideCount,
+  manualLyricLines,
   normalizeThemeBackground,
   normalizeThemeOverrides,
 } from "@promedia/shared";
@@ -417,6 +418,12 @@ export class SessionStore {
       session.live.sceneMode = "normal";
       session.live.videoCover = null;
     }
+    if (
+      session.live.lyricOverlay &&
+      !session.playlist.items.some((i) => i.id === session.live.lyricOverlay?.itemId)
+    ) {
+      session.live.lyricOverlay = null;
+    }
     return { message: this.bumpUpdated(session), skipped };
   }
 
@@ -534,6 +541,9 @@ export class SessionStore {
       session.live.currentSlideIndex = 0;
       session.live.mediaClock = null;
       session.live.videoCover = null;
+    }
+    if (session.live.lyricOverlay?.itemId === id) {
+      session.live.lyricOverlay = null;
     }
     return this.bumpUpdated(session);
   }
@@ -710,6 +720,36 @@ export class SessionStore {
       return this.bumpUpdated(session);
     }
     return { error: "invalid_video_cover" };
+  }
+
+  /**
+   * One cancionero line over the current output (video or stage background).
+   * Leaves currentItemId and mediaClock alone, so video audio keeps playing.
+   * `itemId: null` hides the line.
+   */
+  setLyricOverlay(
+    session: SessionRecord,
+    patch: { itemId: string | null; lineIndex?: number },
+  ): HubMessage | { error: string } {
+    if (patch.itemId === null) {
+      session.live.lyricOverlay = null;
+      return this.bumpUpdated(session);
+    }
+    const item = session.playlist.items.find((i) => i.id === patch.itemId);
+    if (!item || item.type !== "text") {
+      return { error: "not_a_song" };
+    }
+    const lines = manualLyricLines(item);
+    if (lines.length === 0) {
+      return { error: "empty_lyrics" };
+    }
+    const raw = patch.lineIndex ?? 0;
+    const lineIndex = Math.min(
+      lines.length - 1,
+      Math.max(0, Math.trunc(raw)),
+    );
+    session.live.lyricOverlay = { itemId: item.id, lineIndex };
+    return this.bumpUpdated(session);
   }
 
   setWatermark(

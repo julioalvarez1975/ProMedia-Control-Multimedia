@@ -21,14 +21,11 @@ import {
   normalizeThemeOverrides,
 } from "@promedia/shared";
 import {
-  maybeAutoPrepare,
   maybeRefreshSubtitleAgent,
   maybeStartKaraokeOnGuionItem,
   nudgeSubtitleCancionero,
-  prepareSubtitleAgent,
   saveLrclibLyricsToLibrary,
   setSubtitleAgent,
-  teachSubtitleCancionero,
 } from "./subtitle-agent.js";
 import { sessionStore, type SessionRecord } from "./session-store.js";
 
@@ -267,31 +264,8 @@ function parseClientMessage(raw: string): ClientToHubMessage | null {
       }
       return { type: "live.subtitleAgent.set", payload: out };
     }
-    if (type === "live.subtitleAgent.prepare") {
-      const p = payload as { cancel?: unknown } | undefined;
-      return {
-        type: "live.subtitleAgent.prepare",
-        payload: { cancel: p?.cancel === true },
-      };
-    }
     if (type === "live.subtitleAgent.saveLyrics") {
       return { type: "live.subtitleAgent.saveLyrics", payload: {} };
-    }
-    if (type === "live.subtitleAgent.teach") {
-      const p = payload as { songId?: unknown; itemId?: unknown } | undefined;
-      if (!p || typeof p.songId !== "string" || !p.songId.trim()) {
-        return null;
-      }
-      const out: { songId: string; itemId?: string } = {
-        songId: p.songId.trim(),
-      };
-      if (p.itemId !== undefined) {
-        if (typeof p.itemId !== "string") {
-          return null;
-        }
-        out.itemId = p.itemId;
-      }
-      return { type: "live.subtitleAgent.teach", payload: out };
     }
     if (type === "live.subtitleAgent.nudge") {
       const p = payload as {
@@ -320,6 +294,25 @@ function parseClientMessage(raw: string): ClientToHubMessage | null {
         out.itemId = p.itemId;
       }
       return { type: "live.subtitleAgent.nudge", payload: out };
+    }
+    if (type === "live.setLyricOverlay") {
+      const p = payload as { itemId?: unknown; lineIndex?: unknown } | undefined;
+      if (!p) {
+        return null;
+      }
+      if (p.itemId !== null && typeof p.itemId !== "string") {
+        return null;
+      }
+      const out: { itemId: string | null; lineIndex?: number } = {
+        itemId: p.itemId === null ? null : p.itemId,
+      };
+      if (p.lineIndex !== undefined) {
+        if (typeof p.lineIndex !== "number" || !Number.isFinite(p.lineIndex)) {
+          return null;
+        }
+        out.lineIndex = Math.max(0, Math.trunc(p.lineIndex));
+      }
+      return { type: "live.setLyricOverlay", payload: out };
     }
     if (type === "live.setSceneMode") {
       const sceneMode = (payload as { sceneMode?: unknown } | undefined)?.sceneMode;
@@ -705,7 +698,6 @@ export class WsHub {
           `[hub] live.clear from=${conn.role} was=${session.live.currentItemId ?? "-"}`,
         );
         this.applyResult(conn, session, sessionStore.clearLive(session));
-        maybeAutoPrepare(session.id);
         return;
       case "live.setSlide":
         this.applyResult(
@@ -729,28 +721,21 @@ export class WsHub {
           setSubtitleAgent(session, msg.payload),
         );
         return;
-      case "live.subtitleAgent.prepare":
-        this.applyResult(
-          conn,
-          session,
-          prepareSubtitleAgent(session, msg.payload),
-        );
-        return;
       case "live.subtitleAgent.saveLyrics":
         this.applyResult(conn, session, saveLrclibLyricsToLibrary(session));
-        return;
-      case "live.subtitleAgent.teach":
-        this.applyResult(
-          conn,
-          session,
-          teachSubtitleCancionero(session, msg.payload),
-        );
         return;
       case "live.subtitleAgent.nudge":
         this.applyResult(
           conn,
           session,
           nudgeSubtitleCancionero(session, msg.payload),
+        );
+        return;
+      case "live.setLyricOverlay":
+        this.applyResult(
+          conn,
+          session,
+          sessionStore.setLyricOverlay(session, msg.payload),
         );
         return;
       case "live.setSceneMode":

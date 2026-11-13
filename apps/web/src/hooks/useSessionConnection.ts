@@ -369,18 +369,18 @@ export function useSessionConnection(role: ClientRole) {
     [send],
   );
 
+  const setLyricOverlay = useCallback(
+    (patch: { itemId: string | null; lineIndex?: number }): boolean =>
+      send("live.setLyricOverlay", patch),
+    [send],
+  );
+
   const setVideoCover = useCallback(
     (patch: {
       assetId?: string | null;
       active?: boolean;
       background?: boolean;
     }): boolean => send("live.setVideoCover", patch),
-    [send],
-  );
-
-  const prepareSubtitleAgent = useCallback(
-    (cancel?: boolean): boolean =>
-      send("live.subtitleAgent.prepare", { cancel: cancel === true }),
     [send],
   );
 
@@ -432,8 +432,8 @@ export function useSessionConnection(role: ClientRole) {
     setWatermark,
     setTheme,
     setSubtitleAgent,
+    setLyricOverlay,
     setVideoCover,
-    prepareSubtitleAgent,
     saveSubtitleLyrics,
     nudgeSubtitleCancionero,
     isWsOpen,

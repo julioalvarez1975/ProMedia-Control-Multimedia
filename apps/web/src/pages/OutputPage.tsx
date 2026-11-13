@@ -8,6 +8,7 @@ import {
   DEFAULT_THEME_ID,
   DEFAULT_TRANSITION_EFFECT,
   emptySubtitleAgentState,
+  manualLyricLines,
   normalizeThemeBackground,
 } from "@promedia/shared";
 import { LiveItemLayer } from "../components/LiveItemLayer";
@@ -18,6 +19,7 @@ import {
   StageBackground,
   StageDotsOverlay,
 } from "../components/StageBackground";
+import { ManualLyricOverlay } from "../components/ManualLyricOverlay";
 import { SubtitleOverlay } from "../components/SubtitleOverlay";
 import { useSessionConnection } from "../hooks/useSessionConnection";
 import {
@@ -184,6 +186,21 @@ export function OutputPage() {
     snapshot?.live.transitionEffect ?? DEFAULT_TRANSITION_EFFECT;
   const subtitleAgent =
     snapshot?.live.subtitleAgent ?? emptySubtitleAgentState();
+  const lyricOverlay = snapshot?.live.lyricOverlay ?? null;
+  const lyricOverlayLine = useMemo(() => {
+    if (!lyricOverlay || !snapshot) {
+      return null;
+    }
+    const item = snapshot.playlist.items.find((i) => i.id === lyricOverlay.itemId);
+    if (!item) {
+      return null;
+    }
+    const lines = manualLyricLines(item);
+    if (lines.length === 0) {
+      return null;
+    }
+    return lines[Math.min(lyricOverlay.lineIndex, lines.length - 1)] ?? null;
+  }, [lyricOverlay, snapshot]);
   const themeStyle = themeSurfaceStyle(themeId, themeOverrides);
   const liveItemKey = liveItem?.id ?? "__empty__";
   const OutputRenderer = liveItem
@@ -470,12 +487,20 @@ export function OutputPage() {
                 ) : null
               }
             />
-            <SubtitleOverlay
-              agent={subtitleAgent}
-              mediaClock={mediaClock}
-              itemId={liveItem?.id ?? null}
-              transitionEffect={transitionEffect}
-            />
+            {lyricOverlayLine ? (
+              <ManualLyricOverlay
+                line={lyricOverlayLine}
+                fontSize={subtitleAgent.fontSize}
+                transitionEffect={transitionEffect}
+              />
+            ) : (
+              <SubtitleOverlay
+                agent={subtitleAgent}
+                mediaClock={mediaClock}
+                itemId={liveItem?.id ?? null}
+                transitionEffect={transitionEffect}
+              />
+            )}
             <SceneOverlay
               mode={sceneMode}
               effect={transitionEffect}

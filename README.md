@@ -2,6 +2,8 @@
 
 Proyección multimedia para **culto y evento**. Ventana **Control** (operador) + ventana **Output** (pantalla completa en el 2.º monitor / proyector). Todo el código vive en la **raíz** de este repo.
 
+Referencia del código (arquitectura, API, datos, desarrollo): [docs/README.md](docs/README.md). Esta página es la guía de arranque y de uso en sala.
+
 ## Arquitectura
 
 | Pieza | Rol |
@@ -181,7 +183,7 @@ Si el popup está bloqueado, aparece un aviso con enlace **Abrir salida**. El at
 
 - **Añadir** (multiarchivo: imagen, vídeo, PDF/XML/texto) + menú: Enlace/YouTube, Biblia, Texto en blanco, **Crear canción**, **Biblioteca** (también en la barra de herramientas)
 - Drag ⋮⋮ (y ↑/↓), multi-selección + **Quitar seleccionados**
-- Guardar / Cargar guiones con nombre
+- Guardar / Cargar guiones: archivo del dispositivo **suma** al Guion; copia del hub puede sobrescribir
 - Botón **En vivo** / doble clic = enviar al live
 - Tipos: texto, imagen, vídeo, YouTube, Biblia, presentación (solo visualización)
 
@@ -331,9 +333,9 @@ Env útiles: `SUBTITLE_MODELS_ROOT`, `SUBTITLE_DATA_ROOT`, `SUBTITLE_ASR_BACKEND
 
 ### Tema (zona TEMA)
 
-| Escenas | Temas | Transiciones en Output (0,5 s fijo) |
+| Escenas | Temas | Transiciones en Output (550 ms) |
 |---------|-------|-------------------------------------|
-| Normal · Logo · Negro · Clear | Oscuro · Claro · Acento (+ fondo/texto/alineación/tamaño) | Ninguna/corte · Difuminado · Blur · Pixelado |
+| Normal · Logo · Negro · Clear | Oscuro · Claro · Acento (+ fondo/texto/alineación/tamaño) | Corte · fundido (default) · crossfade · blur · escala · slide · fly · giro · motion blur · pixelado (550 ms) |
 
 **Fondos animados (packs fijos):** Aurora · Brasas · Océano · Rejilla · Azul abstracto. Son vídeos en bucle (mute) versionados en el repo bajo `apps/web/public/theme-backgrounds/` (MP4 + WebM). Aparecen siempre en el desplegable de fondos; además se pueden **subir** vídeos/imágenes propios (sesión). El patrón de puntos se dibuja encima del vídeo.
 
@@ -432,6 +434,63 @@ git pull
 
 ---
 
+## Librerías y plugins
+
+La interfaz se dibuja con código propio (SVG incluido). No hay plugins de iconos, de componentes ni de temas. El único plugin de compilación es el de React para Vite. Versiones: las de cada `package.json` (el lock las fija).
+
+### Interfaz — `apps/web`
+
+1. **React** `^19` y **React DOM** — Control, Vista previa y Output.
+2. **React Router** `^7` — rutas `/`, `/control` y `/output`.
+3. **Vite** `^6` — servidor de desarrollo y build.
+4. **`@vitejs/plugin-react`** `^4` — único plugin de Vite: compila JSX.
+5. **TypeScript** `^5.8` — chequeo de tipos (no va al navegador).
+
+Paquetes del monorepo que consume la web: `@promedia/shared`, `@promedia/i18n`, `@promedia/item-types`.
+
+### Hub — `apps/hub`
+
+1. **Hono** `^4.7` — API HTTP. El middleware **`hono/cors`** abre la API a Control y Output en la LAN.
+2. **`@hono/node-server`** `^1.14` — Hono sobre Node.
+3. **ws** `^8` — WebSocket de la sesión (Guion, En vivo, reloj).
+4. **JSZip** `^3.10` — Quelea `.qsp` y presentaciones `.pptx` (son ZIP).
+5. **pdf-parse** `^2.4` — texto de un PDF al Guion.
+6. **wavefile** `^11` — WAV para el reconocimiento de voz.
+7. **`@huggingface/transformers`** `^4` — backend opcional de subtítulos (`SUBTITLE_ASR_BACKEND=transformers`). En `auto` no se carga. Al instalar, pnpm compila estas dependencias suyas: **onnxruntime-node**, **protobufjs** y **sharp**.
+8. **tsx** `^4.19` — corre el hub en desarrollo (`tsx watch`).
+9. **TypeScript** `^5.8` y **`@types/node`** — compilación y tipos.
+
+Paquetes del monorepo que consume el hub: `@promedia/shared`, `@promedia/item-types`, `@promedia/media`.
+
+### Paquetes propios
+
+1. **`@promedia/shared`** — mensajes, temas, transiciones, tipos de sesión. Sin dependencias npm.
+2. **`@promedia/i18n`** — textos ES, EN, PT, FR y ZH. Sin dependencias npm.
+3. **`@promedia/item-types`** — piezas de Preview / En vivo / Output. Peer: React 19.
+4. **`@promedia/media`** — archivos en disco y un adapter S3 todavía stub.
+
+### Herramientas de la raíz
+
+1. **pnpm** `10.33` — instalación y scripts del monorepo.
+2. **Node.js** `>= 20`.
+3. **concurrently** `^9` — `pnpm dev` muestra los logs `[hub]` y `[web]` juntos.
+
+### Programas del sistema (karaoke)
+
+No son paquetes npm. El hub los busca en el PATH.
+
+1. **ffmpeg** — audio, silencios (`silencedetect`) y pistas embebidas.
+2. **yt-dlp** — audio de un YouTube público.
+3. **whisper.cpp** (`whisper-cli`) — transcripción local si no hay letra ni subtítulos.
+4. **Python 3.12** (opcional), venv en `data/models/whisperx-venv`, requisitos en `apps/hub/python/requirements-whisperx.txt`:
+   1. **WhisperX** `>=3.8,<4` — alinea cada renglón con la voz.
+   2. **faster-whisper** — viene con WhisperX; transcribe cuando el backend es `auto` o `faster_whisper`.
+
+### Servicios externos (sin librería npm)
+
+1. **LRCLIB** (`lrclib.net`) — letra comunitaria si el cancionero no tiene la canción. Se apaga con `PROMEDIA_LRCLIB=0`.
+2. **Google Publisher Tag** — script opcional del banner de Control. No es un paquete del repo.
+
 ## Qué incluye el producto (resumen)
 
 - Sesión + WS + código corto / enlace opaco
@@ -461,4 +520,4 @@ Ver `scripts/qa-church-event.md`.
 - Assets de archivo son **por sesión**; al cargar un guion guardado, ítems de archivo sin asset se omiten (texto/YouTube sí)
 - Adapter S3 = stub (escribe en disco hasta cablear SDK completo)
 - Multi-monitor / fullscreen depende del navegador (Chrome Window Management; Safari/Firefox suelen exigir arrastrar + clic)
-- Biblia: sin canon offline completo; sin Stage / remoto / import Quelea (fase 2)
+- Biblia: sin canon offline completo de las traducciones con copyright; dominio público remoto e import local sí. Quelea `.qsp` se importa desde Biblioteca

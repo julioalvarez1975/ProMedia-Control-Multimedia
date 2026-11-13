@@ -89,3 +89,12 @@ export const LOCALE_SHORT: Record<Locale, string> = {
   fr: "FR",
   "zh-CN": "ZH",
 };
+
+/** Endonyms shown in Configuración. */
+export const LOCALE_NAME: Record<Locale, string> = {
+  es: "Español",
+  en: "English",
+  pt: "Português",
+  fr: "Français",
+  "zh-CN": "中文",
+};

@@ -4,6 +4,8 @@
  */
 import assert from "node:assert/strict";
 import {
+  editorBlockFromTextPayload,
+  manualLyricLines,
   projectionTextSlides,
   resolveProjectionTextSlides,
   songToTextPayload,
@@ -43,5 +45,30 @@ const payload = songToTextPayload({
 });
 assert.equal(payload.slides.length, 3);
 assert.equal(payload.title, "Prueba — Yo");
+assert.equal(payload.body, song.join("\n"));
+assert.equal(editorBlockFromTextPayload(payload), song.join("\n"));
+
+// A phrase longer than 6 lines is chunked for ←/→, but reopening the editor
+// must not turn that chunk into a blank line between two rows.
+const verse = ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "", "l8"];
+const versePayload = songToTextPayload({
+  title: "Verso",
+  stanzas: [{ id: "v", lines: verse }],
+});
+assert.equal(versePayload.body, verse.join("\n"));
+assert.equal(editorBlockFromTextPayload(versePayload), verse.join("\n"));
+assert.equal(
+  editorBlockFromTextPayload({ slides: versePayload.slides }),
+  verse.join("\n"),
+  "legacy slides without body keep the operator blank line only",
+);
+
+const manual = manualLyricLines({
+  id: "song",
+  type: "text",
+  order: 0,
+  payload: versePayload,
+});
+assert.deepEqual(manual, verse.filter((line) => line.trim() !== ""));
 
 console.log("TEST_OK test-phrases");

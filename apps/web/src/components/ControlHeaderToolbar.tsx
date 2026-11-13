@@ -1,23 +1,20 @@
-import type { ReactNode } from "react";
-import type { Locale } from "@promedia/i18n";
+import { useState, type ReactNode } from "react";
 import type {
-  SubtitlePrepareState,
   ThemeBackground,
   ThemeId,
   ThemeOverrides,
   TransitionEffect,
 } from "@promedia/shared";
-import { LOCALE_SHORT, useLocale } from "../locale/LocaleContext";
+import { useLocale } from "../locale/LocaleContext";
 import {
   ThemePanel,
   type ThemeBackgroundAssetOption,
 } from "./ThemePanel";
+import { SettingsDialog } from "./SettingsDialog";
 import { StatusTip } from "./StatusTip";
 import {
-  IconAbout,
-  IconLanguage,
+  IconGear,
   IconLibrary,
-  IconPrepare,
   IconProject,
   IconSaveLyrics,
   IconSubtitles,
@@ -58,12 +55,6 @@ export type ControlHeaderToolbarProps = {
    */
   subtitleAgentErrorMessage?: string | null;
   onToggleSubtitleAgent?: () => void;
-  /** "Preparar Guion": queue progress from the hub (null = never run). */
-  subtitlePrepare?: SubtitlePrepareState | null;
-  /** At least one A/V item in the Guion and none projecting. */
-  canPrepareGuion?: boolean;
-  /** Start the queue, or cancel it when already running. */
-  onPrepareGuion?: () => void;
   /** Current lyrics came from LRCLIB (offer to save them). */
   showSaveLyrics?: boolean;
   onSaveLyrics?: () => void;
@@ -130,13 +121,11 @@ export function ControlHeaderToolbar({
   subtitleAgentTitle,
   subtitleAgentErrorMessage,
   onToggleSubtitleAgent,
-  subtitlePrepare,
-  canPrepareGuion = false,
-  onPrepareGuion,
   showSaveLyrics = false,
   onSaveLyrics,
 }: ControlHeaderToolbarProps) {
-  const { t, locale, setLocale, locales } = useLocale();
+  const { t } = useLocale();
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const subtitleTitle =
     subtitleAgentTitle?.trim() || t("control.subtitleAgentTitle");
@@ -148,6 +137,15 @@ export function ControlHeaderToolbar({
       role="toolbar"
       aria-label={t("control.toolbar")}
     >
+      <ToolbarBtn
+        className="toolbar-primary-action toolbar-settings"
+        active={settingsOpen}
+        title={t("control.settings")}
+        label={t("control.settings")}
+        icon={<IconGear />}
+        onClick={() => setSettingsOpen(true)}
+      />
+
       <ToolbarBtn
         className="toolbar-primary-action"
         disabled={projectionBusy || hubUnreachable}
@@ -179,27 +177,6 @@ export function ControlHeaderToolbar({
             message={depsError}
           />
         ) : null}
-        {subtitleAgentEnabled && onPrepareGuion ? (
-          <ToolbarBtn
-            className="toolbar-subtitle-prepare"
-            active={Boolean(subtitlePrepare?.running)}
-            disabled={!canMutate || (!subtitlePrepare?.running && !canPrepareGuion)}
-            title={
-              subtitlePrepare?.running
-                ? t("control.subtitlePrepareCancel")
-                : t("control.subtitlePrepareTitle")
-            }
-            label={
-              subtitlePrepare?.running
-                ? t("control.subtitlePrepareRunning")
-                    .replace("{done}", String(subtitlePrepare.done))
-                    .replace("{total}", String(subtitlePrepare.total))
-                : t("control.subtitlePrepare")
-            }
-            icon={<IconPrepare />}
-            onClick={onPrepareGuion}
-          />
-        ) : null}
         {subtitleAgentEnabled && showSaveLyrics && onSaveLyrics ? (
           <ToolbarBtn
             className="toolbar-subtitle-save-lyrics"
@@ -212,30 +189,6 @@ export function ControlHeaderToolbar({
         ) : null}
       </span>
 
-      <label
-        className="toolbar-lang toolbar-primary-action"
-        title={t("control.language")}
-      >
-        <span className="toolbar-icon-btn-glyph" aria-hidden>
-          <IconLanguage />
-        </span>
-        <select
-          className="toolbar-lang-select"
-          value={locale}
-          aria-label={t("control.language")}
-          onChange={(e) => setLocale(e.target.value as Locale)}
-        >
-          {locales.map((code) => (
-            <option key={code} value={code}>
-              {LOCALE_SHORT[code]}
-            </option>
-          ))}
-        </select>
-        <span className="toolbar-icon-btn-label">
-          {t("control.languageShort")}
-        </span>
-      </label>
-
       <ToolbarBtn
         className="toolbar-primary-action"
         disabled={hubUnreachable}
@@ -243,13 +196,6 @@ export function ControlHeaderToolbar({
         label={t("library.open")}
         icon={<IconLibrary />}
         onClick={onOpenLibrary}
-      />
-
-      <ToolbarBtn
-        title={t("control.about")}
-        label={t("control.about")}
-        icon={<IconAbout />}
-        onClick={onAbout}
       />
 
       {!hasSession && sessionFallback ? (
@@ -266,6 +212,12 @@ export function ControlHeaderToolbar({
         backgroundAssets={backgroundAssets}
         onUploadBackground={onUploadBackground}
         onChange={onThemeChange}
+      />
+
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onAbout={onAbout}
       />
     </div>
   );

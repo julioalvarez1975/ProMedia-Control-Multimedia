@@ -293,6 +293,21 @@ export function IconProject(props: IconProps) {
   );
 }
 
+/** Settings gear — drawn here, not loaded from an icon package. */
+export function IconGear(props: IconProps) {
+  return (
+    <svg {...svgProps({ ...props, size: props.size ?? 20 })}>
+      <circle cx="12" cy="12" r="3.1" stroke="currentColor" strokeWidth="1.7" />
+      <path
+        d="M12 2.4v2.2M12 19.4v2.2M2.4 12h2.2M19.4 12h2.2M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M19.1 4.9l-1.6 1.6M6.5 17.5l-1.6 1.6"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 /** Language / locale. */
 export function IconLanguage(props: IconProps) {
   return (
@@ -483,26 +498,6 @@ export function IconSceneEmpty(props: IconProps) {
 }
 
 
-/** Pre-align every song in the Guion (queue). */
-export function IconPrepare(props: IconProps) {
-  return (
-    <svg {...svgProps({ ...props, size: props.size ?? 20 })}>
-      <path
-        d="M9 6h11M9 12h11M9 18h11"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-      />
-      <path
-        d="m3.5 6 1.2 1.2L7 4.8M3.5 12l1.2 1.2L7 10.8M3.5 18l1.2 1.2L7 16.8"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
 
 /** Save lyrics to the Biblioteca. */
 export function IconSaveLyrics(props: IconProps) {

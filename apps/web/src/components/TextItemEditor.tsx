@@ -1,7 +1,10 @@
 import { useRef, useState } from "react";
 import { useLocale } from "../locale/LocaleContext";
 import type { TextAlign, TextPayload, TextSlide } from "@promedia/shared";
-import { projectionTextSlides } from "@promedia/shared";
+import {
+  editorBlockFromTextPayload,
+  projectionTextSlides,
+} from "@promedia/shared";
 import { cryptoRandomId } from "@promedia/item-types";
 import {
   TEXT_IMPORT_MAX_BYTES,
@@ -17,9 +20,8 @@ export type TextItemEditorProps = {
 };
 
 function slidesToBlock(slides: readonly TextSlide[]): string {
-  // Slides are joined by a blank line, which is exactly how phrases are
-  // separated when the block is split back into slides on save.
-  return slides.map((slide) => slide.lines.join("\n")).join("\n\n");
+  // Phrase breaks stay as blank lines. 6-line projection chunks do not.
+  return editorBlockFromTextPayload({ slides });
 }
 
 function blockToLines(text: string): string[] {
@@ -36,7 +38,9 @@ export function TextItemEditor({ initial, onSave, onCancel }: TextItemEditorProp
 
   const [title, setTitle] = useState(initial.title ?? "");
   const [align, setAlign] = useState<TextAlign>(initial.align ?? "center");
-  const [block, setBlock] = useState<string>(() => slidesToBlock(initial.slides));
+  const [block, setBlock] = useState<string>(() =>
+    editorBlockFromTextPayload(initial),
+  );
   const [blockId] = useState<string>(
     () => initial.slides[0]?.id || cryptoRandomId(),
   );
@@ -93,12 +97,14 @@ export function TextItemEditor({ initial, onSave, onCancel }: TextItemEditorProp
   };
 
   const save = () => {
+    const body = block.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     onSave({
       title: title.trim() || undefined,
       align,
-      // Blank lines separate phrases (one slide each); phrases over 6 lines
-      // are chunked so Output/Live ←/→ match what is projected.
-      slides: projectionTextSlides([{ id: blockId, lines: blockToLines(block) }]),
+      // Exact text, blank rows included. Slides are the projection of that
+      // text (a blank line is still one phrase; long phrases chunk for ←/→).
+      body,
+      slides: projectionTextSlides([{ id: blockId, lines: blockToLines(body) }]),
     });
   };
 

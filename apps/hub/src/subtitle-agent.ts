@@ -1,7 +1,5 @@
 import {
   forgetItemProgress,
-  isItemReady,
-  markItemsReady,
   setBgProgress,
 } from "./subtitle-item-progress.js";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -90,7 +88,6 @@ import {
 } from "./subtitle-ready-cache.js";
 import {
   clearPersistMeta,
-  forgetPersistedAgent,
   getPersistMeta,
   cacheKeyOf,
   loadPersistedAgent,
@@ -155,12 +152,10 @@ export function disposeSubtitleSession(sessionId: string): void {
   void flushPersistedAgents();
   bumpJob(sessionId);
   jobGeneration.delete(sessionId);
-  prepareTokens.delete(sessionId);
   inflightJobs.delete(sessionId);
   pendingAdds.delete(sessionId);
   forgetReadyAgent(sessionId);
   forgetItemProgress(sessionId);
-  autoPrepareRunning.delete(sessionId);
 }
 
 function bumpJob(sessionId: string): number {
@@ -305,7 +300,6 @@ function applyBackgroundPatch(
             enabled: true,
             fontSize: live.fontSize,
             leadMs: a.leadMs ?? live.leadMs,
-            prepare: live.prepare,
             itemProgress: live.itemProgress,
             updatedAt: new Date().toISOString(),
           }
@@ -855,10 +849,8 @@ async function tryCancioneroLyricPath(options: {
   gen: number;
   targetLang: SubtitleTargetLang;
   resolved: ResolveOk;
-  /** Operator-taught Biblioteca song (educate karaoke). */
-  teachSongId?: string;
 }): Promise<boolean> {
-  const { sessionId, gen, targetLang, resolved, teachSongId } = options;
+  const { sessionId, gen, targetLang, resolved } = options;
   const item = resolved.item;
   const isAudio = item.type === "audio";
   const isYoutube =
@@ -915,22 +907,12 @@ async function tryCancioneroLyricPath(options: {
     assetId: resolved.assetId,
   });
 
-  // 1) Operator teach → memory → fuzzy title match.
+  // Memory, then fuzzy title match.
   let match: CancioneroMatchHit | null = null;
   /** Set when the lyrics came from LRCLIB (not a Biblioteca song). */
   let lrclib: LrclibSong | null = null;
   let learnSource: "exact" | "lyric" | "fuzzy" | "manual" = "fuzzy";
-  if (teachSongId?.trim()) {
-    const taught = await resolveCancioneroSongById(teachSongId.trim());
-    if (taught) {
-      match = taught;
-      learnSource = "manual";
-      console.log(
-        `[subtitle] karaoke taught song="${taught.song.title}" id=${taught.item.id}`,
-      );
-    }
-  }
-  if (!match) {
+  {
     const remembered =
       (await recallCancioneroByMedia(mediaKey)) ??
       (await recallCancioneroByTitles(titles));
@@ -1472,48 +1454,6 @@ async function missingBinStillAbsent(hint: string): Promise<boolean> {
 }
 
 /**
- * Operator educates karaoke: bind current A/V media to a Biblioteca song,
- * remember it, and re-run forced align with that letter.
- */
-export function teachSubtitleCancionero(
-  session: SessionRecord,
-  patch: { songId: string; itemId?: string },
-): HubMessage {
-  const songId = String(patch.songId ?? "").trim();
-  const prev = session.live.subtitleAgent ?? emptySubtitleAgentState();
-  if (!songId) {
-    return sessionStore.touchSubtitleAgent(session);
-  }
-  const itemId = patch.itemId?.trim() || undefined;
-  session.live.subtitleAgent = {
-    ...prev,
-    enabled: true,
-    status: "idle",
-    hint: "cancionero_teach",
-    cues: [],
-    cueIndex: null,
-    translated: false,
-    sourceLang: null,
-    updatedAt: new Date().toISOString(),
-  };
-  const message = sessionStore.touchSubtitleAgent(session);
-  forgetReadyAgent(session.id, itemId ?? session.live.currentItemId ?? undefined);
-  {
-    const target = resolveMediaSource(
-      session,
-      itemId ?? session.live.currentItemId ?? undefined,
-    );
-    if (target.ok) void forgetPersistedAgent(target.assetId);
-  }
-  void runSubtitleJob(session.id, itemId ?? session.live.currentItemId ?? undefined, {
-    force: true,
-    teachSongId: songId,
-    source: "teach",
-  });
-  return message;
-}
-
-/**
  * Operator steps karaoke on Preview with ←/→ (does not seek the media clock).
  * → show next cue and teach “this line starts now” at positionMs.
  * ← previous cue, or blank (−1) before the first; delays the left-behind cue
@@ -1680,7 +1620,6 @@ export function setSubtitleAgent(
     force: wasOff,
     source: "toggle_or_set",
   });
-  if (wasOff) maybeAutoPrepare(session.id);
 
   return message;
 }
@@ -1739,190 +1678,6 @@ export function maybeRefreshSubtitleAgent(session: SessionRecord): void {
     force: itemChanged,
     source: "go_live",
   });
-}
-
-// ── Preparar Guion: pre-align every A/V item before the service ──────────
-
-const prepareTokens = new Map<string, number>();
-
-function isPrepareTarget(item: PlaylistItem): boolean {
-  return (
-    item.type === "audio" ||
-    (item.type === "video" && item.payload.sourceKind === "youtube")
-  );
-}
-
-function setPrepareState(
-  session: SessionRecord,
-  prepare: SubtitleAgentState["prepare"],
-): HubMessage {
-  const prev = session.live.subtitleAgent ?? emptySubtitleAgentState();
-  session.live.subtitleAgent = {
-    ...prev,
-    prepare,
-    updatedAt: new Date().toISOString(),
-  };
-  const message = sessionStore.touchSubtitleAgent(session);
-  broadcastSession(session.id, message);
-  return message;
-}
-
-/**
- * "Preparar Guion": run the background queue now (also retries rows that
- * failed before). The queue also starts by itself — see `maybeAutoPrepare`.
- */
-export function prepareSubtitleAgent(
-  session: SessionRecord,
-  patch: { cancel?: boolean },
-): HubMessage | { error: string } {
-  const prev = session.live.subtitleAgent ?? emptySubtitleAgentState();
-
-  if (patch.cancel) {
-    prepareTokens.set(session.id, (prepareTokens.get(session.id) ?? 0) + 1);
-    bumpBg(session.id);
-    return setPrepareState(
-      session,
-      prev.prepare ? { ...prev.prepare, running: false, currentItemId: null } : null,
-    );
-  }
-  if (prev.prepare?.running) return { error: "prepare_running" };
-  if (!session.playlist.items.some(isPrepareTarget)) {
-    return { error: "no_av_items" };
-  }
-  session.live.subtitleAgent = { ...prev, enabled: true };
-  const message = sessionStore.touchSubtitleAgent(session);
-  maybeAutoPrepare(session.id);
-  return message;
-}
-
-/**
- * One Guion row, independent of the screen: runs the whole karaoke pipeline
- * with a PRIVATE agent state (see `applyBackgroundPatch`), so selecting rows,
- * Go Live or what is projecting never cancels it. When it finishes the result
- * lives in the per-item memory cache and on disk (own file per song).
- */
-async function runRowJob(sessionId: string, itemId: string): Promise<void> {
-  const session = sessionStore.get(sessionId);
-  const live = session?.live.subtitleAgent;
-  if (!session || !live?.enabled) return;
-  const gen = bumpBg(sessionId);
-  const ctx: BgCtx = {
-    itemId,
-    agent: {
-      ...emptySubtitleAgentState(live.targetLang),
-      enabled: true,
-      status: "idle",
-      fontSize: live.fontSize,
-      leadMs: live.leadMs,
-      itemId,
-    },
-  };
-  await bgStore.run(ctx, () =>
-    runSubtitleJobInner(sessionId, itemId, { force: true, source: "prepare" }),
-  );
-  // The job returned without publishing a result and was not cancelled.
-  if (isCurrent(sessionId, gen) && !isItemReady(sessionId, itemId)) {
-    if (setBgProgress(sessionId, itemId, { percent: 0, ready: false, failed: true })) {
-      const s = sessionStore.get(sessionId);
-      if (s?.live.subtitleAgent?.enabled) {
-        broadcastSession(sessionId, sessionStore.touchSubtitleAgent(s));
-      }
-    }
-  }
-}
-
-const autoPrepareRunning = new Set<string>();
-
-/**
- * The hub prepares the Guion by itself, in playlist order, one row at a time:
- * cached songs turn green at once, the rest are downloaded, transcribed
- * (faster-whisper when missing from the cancionero) and aligned — each row
- * writing its OWN cache entry the moment it finishes. The queue re-reads the
- * Guion after every row, so links added meanwhile are picked up. Triggers:
- * agent turned on, link added, projection cleared, "Preparar Guion".
- */
-export function maybeAutoPrepare(sessionId: string): void {
-  if (autoPrepareRunning.has(sessionId)) return;
-  if (!sessionStore.get(sessionId)?.live.subtitleAgent?.enabled) return;
-  autoPrepareRunning.add(sessionId);
-  {
-    const s0 = sessionStore.get(sessionId);
-    bgQueued.set(
-      sessionId,
-      new Set(
-        (s0?.playlist.items ?? [])
-          .filter(isPrepareTarget)
-          .map((i) => i.id)
-          .filter((id) => !isItemReady(sessionId, id)),
-      ),
-    );
-  }
-  void (async () => {
-    const attempted = new Set<string>();
-    let done = 0;
-    let failed = 0;
-    const token = (prepareTokens.get(sessionId) ?? 0) + 1;
-    prepareTokens.set(sessionId, token);
-    try {
-      await precheckGuionReady(sessionId);
-      for (;;) {
-        const session = sessionStore.get(sessionId);
-        if (
-          !session ||
-          !session.live.subtitleAgent?.enabled ||
-          prepareTokens.get(sessionId) !== token
-        ) {
-          break;
-        }
-        const pending = session.playlist.items
-          .filter(isPrepareTarget)
-          .map((i) => i.id)
-          .filter((id) => !isItemReady(sessionId, id) && !attempted.has(id));
-        bgQueued.set(sessionId, new Set(pending));
-        const id = pending[0];
-        if (!id) break;
-        attempted.add(id);
-        bgQueued.get(sessionId)?.delete(id);
-        bgCurrent.set(sessionId, id);
-        if (attempted.size === 1) {
-          console.log(`[subtitle] auto-prepare Guion items=${pending.length}`);
-        }
-        setPrepareState(session, {
-          running: true,
-          total: attempted.size + pending.length - 1,
-          done,
-          failed,
-          currentItemId: id,
-        });
-        try {
-          await runRowJob(sessionId, id);
-        } catch (err) {
-          console.warn(
-            `[subtitle] row job failed item=${id}:`,
-            err instanceof Error ? err.message : err,
-          );
-        }
-        bgCurrent.set(sessionId, null);
-        done += 1;
-        if (!isItemReady(sessionId, id)) failed += 1;
-      }
-    } finally {
-      bgCurrent.delete(sessionId);
-      bgQueued.delete(sessionId);
-      const s = sessionStore.get(sessionId);
-      if (s?.live.subtitleAgent?.enabled && attempted.size > 0) {
-        setPrepareState(s, {
-          running: false,
-          total: attempted.size,
-          done,
-          failed,
-          currentItemId: null,
-        });
-        console.log(`[subtitle] auto-prepare done ok=${done - failed} failed=${failed}`);
-      }
-      autoPrepareRunning.delete(sessionId);
-    }
-  })();
 }
 
 // ── Guardar la letra de LRCLIB en la Biblioteca (sugerida) ───────────────
@@ -2027,8 +1782,6 @@ export function maybeStartKaraokeOnGuionItem(
     console.log(
       `[subtitle] skip prefetch item=${item.id} (live item ${liveId} is projecting)`,
     );
-    // Background rows never touch what is projecting: still prepare it.
-    maybeAutoPrepare(session.id);
     return;
   }
 
@@ -2046,75 +1799,10 @@ export function maybeStartKaraokeOnGuionItem(
   };
   const message = sessionStore.touchSubtitleAgent(session);
   broadcastSession(session.id, message);
-  // The row prepares itself in the background queue (own cache, never
-  // cancelled by selecting other rows).
-  maybeAutoPrepare(session.id);
-}
-
-/**
- * Look at every A/V row of the Guion (playlist order) and mark green 100 % the
- * ones whose aligned karaoke already exists (in-memory cache or on disk), so
- * the operator sees at a glance which songs are ready without selecting them.
- * Only reads caches: no download, no ASR, and the agent state is untouched.
- */
-export async function precheckGuionReady(sessionId: string): Promise<void> {
-  const session = sessionStore.get(sessionId);
-  const agent = session?.live.subtitleAgent;
-  if (!session || !agent?.enabled) return;
-  const targetLang = agent.targetLang;
-  const ready: string[] = [];
-  for (const item of session.playlist.items) {
-    if (item.type !== "video" && item.type !== "audio") continue;
-    const resolved = resolveMediaSource(session, item.id);
-    if (!resolved.ok) continue;
-    if (recallReadyAgent(sessionId, item.id, resolved.assetId, targetLang)) {
-      ready.push(item.id);
-      continue;
-    }
-    try {
-      const key = await resolveCacheKey(resolved.assetId, resolved.mediaPath);
-      if (!key) continue;
-      const saved = await loadPersistedAgent(key, targetLang);
-      if (saved && (await persistedStillValid(saved))) ready.push(item.id);
-    } catch {
-      // unreadable cache entry: leave the row as not prepared
-    }
-  }
-  const live = sessionStore.get(sessionId);
-  if (!live?.live.subtitleAgent?.enabled) return;
-  if (markItemsReady(sessionId, ready)) {
-    broadcastSession(sessionId, sessionStore.touchSubtitleAgent(live));
-  }
-  // The row on screen is cached: show its cues now (it was waiting for us).
-  const cur = live.live.subtitleAgent;
-  const focusId = cur.itemId;
-  if (focusId && ready.includes(focusId) && cur.status !== "ready") {
-    const rr = resolveMediaSource(live, focusId);
-    if (rr.ok) {
-      const hit = recallReadyAgent(sessionId, focusId, rr.assetId, targetLang);
-      if (hit) {
-        live.live.subtitleAgent = {
-          ...hit,
-          enabled: true,
-          fontSize: cur.fontSize,
-          leadMs: cur.leadMs,
-          cueIndex: null,
-          prepare: cur.prepare,
-          updatedAt: new Date().toISOString(),
-        };
-        broadcastSession(sessionId, sessionStore.touchSubtitleAgent(live));
-      } else {
-        await restorePersistedAgent(
-          sessionId,
-          focusId,
-          rr.assetId,
-          rr.mediaPath,
-          targetLang,
-          false,
-        );
-      }
-    }
-  }
+  void runSubtitleJob(session.id, item.id, {
+    force: true,
+    source: "guion_add",
+  });
 }
 
 /** In-flight job per session — lets non-forced triggers join instead of restart. */
@@ -2188,12 +1876,10 @@ type JobSource =
   | "guion_add"
   | "toggle_or_set"
   | "go_live"
-  | "prepare"
-  | "teach"
   | "other";
 
 /**
- * Entry point for every trigger (Guion add, toggle, Go Live, teach).
+ * Entry point for every trigger (Guion add, toggle, Go Live).
  * A non-forced trigger for the SAME item+asset+lang that is already being
  * processed is dropped: restarting would supersede the running job, wipe the
  * cues and redo the (slow) download / silence scan / alignment from scratch.
@@ -2203,7 +1889,6 @@ async function runSubtitleJob(
   preferredItemId?: string,
   options?: {
     force?: boolean;
-    teachSongId?: string;
     source?: JobSource;
   },
 ): Promise<void> {
@@ -2226,9 +1911,7 @@ async function runSubtitleJob(
     peekSession &&
     peekAgent &&
     peekResolved?.ok &&
-    !options?.teachSongId &&
     (source === "go_live" ||
-      source === "prepare" ||
       (source === "toggle_or_set" && options?.force !== true))
   ) {
     const shown =
@@ -2268,9 +1951,7 @@ async function runSubtitleJob(
     peekSession &&
     peekAgent &&
     peekResolved?.ok &&
-    !options?.teachSongId &&
     (source === "guion_add" ||
-      source === "prepare" ||
       source === "go_live" ||
       (source === "toggle_or_set" && options?.force !== true))
   ) {
@@ -2309,7 +1990,6 @@ async function runSubtitleJob(
     peekAgent &&
     peekResolved?.ok &&
     source !== "go_live" &&
-    !options?.teachSongId &&
     isRowQueued(sessionId, peekResolved.item.id)
   ) {
     if (peekAgent.itemId !== peekResolved.item.id) {
@@ -2351,8 +2031,7 @@ async function runSubtitleJob(
     key &&
     running?.key === key &&
     Date.now() - running.at < INFLIGHT_MAX_AGE_MS &&
-    options?.force !== true &&
-    !options?.teachSongId
+    options?.force !== true
   ) {
     console.log(`[subtitle] job already running for this item — not restarting`);
     return;
@@ -2380,10 +2059,9 @@ async function runSubtitleJob(
 async function runSubtitleJobInner(
   sessionId: string,
   preferredItemId?: string,
-  options?: { force?: boolean; teachSongId?: string; source?: JobSource },
+  options?: { force?: boolean; source?: JobSource },
 ): Promise<void> {
   const force = options?.force === true;
-  const teachSongId = options?.teachSongId?.trim() || undefined;
   const sessionPeek = sessionStore.get(sessionId);
   const agentPeek = sessionPeek?.live.subtitleAgent;
   if (
@@ -2433,8 +2111,7 @@ async function runSubtitleJobInner(
     return;
   }
 
-  // Same item+asset already ready for this target — keep cues
-  // (unless operator is teaching a different cancionero song).
+  // Same item+asset already ready for this target — keep cues.
   // Reject corrupt clocks (NaN/undefined from short onset maps) so we rebuild.
   const cuesHealthy =
     agent.cues.length > 0 &&
@@ -2446,7 +2123,6 @@ async function runSubtitleJobInner(
         Boolean(String(c.text ?? "").trim()),
     );
   if (
-    !teachSongId &&
     !force &&
     agent.status === "ready" &&
     agent.itemId === resolved.item.id &&
@@ -2490,7 +2166,6 @@ async function runSubtitleJobInner(
       gen,
       targetLang,
       resolved,
-      teachSongId,
     });
     if (cancioneroDone) return;
     if (!isCurrent(sessionId, gen)) return;

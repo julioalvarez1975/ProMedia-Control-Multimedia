@@ -1,7 +1,7 @@
 import { useRef, useState, type ReactNode } from "react";
 import { useLocale } from "../locale/LocaleContext";
 import type { PlaylistItem, SubtitleItemProgress } from "@promedia/shared";
-import { itemLabel } from "@promedia/shared";
+import { itemLabel, manualLyricLines } from "@promedia/shared";
 import {
   ScheduleTypeIcon,
   scheduleKindOf,
@@ -25,6 +25,10 @@ export type SchedulePanelProps = {
   items: PlaylistItem[];
   selectedItemId: string | null;
   liveItemId: string | null;
+  /** Text item whose line is over the live video/background, if any. */
+  lyricOverlayItemId?: string | null;
+  /** Show that song's lines over the current output without stopping audio. */
+  onLyricOverlay?: (id: string) => void;
   checkedIds: Set<string>;
   sessionReady: boolean;
   canMutate: boolean;
@@ -115,6 +119,8 @@ export function SchedulePanel({
   items,
   selectedItemId,
   liveItemId,
+  lyricOverlayItemId,
+  onLyricOverlay,
   checkedIds,
   sessionReady,
   canMutate,
@@ -521,6 +527,29 @@ export function SchedulePanel({
                       >
                         {t("playlist.goLiveShort")}
                       </button>
+                      {item.type === "text" && onLyricOverlay ? (
+                        <button
+                          type="button"
+                          className={[
+                            "btn btn-ghost schedule-go-btn",
+                            lyricOverlayItemId === item.id ? "is-on-air" : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" ")}
+                          disabled={
+                            !canMutate || manualLyricLines(item).length === 0
+                          }
+                          title={
+                            lyricOverlayItemId === item.id
+                              ? t("playlist.lyricOverOnTitle")
+                              : t("playlist.lyricOverTitle")
+                          }
+                          aria-pressed={lyricOverlayItemId === item.id}
+                          onClick={() => onLyricOverlay(item.id)}
+                        >
+                          {t("playlist.lyricOver")}
+                        </button>
+                      ) : null}
                       {item.type === "text" || item.type === "bible" ? (
                         <button
                           type="button"

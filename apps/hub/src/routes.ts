@@ -22,7 +22,6 @@ import {
 import { broadcastSession } from "./broadcast.js";
 import { libraryStore } from "./library-store.js";
 import { playlistStore } from "./playlist-store.js";
-import { maybeAutoPrepare } from "./subtitle-agent.js";
 import {
   WATERMARK_MAX_BYTES,
   getWatermark,
@@ -688,8 +687,6 @@ export function createApiRoutes(): Hono {
       return c.json({ error: result.error }, 400);
     }
     broadcastSession(sessionId, result.message);
-    // New A/V rows prepare themselves (no-op when the agent is off).
-    maybeAutoPrepare(sessionId);
     return c.json({
       snapshot: sessionStore.toSnapshot(session),
       added: result.added,

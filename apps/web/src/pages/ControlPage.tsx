@@ -29,6 +29,7 @@ import {
   isSubtitleTargetLang,
   itemHasSlides,
   itemProjectionSlideCount,
+  manualLyricLines,
   normalizeThemeBackground,
   songToTextPayload,
 } from "@promedia/shared";
@@ -50,6 +51,7 @@ import {
   StageDotsOverlay,
 } from "../components/StageBackground";
 import { StatusTip } from "../components/StatusTip";
+import { ManualLyricOverlay } from "../components/ManualLyricOverlay";
 import { SubtitleOverlay } from "../components/SubtitleOverlay";
 import { TextItemEditor } from "../components/TextItemEditor";
 import {
@@ -259,6 +261,7 @@ export function ControlPage() {
     [items, selectedItemId],
   );
   const liveItemId = session.snapshot?.live.currentItemId ?? null;
+  const lyricOverlay = session.snapshot?.live.lyricOverlay ?? null;
   const liveItem = useMemo(
     () => items.find((i) => i.id === liveItemId) ?? null,
     [items, liveItemId],
@@ -283,17 +286,6 @@ export function ControlPage() {
   const themeStyle = themeSurfaceStyle(themeId, themeOverrides);
 
   const subtitleFocusItem = liveItem ?? selectedItem;
-  /** "Preparar Guion": some A/V item exists and none is projecting. */
-  const canPrepareGuion = useMemo(() => {
-    const items = session.snapshot?.playlist.items ?? [];
-    const hasTarget = items.some(
-      (i) =>
-        i.type === "audio" ||
-        (i.type === "video" && i.payload.sourceKind === "youtube"),
-    );
-    // The hub prepares rows in the background: allowed while something plays.
-    return hasTarget;
-  }, [session.snapshot?.playlist.items]);
   const subtitleAgentTitle = useMemo(() => {
     if (subtitleAgent.enabled) {
       const st = subtitleAgent.status;
@@ -512,11 +504,6 @@ export function ControlPage() {
     if (!subtitleAgent.enabled || !canMutate) {
       return;
     }
-    // The hub is preparing the Guion in order: re-targeting here would
-    // supersede the running item and restart the queue.
-    if (subtitleAgent.prepare?.running && !liveItemId) {
-      return;
-    }
     const focusId = liveItemId || selectedItemId;
     if (!focusId) {
       return;
@@ -534,7 +521,6 @@ export function ControlPage() {
   }, [
     subtitleAgent.enabled,
     subtitleAgent.itemId,
-    subtitleAgent.prepare?.running,
     liveItemId,
     selectedItemId,
     canMutate,
@@ -789,6 +775,59 @@ export function ControlPage() {
     return Math.max(0, previewLocalPositionMs);
   };
 
+  const lyricOverlayLine = ((): string | null => {
+    if (!lyricOverlay) {
+      return null;
+    }
+    const item = items.find((i) => i.id === lyricOverlay.itemId);
+    if (!item) {
+      return null;
+    }
+    const lines = manualLyricLines(item);
+    if (lines.length === 0) {
+      return null;
+    }
+    return lines[Math.min(lyricOverlay.lineIndex, lines.length - 1)] ?? null;
+  })();
+
+  /** ←/→ steps the manual cancionero line. Leaves the video and its audio. */
+  const stepLyricOverlay = (delta: -1 | 1): boolean => {
+    if (!lyricOverlay) {
+      return false;
+    }
+    const item = items.find((i) => i.id === lyricOverlay.itemId);
+    if (!item) {
+      return false;
+    }
+    const lines = manualLyricLines(item);
+    if (lines.length === 0) {
+      return false;
+    }
+    const next = Math.min(
+      lines.length - 1,
+      Math.max(0, lyricOverlay.lineIndex + delta),
+    );
+    if (next !== lyricOverlay.lineIndex) {
+      session.setLyricOverlay({ itemId: lyricOverlay.itemId, lineIndex: next });
+    }
+    return true;
+  };
+
+  /**
+   * Put this song over the video or background. Second press hides it.
+   * Does not replace the live item, so the video audio keeps playing.
+   */
+  const toggleLyricOverlay = (id: string) => {
+    if (!ensureWsOrHint()) {
+      return;
+    }
+    if (lyricOverlay?.itemId === id) {
+      session.setLyricOverlay({ itemId: null });
+      return;
+    }
+    session.setLyricOverlay({ itemId: id, lineIndex: 0 });
+  };
+
   const nudgeKaraoke = (delta: -1 | 1) => {
     if (!karaokeManualReady || !selectedItem) {
       return false;
@@ -892,6 +931,9 @@ export function ControlPage() {
     toggleVideoCover,
     setTheme: (id) => session.setTheme({ themeId: id }),
     prevSlide: () => {
+      if (stepLyricOverlay(-1)) {
+        return;
+      }
       if (nudgeKaraoke(-1)) {
         return;
       }
@@ -904,6 +946,9 @@ export function ControlPage() {
       }
     },
     nextSlide: () => {
+      if (stepLyricOverlay(1)) {
+        return;
+      }
       if (nudgeKaraoke(1)) {
         return;
       }
@@ -1876,13 +1921,6 @@ export function ControlPage() {
                   });
                 }
               }}
-              subtitlePrepare={subtitleAgent.prepare ?? null}
-              canPrepareGuion={canPrepareGuion}
-              onPrepareGuion={() =>
-                session.prepareSubtitleAgent(
-                  Boolean(subtitleAgent.prepare?.running),
-                )
-              }
               showSaveLyrics={subtitleAgent.lyricsSource === "lrclib"}
               onSaveLyrics={() => session.saveSubtitleLyrics()}
               sessionFallback={
@@ -1948,88 +1986,6 @@ export function ControlPage() {
 
       <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
 
-      {popupBlockedUrl ? (
-        <div className="control-banner control-banner-compact" role="status">
-          <StatusTip
-            tone="warn"
-            label={t("control.statusTipWarn")}
-            message={t("control.popupBlocked")}
-          />
-          <a
-            className="control-banner-link"
-            href={popupBlockedUrl}
-            target="_blank"
-            rel="noopener"
-          >
-            {t("control.openOutput")}
-          </a>
-        </div>
-      ) : null}
-
-      {uploadHint ? (
-        <div className="control-banner control-banner-compact" role="status">
-          <StatusTip
-            tone="info"
-            label={t("control.statusTipInfo")}
-            message={uploadHint}
-          />
-          <button
-            type="button"
-            className="btn btn-ghost"
-            onClick={() => setUploadHint(null)}
-          >
-            {t("control.dismissHint")}
-          </button>
-        </div>
-      ) : null}
-
-      {needsRemotePair && !session.hasSession && !session.hubUnreachable ? (
-        <div
-          className="control-banner control-banner-pair"
-          role="dialog"
-          aria-label={t("control.pairTitle")}
-        >
-          <StatusTip
-            tone="info"
-            label={t("control.statusTipInfo")}
-            message={t("control.pairBody")}
-          />
-          <form
-            className="control-pair-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              pairWithProjector();
-            }}
-          >
-            <label className="control-pair-label">
-              {t("control.pairCodeLabel")}
-              <input
-                value={pairCode}
-                onChange={(e) =>
-                  setPairCode(e.target.value.toUpperCase().slice(0, 8))
-                }
-                placeholder="AB12"
-                maxLength={8}
-                autoCapitalize="characters"
-                autoCorrect="off"
-                spellCheck={false}
-                autoFocus
-              />
-            </label>
-            <button
-              type="submit"
-              className="btn btn-primary"
-              disabled={pairBusy || pairCode.trim().length < 3}
-            >
-              {pairBusy ? t("control.pairBusy") : t("control.pairSubmit")}
-            </button>
-          </form>
-          {pairError ? (
-            <p className="control-banner-error-text">{pairError}</p>
-          ) : null}
-        </div>
-      ) : null}
-
       <VideoCoverDialog
         open={coverDialogOpen}
         onClose={() => setCoverDialogOpen(false)}
@@ -2043,105 +1999,6 @@ export function ControlPage() {
           setCoverDialogOpen(false);
         }}
       />
-
-      {!session.hubUnreachable && !envIssuesDismissed && envIssues.length > 0 ? (
-        <div
-          className="control-banner control-banner-env control-banner-compact"
-          role={envIssues.some((c) => c.status === "fail") ? "alert" : "status"}
-        >
-          <strong>{t("control.envIssuesTitle")}</strong>
-          <ul className="control-banner-env-list">
-            {envIssues.map((c) => (
-              <li key={c.id}>
-                <b>{c.status === "fail" ? "✗" : "⚠"} {c.label}:</b> {c.detail}
-                <br />
-                <small>{c.fix}</small>
-              </li>
-            ))}
-          </ul>
-          <p>
-            <small>{t("control.envIssuesHint")}</small>
-          </p>
-          <button
-            type="button"
-            className="btn btn-ghost"
-            onClick={() => setEnvIssuesDismissed(true)}
-          >
-            {t("control.close")}
-          </button>
-        </div>
-      ) : null}
-
-      {session.hubUnreachable ? (
-        <div
-          className="control-banner control-banner-hub-down control-banner-compact"
-          role="alert"
-        >
-          <StatusTip
-            tone="error"
-            label={t("control.statusTipWarn")}
-            message={t("control.hubUnreachable")}
-          />
-          <p className="control-banner-hub-cmd">
-            <code>pnpm dev</code>
-          </p>
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={session.hubChecking}
-            onClick={() => {
-              void session.checkHubHealth().then((ok) => {
-                if (ok && session.hasSession) {
-                  session.reconnect();
-                }
-              });
-            }}
-          >
-            {session.hubChecking
-              ? t("control.hubChecking")
-              : t("control.retryHealth")}
-          </button>
-        </div>
-      ) : null}
-
-      {session.error &&
-      !session.hubUnreachable &&
-      !session.error.startsWith("HUB_UNREACHABLE") ? (
-        <div
-          className="control-banner control-banner-error control-banner-compact"
-          role="alert"
-        >
-          <StatusTip
-            tone="error"
-            label={t("control.statusTipWarn")}
-            message={session.error}
-          />
-        </div>
-      ) : null}
-
-      {sessionReady && !wsReady && !session.hubUnreachable ? (
-        <div
-          className="control-banner control-banner-error control-banner-compact"
-          role="status"
-        >
-          <StatusTip
-            tone="error"
-            label={t("control.statusTipWarn")}
-            message={
-              session.wsStatus === "connecting"
-                ? t("control.wsConnectingHint")
-                : t("control.wsDisconnectedHint")
-            }
-          />
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => session.reconnect()}
-          >
-            {t("control.reconnect")}
-          </button>
-        </div>
-      ) : null}
 
       <input
         ref={unifiedInputRef}
@@ -2222,6 +2079,8 @@ export function ControlPage() {
             items={items}
             selectedItemId={selectedItemId}
             liveItemId={liveItemId}
+            lyricOverlayItemId={lyricOverlay?.itemId ?? null}
+            onLyricOverlay={toggleLyricOverlay}
             checkedIds={checkedIds}
             sessionReady={sessionReady}
             canMutate={canMutate}
@@ -2341,6 +2200,7 @@ export function ControlPage() {
                 />
               ) : editingId && selectedItem?.type === "text" ? (
                 <TextItemEditor
+                  key={editingId}
                   initial={selectedItem.payload}
                   onSave={saveEditText}
                   onCancel={() => setEditingId(null)}
@@ -2605,7 +2465,196 @@ export function ControlPage() {
                   {t("control.videoCover")}
                 </span>
               </button>
-              <span className="preview-tb-spacer" />
+              <div className="preview-notices" aria-live="polite">
+                {popupBlockedUrl ? (
+                  <div className="control-banner control-banner-compact" role="status">
+                    <StatusTip
+                      tone="warn"
+                      label={t("control.statusTipWarn")}
+                      message={t("control.popupBlocked")}
+                    />
+                    <span className="preview-notice-text">
+                      {t("control.popupBlocked")}
+                    </span>
+                    <a
+                      className="control-banner-link"
+                      href={popupBlockedUrl}
+                      target="_blank"
+                      rel="noopener"
+                    >
+                      {t("control.openOutput")}
+                    </a>
+                  </div>
+                ) : null}
+                {uploadHint ? (
+                  <div className="control-banner control-banner-compact" role="status">
+                    <StatusTip
+                      tone="info"
+                      label={t("control.statusTipInfo")}
+                      message={uploadHint}
+                    />
+                    <span className="preview-notice-text">{uploadHint}</span>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={() => setUploadHint(null)}
+                    >
+                      {t("control.dismissHint")}
+                    </button>
+                  </div>
+                ) : null}
+                {needsRemotePair && !session.hasSession && !session.hubUnreachable ? (
+                  <div
+                    className="control-banner control-banner-pair"
+                    role="dialog"
+                    aria-label={t("control.pairTitle")}
+                  >
+                    <StatusTip
+                      tone="info"
+                      label={t("control.statusTipInfo")}
+                      message={t("control.pairBody")}
+                    />
+                    <span className="preview-notice-text">{t("control.pairBody")}</span>
+                    <form
+                      className="control-pair-form"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        pairWithProjector();
+                      }}
+                    >
+                      <label className="control-pair-label">
+                        {t("control.pairCodeLabel")}
+                        <input
+                          value={pairCode}
+                          onChange={(e) =>
+                            setPairCode(e.target.value.toUpperCase().slice(0, 8))
+                          }
+                          placeholder="AB12"
+                          maxLength={8}
+                          autoCapitalize="characters"
+                          autoCorrect="off"
+                          spellCheck={false}
+                          autoFocus
+                        />
+                      </label>
+                      <button
+                        type="submit"
+                        className="btn btn-primary"
+                        disabled={pairBusy || pairCode.trim().length < 3}
+                      >
+                        {pairBusy ? t("control.pairBusy") : t("control.pairSubmit")}
+                      </button>
+                    </form>
+                    {pairError ? (
+                      <p className="control-banner-error-text">{pairError}</p>
+                    ) : null}
+                  </div>
+                ) : null}
+                {!session.hubUnreachable &&
+                !envIssuesDismissed &&
+                envIssues.length > 0 ? (
+                  <div
+                    className="control-banner control-banner-env control-banner-compact"
+                    role={
+                      envIssues.some((c) => c.status === "fail")
+                        ? "alert"
+                        : "status"
+                    }
+                  >
+                    <StatusTip
+                      tone="warn"
+                      label={t("control.envIssuesTitle")}
+                      message={envIssues
+                        .map((c) => `${c.label}: ${c.detail} — ${c.fix}`)
+                        .join("\n")}
+                    />
+                    <span className="preview-notice-text">
+                      {t("control.envIssuesTitle")}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={() => setEnvIssuesDismissed(true)}
+                    >
+                      {t("control.close")}
+                    </button>
+                  </div>
+                ) : null}
+                {session.hubUnreachable ? (
+                  <div
+                    className="control-banner control-banner-hub-down control-banner-compact"
+                    role="alert"
+                  >
+                    <StatusTip
+                      tone="error"
+                      label={t("control.statusTipWarn")}
+                      message={`${t("control.hubUnreachable")} pnpm dev`}
+                    />
+                    <span className="preview-notice-text">
+                      {t("control.hubUnreachable")}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={session.hubChecking}
+                      onClick={() => {
+                        void session.checkHubHealth().then((ok) => {
+                          if (ok && session.hasSession) {
+                            session.reconnect();
+                          }
+                        });
+                      }}
+                    >
+                      {session.hubChecking
+                        ? t("control.hubChecking")
+                        : t("control.retryHealth")}
+                    </button>
+                  </div>
+                ) : null}
+                {session.error &&
+                !session.hubUnreachable &&
+                !session.error.startsWith("HUB_UNREACHABLE") ? (
+                  <div
+                    className="control-banner control-banner-error control-banner-compact"
+                    role="alert"
+                  >
+                    <StatusTip
+                      tone="error"
+                      label={t("control.statusTipWarn")}
+                      message={session.error}
+                    />
+                    <span className="preview-notice-text">{session.error}</span>
+                  </div>
+                ) : null}
+                {sessionReady && !wsReady && !session.hubUnreachable ? (
+                  <div
+                    className="control-banner control-banner-error control-banner-compact"
+                    role="status"
+                  >
+                    <StatusTip
+                      tone="error"
+                      label={t("control.statusTipWarn")}
+                      message={
+                        session.wsStatus === "connecting"
+                          ? t("control.wsConnectingHint")
+                          : t("control.wsDisconnectedHint")
+                      }
+                    />
+                    <span className="preview-notice-text">
+                      {session.wsStatus === "connecting"
+                        ? t("control.wsConnectingHint")
+                        : t("control.wsDisconnectedHint")}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => session.reconnect()}
+                    >
+                      {t("control.reconnect")}
+                    </button>
+                  </div>
+                ) : null}
+              </div>
               <StatusTip
                 tone="info"
                 className="preview-tb-shortcuts"
@@ -2690,6 +2739,13 @@ export function ControlPage() {
               ) : (
                 <p>{t("control.previewEmpty")}</p>
               )}
+              {lyricOverlay && selectedItem?.id !== lyricOverlay.itemId ? (
+                <ManualLyricOverlay
+                  line={lyricOverlayLine}
+                  fontSize={subtitleAgent.fontSize}
+                  transitionEffect={transitionEffect}
+                />
+              ) : (
               <SubtitleOverlay
                 agent={subtitleAgent}
                 mediaClock={
@@ -2708,6 +2764,7 @@ export function ControlPage() {
                 itemId={selectedItem?.id ?? null}
                 transitionEffect={transitionEffect}
               />
+              )}
             </div>
           </section>
         </div>

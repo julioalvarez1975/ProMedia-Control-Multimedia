@@ -57,7 +57,7 @@ const SUBTITLE_FIT_BY_SIZE: Record<
  * Karaoke projection: up to 2 large lines. Cancionero newlines win when present.
  * Soft-wrap may use up to LYRIC_OVERLAY_MAX_LINES for a single long phrase.
  */
-function lyricOverlayDisplayLines(raw: string): string[] {
+export function lyricOverlayDisplayLines(raw: string): string[] {
   const exact = String(raw ?? "")
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
