@@ -388,6 +388,7 @@
   "library.filter": "筛选",
   "library.loading": "Loading library…",
   "library.empty": "Library empty — upload files or create a song.",
+  "library.sessionExpired": "Session expired (hub restarted). Close the library, wait for Control to reconnect (or reload the page), then open it again.",
   "library.upload": "上传文件",
   "library.uploading": "Uploading…",
   "library.createSong": "创建歌曲",

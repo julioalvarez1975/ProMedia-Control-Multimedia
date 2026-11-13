@@ -1,27 +1,27 @@
-# WhisperX karaoke align
+# Sidecars Python del agente karaoke
 
-ProMedia karaoke uses **WhisperX forced alignment**: the Biblioteca / cancionero
-letter is fixed; WhisperX only places each line on the audio timeline
-(wav2vec2 CTC). Spanish defaults to
-`jonatasgrosman/wav2vec2-large-xlsr-53-spanish` (not the VoxPopuli CC-BY-NC
-model).
+## Fast Whisper (ASR)
 
-## Install (once)
-
-Python **3.11 or 3.12** recommended:
+Transcribe audio local cuando hace falta generar o alinear letra. El venv
+sigue viviendo en `data/models/whisperx-venv/` (nombre histórico).
 
 ```bash
-# from repo root
 python3.12 -m venv data/models/whisperx-venv
 data/models/whisperx-venv/bin/pip install -U pip
 data/models/whisperx-venv/bin/pip install -r apps/hub/python/requirements-whisperx.txt
 ```
 
-Optional env:
+Script: `faster_whisper_asr.py` (JSON por stdin/stdout).
 
-- `SUBTITLE_WHISPERX_PYTHON` — path to the venv python
-- `SUBTITLE_WHISPERX_DEVICE` — `cpu` | `cuda` | `mps` | `auto`
-- `SUBTITLE_WHISPERX_ALIGN_MODEL` — override HuggingFace / torchaudio model id
-- `SUBTITLE_WHISPERX_TIMEOUT_MS` — default 600000
+Variables útiles:
 
-If WhisperX is missing, the hub falls back to silence / whisper.cpp align.
+- `SUBTITLE_WHISPERX_PYTHON` — intérprete del venv (nombre histórico)
+- `SUBTITLE_FASTER_WHISPER_MODEL` — default `base`
+- `SUBTITLE_FASTER_WHISPER_COMPUTE` — default `int8`
+- `SUBTITLE_FASTER_WHISPER_TIMEOUT_MS`
+
+## WhisperX (eliminado)
+
+La alineación forzada wav2vec2 (`whisperx_align.py`) se retiró: en culto
+empaquetaba la letra en la intro. El karaoke usa **LRCLIB** (relojes LRC) y
+**Fast Whisper** solo si acierta ≥99 % de renglones.

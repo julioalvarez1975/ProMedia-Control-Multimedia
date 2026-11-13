@@ -5,9 +5,8 @@
  * Nothing here blocks the hub: a missing tool only disables the feature.
  */
 import { spawn } from "node:child_process";
-import { access, constants, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   resolveFfmpegBin,
   resolveWhisperCliBin,
@@ -28,11 +27,6 @@ export type StartupCheck = {
   fix: string;
 };
 
-const ALIGN_SCRIPT = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "../python/whisperx_align.py",
-);
-
 /** Run `bin ...args`, resolve the first output line (or null if it fails). */
 export function probeCommand(
   bin: string,
@@ -42,28 +36,69 @@ export function probeCommand(
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+      // Drain both pipes — an unread stderr buffer can deadlock the child
+      // (yt-dlp/whisper under parallel boot) and look like “no se ejecuta”.
+      child = spawn(bin, args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: process.env,
+      });
     } catch {
       resolve(null);
       return;
     }
     let out = "";
+    let err = "";
+    let settled = false;
+    const finish = (value: string | null) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
     const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      resolve(null);
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+      finish(null);
     }, timeoutMs);
     child.stdout?.on("data", (c: Buffer) => {
       out += c.toString("utf8");
     });
+    child.stderr?.on("data", (c: Buffer) => {
+      err += c.toString("utf8");
+    });
     child.on("error", () => {
-      clearTimeout(timer);
-      resolve(null);
+      finish(null);
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve(code === 0 ? (out.split("\n")[0] ?? "").trim() || "ok" : null);
+      if (code !== 0) {
+        finish(null);
+        return;
+      }
+      const line =
+        (out.split("\n")[0] ?? "").trim() ||
+        (err.split("\n")[0] ?? "").trim() ||
+        "ok";
+      finish(line);
     });
   });
+}
+
+/** One retry — brew yt-dlp is a Python cold start and can exceed 5s under load. */
+async function probeCommandRetry(
+  bin: string,
+  args: string[],
+  timeoutMs: number,
+): Promise<string | null> {
+  const first = await probeCommand(bin, args, timeoutMs);
+  if (first !== null) {
+    return first;
+  }
+  return probeCommand(bin, args, timeoutMs);
 }
 
 function result(
@@ -99,22 +134,16 @@ export async function runStartupChecks(
   const ffmpegBin = bins?.ffmpeg ?? resolveFfmpegBin();
   const ytBin = bins?.ytDlp ?? resolveYtDlpBin();
   const cliBin = bins?.whisperCli ?? resolveWhisperCliBin();
-  const [ffmpeg, ytdlp, cli, modelOk, wxPython, fwPython, dataOk] =
-    await Promise.all([
-      probeCommand(ffmpegBin, ["-version"]),
-      probeCommand(ytBin, ["--version"]),
-      probeCommand(cliBin, ["--help"]),
-      fileLooksComplete(whisperCppModelPath()),
-      resolvePythonFor("whisperx"),
-      resolvePythonFor("faster_whisper"),
-      writable(subtitleDataRoot()),
-    ]);
-  let alignScript = true;
-  try {
-    await access(ALIGN_SCRIPT, constants.F_OK);
-  } catch {
-    alignScript = false;
-  }
+  // Probe CLIs first (quick). Python venv imports run after so they do not
+  // starve yt-dlp’s interpreter during a parallel cold start.
+  const [ffmpeg, ytdlp, cli, modelOk, dataOk] = await Promise.all([
+    probeCommand(ffmpegBin, ["-version"]),
+    probeCommandRetry(ytBin, ["--version"], 15_000),
+    probeCommand(cliBin, ["--help"], 10_000),
+    fileLooksComplete(whisperCppModelPath()),
+    writable(subtitleDataRoot()),
+  ]);
+  const fwPython = await resolvePythonFor("faster_whisper");
 
   return [
     result(
@@ -152,23 +181,12 @@ export async function runStartupChecks(
       "warn",
     ),
     result(
-      "whisperx",
-      "WhisperX (alineación)",
-      Boolean(wxPython) && alignScript,
-      wxPython ?? "",
-      alignScript
-        ? "no se puede importar whisperx"
-        : "falta apps/hub/python/whisperx_align.py",
-      "Creá el venv: python3.12 -m venv data/models/whisperx-venv && data/models/whisperx-venv/bin/pip install -r apps/hub/python/requirements-whisperx.txt. Sin él los tiempos de la letra son menos precisos.",
-      "warn",
-    ),
-    result(
       "faster-whisper",
-      "faster-whisper",
+      "faster-whisper (ASR karaoke)",
       Boolean(fwPython),
       fwPython ?? "",
       "no se puede importar faster_whisper",
-      "Transcribe las canciones que no están en el cancionero; viene con el venv de WhisperX. Sin él se usa whisper.cpp.",
+      "Creá el venv: python3.12 -m venv data/models/whisperx-venv && data/models/whisperx-venv/bin/pip install -r apps/hub/python/requirements-whisperx.txt. Sin él se usa whisper.cpp / LRCLIB.",
       "warn",
     ),
     result(

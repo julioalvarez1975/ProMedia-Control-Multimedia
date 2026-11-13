@@ -12,8 +12,8 @@ import {
   SILENCE_AIR_ANTICIPATION_MS,
 } from "../src/subtitle-silence.js";
 
-assert.equal(SILENCE_AIR_ANTICIPATION_MS, 400);
-assert.equal(cueStartWithAirMs(1000), 600);
+assert.equal(SILENCE_AIR_ANTICIPATION_MS, 700);
+assert.equal(cueStartWithAirMs(1000), 300);
 assert.equal(cueStartWithAirMs(100), 0);
 assert.equal(cueStartWithAirMs(1000, 0), 1000);
 

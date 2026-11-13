@@ -25,6 +25,7 @@ import {
   isHubUnreachableError,
   joinSession,
   probeHubHealth,
+  probeSessionAlive,
 } from "../lib/hub";
 import { clearLibraryAuth, setLibraryAuth } from "../lib/libraryAuth";
 import { SessionSocket } from "../lib/session-socket";
@@ -34,6 +35,8 @@ export type WsStatus = "idle" | "connecting" | "open" | "closed" | "error";
 const RECONNECT_MS = 800;
 const HUB_HINT =
   "HUB_UNREACHABLE: El hub no está corriendo. Abrí Terminal en la carpeta promedia y ejecutá: pnpm dev";
+const SESSION_EXPIRED_HINT =
+  "SESSION_EXPIRED: El hub se reinició y esta sesión ya no existe. Creando una nueva…";
 
 function applyHubMessage(
   msg: HubMessage,
@@ -276,7 +279,36 @@ export function useSessionConnection(role: ClientRole) {
     socketRef.current.reconnectWithResync();
   }, [attachSocket, clearReconnectTimer, role, sessionId, wsTicket]);
 
-  // Auto-reconnect on closed/error for Control and Output.
+  /**
+   * After a hub restart the in-memory session/ticket is gone. Rejoining with the
+   * saved accessToken (or creating a new session on Control) unblocks Biblioteca.
+   */
+  const recoverAfterHubRestart = useCallback(async () => {
+    if (role !== "control") {
+      return;
+    }
+    setError(SESSION_EXPIRED_HINT);
+    setWsStatus("connecting");
+    const token = accessToken.trim();
+    if (token) {
+      try {
+        await join({ accessToken: token });
+        setError(null);
+        return;
+      } catch {
+        // Token died with the hub process — fall through to create.
+      }
+    }
+    try {
+      await create();
+      setError(null);
+    } catch (err) {
+      setError(formatSessionError(err));
+    }
+  }, [accessToken, create, join, role]);
+
+  // Auto-reconnect on closed/error. If the hub is up but the ticket is dead
+  // (typical after restart), recover a fresh Control session instead of looping.
   useEffect(() => {
     if (!sessionId || !wsTicket) {
       return;
@@ -287,10 +319,39 @@ export function useSessionConnection(role: ClientRole) {
     clearReconnectTimer();
     reconnectTimerRef.current = window.setTimeout(() => {
       reconnectTimerRef.current = null;
-      reconnect();
+      void (async () => {
+        const hubOk = await probeHubHealth();
+        if (!hubOk) {
+          setHubUnreachable(true);
+          setError(HUB_HINT);
+          reconnect();
+          return;
+        }
+        const alive = await probeSessionAlive({
+          sessionId,
+          credential: wsTicket,
+          accessToken,
+        });
+        if (!alive) {
+          if (role === "control") {
+            await recoverAfterHubRestart();
+          }
+          return;
+        }
+        reconnect();
+      })();
     }, RECONNECT_MS);
     return () => clearReconnectTimer();
-  }, [wsStatus, sessionId, wsTicket, reconnect, clearReconnectTimer]);
+  }, [
+    wsStatus,
+    sessionId,
+    wsTicket,
+    accessToken,
+    role,
+    reconnect,
+    recoverAfterHubRestart,
+    clearReconnectTimer,
+  ]);
 
   const addItem = useCallback(
     (item: PlaylistItem): boolean => send("playlist.itemAdd", { item }),

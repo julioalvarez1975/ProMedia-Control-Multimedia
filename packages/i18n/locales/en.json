@@ -397,6 +397,7 @@
   "library.filter": "Filter",
   "library.loading": "Loading library…",
   "library.empty": "Library empty — upload files or create a song.",
+  "library.sessionExpired": "Session expired (hub restarted). Close the library, wait for Control to reconnect (or reload the page), then open it again.",
   "library.upload": "Upload file",
   "library.uploading": "Uploading…",
   "library.createSong": "Create song",

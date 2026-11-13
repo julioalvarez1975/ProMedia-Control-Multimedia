@@ -1,6 +1,20 @@
 {
   "version": 1,
-  "byMedia": {},
-  "byTitle": {},
+  "byMedia": {
+    "yt:mVkWoznNTOk": {
+      "songId": "373deedc664694047f0a",
+      "songTitle": "Perfume a tus pies",
+      "source": "exact",
+      "updatedAt": "2026-11-13T04:48:05.362Z"
+    }
+  },
+  "byTitle": {
+    "perfume a tus pies": {
+      "songId": "373deedc664694047f0a",
+      "songTitle": "Perfume a tus pies",
+      "source": "exact",
+      "updatedAt": "2026-11-13T04:48:05.362Z"
+    }
+  },
   "timingByMedia": {}
 }

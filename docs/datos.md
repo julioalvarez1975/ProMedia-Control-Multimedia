@@ -23,7 +23,7 @@ data/
     sidecars/               .srt / .vtt nombrados como el archivo o como {assetId}
   models/
     whisper/                ggml-base.bin (whisper.cpp)
-    whisperx-venv/          Python 3.11/3.12 opcional
+    whisperx-venv/          Python 3.12 + faster-whisper (nombre histórico)
 ```
 
 En Docker el volumen es `/data` dentro del contenedor (`MEDIA_ROOT=/data/media`, `PLAYLISTS_PATH=/data/playlists.json`).

@@ -89,7 +89,7 @@ Orden de la **letra** (la primera que exista):
 2. [LRCLIB](https://lrclib.net) si `PROMEDIA_LRCLIB` no es `0`.
 3. Captions de YouTube, pista `.srt`/`.vtt`, o transcripción (faster-whisper o whisper.cpp).
 
-Orden de los **tiempos**: subtítulos oficiales o sidecars, relojes de LRCLIB, alineación WhisperX (wav2vec2), reparto uniforme.
+Orden de los **tiempos**: Fast Whisper (≥99 % de renglones), relojes LRC de LRCLIB + texto del cancionero, subtítulos oficiales o sidecars, reparto uniforme. WhisperX (wav2vec2) fue retirado.
 
 Los silencios solo blanquean la pantalla entre frases. El detalle de instalación está en el README raíz y en `apps/hub/python/README.md`.
 

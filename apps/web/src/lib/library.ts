@@ -23,6 +23,9 @@ export async function listLibraryItems(opts?: {
     { headers: libraryAuthHeaders() },
   );
   if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      throw new Error("library_session_expired");
+    }
     throw new Error(`library_list_failed_${res.status}`);
   }
   const data = (await res.json()) as { items: LibraryItem[] };

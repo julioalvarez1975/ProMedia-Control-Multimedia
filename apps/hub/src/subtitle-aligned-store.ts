@@ -294,3 +294,77 @@ export async function forgetPersistedAgent(assetId: string): Promise<void> {
     // nothing saved yet
   }
 }
+
+/**
+ * Wipe karaoke calculation artifacts for one song before aligning it again:
+ * aligned JSON, ASR transcript cache, WhisperX wav temps. Keeps the YouTube
+ * audio download so the next run does not re-fetch the file.
+ */
+export async function purgeKaraokeCacheForSong(options: {
+  assetId: string;
+  mediaPath?: string | null;
+}): Promise<number> {
+  const assetId = options.assetId.trim();
+  if (!assetId) return 0;
+  const key =
+    (await resolveCacheKey(assetId, options.mediaPath ?? null)) ?? assetId;
+  let removed = 0;
+
+  clearPersistMeta(assetId);
+  for (const [file, payload] of pendingWrites) {
+    if (payload.fileKey === key || file.includes(`${key}.`)) {
+      pendingWrites.delete(file);
+      const t = writeTimers.get(file);
+      if (t) {
+        clearTimeout(t);
+        writeTimers.delete(file);
+      }
+    }
+  }
+
+  const dropMatching = async (dir: string, match: (name: string) => boolean) => {
+    let names: string[];
+    try {
+      names = await readdir(dir);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      if (!match(name)) continue;
+      try {
+        await rm(path.join(dir, name), { force: true, recursive: true });
+        removed += 1;
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  const root = subtitleDataRoot();
+  await dropMatching(alignedDir(), (n) => n.startsWith(`${key}.`));
+  await dropMatching(path.join(root, "cache"), (n) => {
+    const base = n.replace(/\.json$/i, "");
+    return (
+      base === assetId ||
+      base.startsWith(`${assetId}_`) ||
+      base === key ||
+      base.startsWith(`${key}_`) ||
+      n.includes(assetId) ||
+      n.includes(key)
+    );
+  });
+  await dropMatching(path.join(root, "wav"), (n) => {
+    return (
+      n.includes(assetId) ||
+      n.includes(key) ||
+      n.startsWith(`whisperx_${assetId}`)
+    );
+  });
+
+  if (removed > 0) {
+    console.log(
+      `[subtitle] purged karaoke cache for song key=${key} files=${removed}`,
+    );
+  }
+  return removed;
+}

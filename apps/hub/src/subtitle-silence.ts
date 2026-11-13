@@ -11,10 +11,10 @@ import {
 
 /**
  * Show the next phrase lyric this many ms before the voice returns after a
- * breath. Phrases are words until the singer breathes; during the silence the
- * overlay blanks, then the following Biblioteca line appears early.
+ * breath (and before the first sung word). Worship tracks feel late without
+ * this; 700 ms puts the renglón on screen as the voice starts.
  */
-export const SILENCE_AIR_ANTICIPATION_MS = 400;
+export const SILENCE_AIR_ANTICIPATION_MS = 700;
 
 /** Minimum quiet stretch to count as a real phrase break. */
 export const MIN_REAL_SILENCE_MS = 280;

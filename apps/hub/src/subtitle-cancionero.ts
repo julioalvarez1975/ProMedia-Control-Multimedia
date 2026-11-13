@@ -815,9 +815,11 @@ function phraseVoiceEndMs(
 const LAST_WORD_HOLD_PAD_MS = 120;
 
 /**
- * When singing actually begins — for the FIRST caption only.
- * Never starts during a leading quiet; prefers caption/ASR first-word clock
- * once audio has begun (true voz, not the music bed after silence).
+ * When the first lyric is actually sung.
+ *
+ * Word clocks (captions / LRCLIB / WhisperX first-word) are ground truth so
+ * voz ↔ letra. Leading silence only floors a hint that landed inside the
+ * opening quiet, or stands in when no word clock exists yet.
  */
 export function resolveFirstVoiceOnsetMs(
   silences: readonly SilenceRegion[],
@@ -836,14 +838,27 @@ export function resolveFirstVoiceOnsetMs(
       ? Math.max(0, Math.round(timingHintMs))
       : null;
 
-  if (leadEnd != null) {
-    // Still in the opening quiet → open when that quiet ends (voz/audio in).
-    if (hint == null || hint < leadEnd - 100) return leadEnd;
-    // Caption already points at the first sung word after the quiet.
+  const firstStrongOnset = (() => {
+    for (const raw of speechOnsetsMs) {
+      if (typeof raw !== "number" || !Number.isFinite(raw)) continue;
+      const t = Math.max(0, Math.round(raw));
+      if (t >= 2_500) return t;
+    }
+    return null;
+  })();
+
+  if (hint != null) {
+    // Hint during the opening silence cannot be the sung lyric — wait for voice.
+    if (leadEnd != null && hint + 120 < leadEnd) return leadEnd;
+    // Hint in the music bed before the first real phrase break (common WX miss).
+    if (firstStrongOnset != null && hint + 1_500 < firstStrongOnset) {
+      return firstStrongOnset;
+    }
     return hint;
   }
 
-  if (hint != null) return hint;
+  if (leadEnd != null) return leadEnd;
+  if (firstStrongOnset != null) return firstStrongOnset;
 
   for (const raw of speechOnsetsMs) {
     if (typeof raw !== "number" || !Number.isFinite(raw)) continue;
@@ -872,9 +887,13 @@ export function anchorFirstCueToVoiceOnset(
   const voice = Math.max(0, Math.round(voiceOnsetMs));
   const first = Math.max(0, Math.round(cues[0]!.startMs));
   const delta = voice - first;
-  if (Math.abs(delta) < 100) return cues.map((c) => ({ ...c }));
+  // Even a 40 ms drift is worth correcting so cue[0] = “cuando empieza la voz”.
+  if (Math.abs(delta) < 40) return cues.map((c) => ({ ...c }));
   // Guard against a wild silence false-positive yanking the chart.
   if (Math.abs(delta) > 90_000) return cues.map((c) => ({ ...c }));
+  console.log(
+    `[subtitle] voice-anchor shift=${delta}ms first=${first} → voice=${voice}`,
+  );
   return cues.map((c) => {
     const startMs = Math.max(0, Math.round(c.startMs) + delta);
     const endMs = Math.max(startMs + 500, Math.round(c.endMs) + delta);
@@ -943,8 +962,10 @@ export function blankCuesAtPhraseSilence(
             durationMs > 0 ? durationMs : lastWord + 2_000,
           );
 
-    // Anticipate: letter appears before the first word of the phrase.
-    let startMs = cueStartWithAirMs(voiceStart, air);
+    // Cue 0: show with the sung word (voz ↔ letra). Later lines may appear
+    // slightly early after a breath so the next renglón is readable in time.
+    let startMs =
+      i === 0 ? voiceStart : cueStartWithAirMs(voiceStart, air);
     if (i > 0) {
       // After previous breath blank — never overlap the prior renglón.
       startMs = Math.max(startMs, out[i - 1]!.endMs);

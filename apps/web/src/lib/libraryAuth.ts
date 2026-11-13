@@ -25,9 +25,12 @@ export function libraryAuthHeaders(
   extra?: Record<string, string>,
 ): Record<string, string> {
   const headers: Record<string, string> = { ...(extra ?? {}) };
+  // Send both: after a hub restart the wsTicket dies first; the hub can still
+  // accept the accessToken when the Bearer ticket is stale.
   if (current.credential) {
     headers.Authorization = `Bearer ${current.credential}`;
-  } else if (current.accessToken) {
+  }
+  if (current.accessToken) {
     headers["X-ProMedia-Access-Token"] = current.accessToken;
   }
   return headers;

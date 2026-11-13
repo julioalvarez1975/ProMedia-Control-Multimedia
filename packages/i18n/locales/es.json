@@ -397,6 +397,7 @@
   "library.filter": "Filtrar",
   "library.loading": "Cargando biblioteca…",
   "library.empty": "Biblioteca vacía — subí archivos o creá una canción.",
+  "library.sessionExpired": "La sesión caducó (el hub se reinició). Cerrá Biblioteca, esperá a que Control se reconecte (o recargá la página) y volvé a abrirla.",
   "library.upload": "Subir archivo",
   "library.uploading": "Subiendo…",
   "library.createSong": "Crear canción",

@@ -42,3 +42,11 @@ Resumen de las modificaciones locales documentadas y subidas juntos con esta car
 - Import Quelea: conserva cortes (`.` / vacíos) y separa secciones con línea en blanco.
 - Botón **Letra**: overlay también en Vista previa cuando la fila está seleccionada; ←/→ avanza por frase (no renglón suelto); limpia `cueIndex` karaoke trabado.
 - Flechas: si hay A/V en vivo con karaoke, ←/→ lo mueven aunque esté seleccionado un texto.
+
+## Karaoke voz↔letra (nov 2026)
+
+- **En vivo** ya no reinicia un cálculo al 100 % (keep-ready + cache por ítem).
+- Pipeline de tiempos: **Fast Whisper** solo si acierta ≥99 % de renglones y el timeline es plausible; si no, **LRCLIB** (relojes LRC) con el texto del cancionero — también cuando la canción ya está en Biblioteca.
+- Silencio (`ffmpeg silencedetect`): solo blanqueo entre frases / ancla de intro; no sustituye los relojes de letra.
+- **WhisperX eliminado** (`subtitle-whisperx.ts`, `whisperx_align.py`, check de arranque). El venv `data/models/whisperx-venv` queda solo para **faster-whisper**.
+- Auth dual Biblioteca tras reinicio del hub; caché karaoke se limpia al preparar cada canción.

@@ -74,13 +74,26 @@ export function BibliotecaDialog({
     setLoading(true);
     setError(null);
     try {
+      if (!wsTicket && !sessionId) {
+        setError(t("library.sessionExpired"));
+        setItems([]);
+        return;
+      }
       const list = await listLibraryItems({
         category: category === "all" ? undefined : category,
         q: q.trim() || undefined,
       });
       setItems(list);
     } catch (err) {
-      setError(String(err));
+      const msg = String(err);
+      setError(
+        msg.includes("library_session_expired") ||
+          msg.includes("403") ||
+          msg.includes("401")
+          ? t("library.sessionExpired")
+          : msg,
+      );
+      setItems([]);
     } finally {
       setLoading(false);
     }
@@ -91,8 +104,8 @@ export function BibliotecaDialog({
       return;
     }
     void reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload on open/filter
-  }, [open, category]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload on open/filter/auth
+  }, [open, category, wsTicket, sessionId]);
 
   const filteredHint = useMemo(() => {
     if (loading) {

@@ -202,6 +202,24 @@ export async function rememberCancioneroTiming(options: {
   });
 }
 
+/** Drop taught cue clocks for this media (fresh align before each song). */
+export async function forgetCancioneroTiming(
+  mediaKey: string | null | undefined,
+): Promise<void> {
+  const key = mediaKey?.trim();
+  if (!key) return;
+  const mem = await loadMemory();
+  if (!mem.timingByMedia?.[key]) return;
+  const timingByMedia = { ...mem.timingByMedia };
+  delete timingByMedia[key];
+  await saveMemory({
+    version: 1,
+    byMedia: mem.byMedia,
+    byTitle: mem.byTitle,
+    timingByMedia,
+  });
+}
+
 /**
  * Apply remembered starts onto aligned cues when counts match (or nearly).
  * Keeps cue text; only rewrites start/end clocks.

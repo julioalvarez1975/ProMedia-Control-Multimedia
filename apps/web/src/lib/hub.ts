@@ -105,6 +105,39 @@ export async function probeHubHealth(): Promise<boolean> {
   }
 }
 
+/**
+ * True when this Control session still exists in the hub.
+ * After `pnpm dev` / hub restart, tickets die and Biblioteca returns 403.
+ */
+export async function probeSessionAlive(opts: {
+  sessionId: string;
+  credential?: string | null;
+  accessToken?: string | null;
+}): Promise<boolean> {
+  const sessionId = opts.sessionId.trim();
+  if (!sessionId) {
+    return false;
+  }
+  const q = new URLSearchParams();
+  if (opts.credential?.trim()) {
+    q.set("credential", opts.credential.trim());
+  }
+  if (opts.accessToken?.trim()) {
+    q.set("accessToken", opts.accessToken.trim());
+  }
+  try {
+    const res = await fetch(
+      `${hubHttpBase()}/api/v1/sessions/${encodeURIComponent(sessionId)}${
+        q.toString() ? `?${q}` : ""
+      }`,
+      { method: "GET", cache: "no-store" },
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** Hub /health — includes LAN IPs when mode=lan for phone Control URL. */
 export async function fetchHubHealth(): Promise<HubHealth | null> {
   try {

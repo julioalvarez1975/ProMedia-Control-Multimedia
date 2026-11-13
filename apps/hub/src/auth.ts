@@ -67,6 +67,8 @@ export function authorizeSessionAccess(
 /**
  * Hub-global operator gate for Biblioteca mutations (not session-scoped).
  * Accepts a live control wsTicket or any session accessToken.
+ * Tries the ticket first; if it is stale (hub restart), falls back to the
+ * access token so Control does not get a false 403 while both are sent.
  */
 export function authorizeHubOperator(opts: {
   credential?: string | null;
@@ -75,13 +77,10 @@ export function authorizeHubOperator(opts: {
   const credential = opts.credential?.trim();
   if (credential) {
     const ticket = sessionStore.getTicket(credential);
-    if (!ticket || ticket.role !== "control") {
-      return { ok: false, status: 403, error: "forbidden_role" };
+    if (ticket?.role === "control" && sessionStore.get(ticket.sessionId)) {
+      return { ok: true, role: "control" };
     }
-    if (!sessionStore.get(ticket.sessionId)) {
-      return { ok: false, status: 401, error: "session_not_found" };
-    }
-    return { ok: true, role: "control" };
+    // Stale ticket after hub restart — try accessToken below before failing.
   }
   const accessToken = opts.accessToken?.trim();
   if (accessToken) {
@@ -90,6 +89,9 @@ export function authorizeHubOperator(opts: {
       return { ok: false, status: 403, error: "invalid_token" };
     }
     return { ok: true, role: "control" };
+  }
+  if (credential) {
+    return { ok: false, status: 403, error: "invalid_ticket" };
   }
   return { ok: false, status: 401, error: "missing_credentials" };
 }
