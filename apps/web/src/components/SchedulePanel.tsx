@@ -556,7 +556,6 @@ export function SchedulePanel({
                           className="btn btn-ghost"
                           disabled={!canMutate}
                           onClick={() => {
-                            onSelect(item.id);
                             if (item.type === "bible") {
                               onEditBible(item.id);
                             } else {

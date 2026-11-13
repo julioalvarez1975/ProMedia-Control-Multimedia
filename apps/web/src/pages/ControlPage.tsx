@@ -38,6 +38,7 @@ import { BibliotecaDialog } from "../components/BibliotecaDialog";
 import { BibleDialog } from "../components/BibleDialog";
 import { ControlAdBanner } from "../components/ControlAdBanner";
 import { ControlHeaderToolbar } from "../components/ControlHeaderToolbar";
+import { DialogBrand } from "../components/DialogBrand";
 import { LanRemoteHint } from "../components/LanRemoteHint";
 import { LinkAddDialog } from "../components/LinkAddDialog";
 import {
@@ -256,6 +257,13 @@ export function ControlPage() {
     () => items.find((i) => i.id === selectedItemId) ?? null,
     [items, selectedItemId],
   );
+  const editingTextItem = useMemo(() => {
+    if (!editingId) {
+      return null;
+    }
+    const item = items.find((i) => i.id === editingId);
+    return item?.type === "text" ? item : null;
+  }, [editingId, items]);
   const selectedIndex = useMemo(
     () => items.findIndex((i) => i.id === selectedItemId),
     [items, selectedItemId],
@@ -1043,14 +1051,30 @@ export function ControlPage() {
   };
 
   const saveEditText = (payload: TextPayload) => {
-    if (!editingId) {
+    const id = editingId;
+    if (!id) {
       return;
     }
     if (!ensureWsOrHint()) {
       return;
     }
-    session.updateItem(editingId, { payload });
+    if (!session.updateItem(id, { payload })) {
+      setUploadHint(t("control.wsDisconnectedHint"));
+      session.reconnect();
+      return;
+    }
     setEditingId(null);
+  };
+
+  const openEditText = (id: string) => {
+    setSelectedItemId(id);
+    setPreviewSlideIndex(id === liveItemId ? liveSlideIndex : 0);
+    setPreviewLocalPositionMs(0);
+    setCreating(false);
+    setEditingBibleId(null);
+    setLinkDialogOpen(false);
+    setBibleDialogOpen(false);
+    setEditingId(id);
   };
 
   const openLinkDialog = () => {
@@ -2088,6 +2112,35 @@ export function ControlPage() {
         onSave={(song) => void saveSongFromGuion(song)}
       />
 
+      {editingTextItem ? (
+        <div
+          className="promedia-dialog-backdrop"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              setEditingId(null);
+            }
+          }}
+        >
+          <div
+            className="promedia-dialog text-edit-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="guion-text-edit-title"
+          >
+            <DialogBrand id="guion-text-edit-title">
+              {t("playlist.edit")}
+            </DialogBrand>
+            <TextItemEditor
+              key={editingTextItem.id}
+              initial={editingTextItem.payload}
+              onSave={saveEditText}
+              onCancel={() => setEditingId(null)}
+            />
+          </div>
+        </div>
+      ) : null}
+
       <div className="control-zones control-zones-stacked">
         {/* Left column: Guion list (full height). Live goes via Output / En vivo. */}
         <div className="control-guion-column">
@@ -2110,10 +2163,7 @@ export function ControlPage() {
             onRemove={removeOne}
             onRemoveChecked={removeChecked}
             onGoLive={goLiveItem}
-            onEditText={(id) => {
-              selectItem(id);
-              setEditingId(id);
-            }}
+            onEditText={openEditText}
             onEditBible={(id) => {
               openEditBible(id);
             }}
@@ -2216,13 +2266,6 @@ export function ControlPage() {
                   initial={createEmptyTextPayload()}
                   onSave={saveNewText}
                   onCancel={() => setCreating(false)}
-                />
-              ) : editingId && selectedItem?.type === "text" ? (
-                <TextItemEditor
-                  key={editingId}
-                  initial={selectedItem.payload}
-                  onSave={saveEditText}
-                  onCancel={() => setEditingId(null)}
                 />
               ) : null
             }

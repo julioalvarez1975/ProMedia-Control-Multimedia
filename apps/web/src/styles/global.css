@@ -4775,6 +4775,16 @@ body.output-route #root {
   overflow: auto;
 }
 
+.text-edit-dialog {
+  width: min(640px, 96vw);
+  max-height: min(90vh, 900px);
+  overflow: auto;
+}
+
+.biblioteca-confirm-dialog {
+  width: min(420px, 94vw);
+}
+
 .song-stanzas {
   display: flex;
   flex-direction: column;

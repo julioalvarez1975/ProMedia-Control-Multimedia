@@ -72,3 +72,8 @@ export function forgetReadyAgent(sessionId: string, itemId?: string): void {
   }
   bySession.get(sessionId)?.delete(itemId);
 }
+
+/** Drop every ready cache (cancionero lyrics edited in Biblioteca). */
+export function forgetAllReadyAgents(): void {
+  bySession.clear();
+}

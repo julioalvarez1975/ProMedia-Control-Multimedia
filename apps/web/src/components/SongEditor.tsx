@@ -77,7 +77,9 @@ export function SongEditor({
         aria-labelledby="song-editor-title"
       >
         <DialogBrand id="song-editor-title">
-          {t("library.songEditorTitle")}
+          {initial
+            ? t("library.songEditorEditTitle")
+            : t("library.songEditorTitle")}
         </DialogBrand>
         <p className="promedia-dialog-hint">{t("library.songEditorHint")}</p>
 

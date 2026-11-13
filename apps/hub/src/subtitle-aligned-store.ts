@@ -296,6 +296,56 @@ export async function forgetPersistedAgent(assetId: string): Promise<void> {
 }
 
 /**
+ * Drop every aligned result built from a Biblioteca song whose lyrics changed.
+ * Next Guion add / Go Live will recalculate with the new cancionero text.
+ */
+export async function purgeAlignedCacheForLibrarySong(
+  songId: string,
+): Promise<number> {
+  const id = songId.trim();
+  if (!id) return 0;
+  for (const [assetId, meta] of metaByAsset) {
+    if (meta.songId === id) metaByAsset.delete(assetId);
+  }
+  for (const [file, payload] of pendingWrites) {
+    if (payload.songId !== id) continue;
+    pendingWrites.delete(file);
+    const t = writeTimers.get(file);
+    if (t) {
+      clearTimeout(t);
+      writeTimers.delete(file);
+    }
+  }
+  let names: string[];
+  try {
+    names = await readdir(alignedDir());
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    const file = path.join(alignedDir(), name);
+    try {
+      const parsed = JSON.parse(await readFile(file, "utf8")) as {
+        songId?: unknown;
+      };
+      if (parsed?.songId !== id) continue;
+      await rm(file, { force: true });
+      removed += 1;
+    } catch {
+      // ignore unreadable
+    }
+  }
+  if (removed > 0) {
+    console.log(
+      `[subtitle] purged aligned cache for library song=${id} files=${removed}`,
+    );
+  }
+  return removed;
+}
+
+/**
  * Wipe karaoke calculation artifacts for one song before aligning it again:
  * aligned JSON, ASR transcript cache, WhisperX wav temps. Keeps the YouTube
  * audio download so the next run does not re-fetch the file.

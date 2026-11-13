@@ -67,8 +67,13 @@ export function BibliotecaDialog({
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [songOpen, setSongOpen] = useState(false);
+  const [editingSongId, setEditingSongId] = useState<string | null>(null);
+  const [editingSong, setEditingSong] = useState<LibrarySongPayload | null>(
+    null,
+  );
   const [songBusy, setSongBusy] = useState(false);
   const [songError, setSongError] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<LibraryItem | null>(null);
 
   const reload = async () => {
     setLoading(true);
@@ -120,6 +125,31 @@ export function BibliotecaDialog({
   if (!open) {
     return null;
   }
+
+  const closeSongEditor = () => {
+    setSongOpen(false);
+    setEditingSongId(null);
+    setEditingSong(null);
+    setSongError(null);
+  };
+
+  const openCreateSong = () => {
+    setSongError(null);
+    setEditingSongId(null);
+    setEditingSong(null);
+    setSongOpen(true);
+    onOpenCreateSong();
+  };
+
+  const openEditSong = (item: LibraryItem) => {
+    if (!item.song) {
+      return;
+    }
+    setSongError(null);
+    setEditingSongId(item.id);
+    setEditingSong(item.song);
+    setSongOpen(true);
+  };
 
   const onUpload = async (file: File | undefined) => {
     if (!file) {
@@ -262,11 +292,16 @@ export function BibliotecaDialog({
     }
   };
 
-  const onDelete = async (item: LibraryItem) => {
+  const confirmDelete = async () => {
+    const item = pendingDelete;
+    if (!item) {
+      return;
+    }
     setBusyId(item.id);
     setError(null);
     try {
       await deleteLibraryItem(item.id);
+      setPendingDelete(null);
       await reload();
     } catch (err) {
       setError(String(err));
@@ -296,8 +331,16 @@ export function BibliotecaDialog({
     setSongBusy(true);
     setSongError(null);
     try {
-      await createLibrarySong(song);
-      setSongOpen(false);
+      if (editingSongId) {
+        await updateLibrarySong(editingSongId, {
+          ...song,
+          source: editingSong?.source ?? song.source,
+          reviewed: editingSong?.reviewed ?? song.reviewed,
+        });
+      } else {
+        await createLibrarySong(song);
+      }
+      closeSongEditor();
       setCategory("canciones");
       await reload();
     } catch (err) {
@@ -394,11 +437,7 @@ export function BibliotecaDialog({
             <button
               type="button"
               className="btn"
-              onClick={() => {
-                setSongError(null);
-                setSongOpen(true);
-                onOpenCreateSong();
-              }}
+              onClick={openCreateSong}
             >
               {t("library.createSong")}
             </button>
@@ -533,6 +572,16 @@ export function BibliotecaDialog({
                           {t("library.addToGuion")}
                         </button>
                       )}
+                      {item.song ? (
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          disabled={busyId === item.id}
+                          onClick={() => openEditSong(item)}
+                        >
+                          {t("library.edit")}
+                        </button>
+                      ) : null}
                       {item.song?.source === "lrclib" &&
                       item.song.reviewed !== true ? (
                         <button
@@ -559,7 +608,7 @@ export function BibliotecaDialog({
                         type="button"
                         className="btn btn-ghost"
                         disabled={busyId === item.id}
-                        onClick={() => void onDelete(item)}
+                        onClick={() => setPendingDelete(item)}
                       >
                         {t("library.delete")}
                       </button>
@@ -579,12 +628,61 @@ export function BibliotecaDialog({
       </div>
 
       <SongEditor
+        key={editingSongId ?? "create-song"}
         open={songOpen}
+        initial={editingSong}
         busy={songBusy}
         error={songError}
-        onClose={() => setSongOpen(false)}
+        onClose={closeSongEditor}
         onSave={(song) => void onSaveSong(song)}
       />
+
+      {pendingDelete ? (
+        <div
+          className="promedia-dialog-backdrop"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && busyId !== pendingDelete.id) {
+              setPendingDelete(null);
+            }
+          }}
+        >
+          <div
+            className="promedia-dialog biblioteca-confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="biblioteca-delete-title"
+          >
+            <DialogBrand id="biblioteca-delete-title">
+              {t("library.deleteConfirmTitle")}
+            </DialogBrand>
+            <p className="promedia-dialog-hint">
+              {t("library.deleteConfirmHint").replace(
+                "{title}",
+                pendingDelete.title,
+              )}
+            </p>
+            <div className="promedia-dialog-actions">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled={busyId === pendingDelete.id}
+                onClick={() => setPendingDelete(null)}
+              >
+                {t("text.cancel")}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={busyId === pendingDelete.id}
+                onClick={() => void confirmDelete()}
+              >
+                {t("library.deleteConfirm")}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

@@ -83,6 +83,7 @@ import { findLrclibSong, type LrclibSong } from "./subtitle-lrclib.js";
 import { libraryStore } from "./library-store.js";
 import { songIdentityKey } from "./quelea-import.js";
 import {
+  forgetAllReadyAgents,
   forgetReadyAgent,
   recallReadyAgent,
   rememberReadyAgent,
@@ -96,6 +97,7 @@ import {
   lyricsHash,
   persistReadyAgent,
   flushPersistedAgents,
+  purgeAlignedCacheForLibrarySong,
   purgeKaraokeCacheForSong,
   setPersistMeta,
   type PersistedAgent,
@@ -1832,6 +1834,44 @@ async function persistedStillValid(saved: PersistedAgent): Promise<boolean> {
 }
 
 /**
+ * Live / session-cache cues still match the current Biblioteca cancionero.
+ * If the operator edited the song, we must recalculate before showing cues.
+ */
+async function agentLyricsStillCurrent(
+  agent: SubtitleAgentState,
+  mediaPath?: string | null,
+): Promise<boolean> {
+  if (agent.lyricsSource === "lrclib") return true;
+  const assetId = agent.assetId;
+  if (!assetId) return false;
+  let meta = getPersistMeta(assetId);
+  if (!meta) {
+    const fileKey = await resolveCacheKey(assetId, mediaPath ?? null);
+    if (!fileKey) return false;
+    const saved = await loadPersistedAgent(fileKey, agent.targetLang);
+    if (!saved) return false;
+    meta = {
+      songId: saved.songId,
+      lyricsHash: saved.lyricsHash,
+      source: saved.source,
+      lrclibSong: saved.lrclibSong,
+    };
+  }
+  if (meta.source === "lrclib") return true;
+  const hit = await resolveCancioneroSongById(meta.songId);
+  if (!hit) return false;
+  return lyricsHash(songCancioneroLines(hit.song)) === meta.lyricsHash;
+}
+
+/** Biblioteca song edited → drop karaoke caches so Guion add re-checks lyrics. */
+export async function invalidateKaraokeAfterLibrarySongEdit(
+  songId: string,
+): Promise<void> {
+  forgetAllReadyAgents();
+  await purgeAlignedCacheForLibrarySong(songId);
+}
+
+/**
  * Load a saved alignment for this YouTube video into the agent state.
  * Returns true when the agent now shows the restored (ready) cues.
  */
@@ -1947,10 +1987,18 @@ async function runSubtitleJob(
       );
       forgetReadyAgent(sessionId, peekResolved.item.id);
     } else if (shownReady) {
+      if (
+        await agentLyricsStillCurrent(peekAgent, peekResolved.mediaPath)
+      ) {
+        console.log(
+          `[subtitle] keep ready cues on ${source} item=${peekResolved.item.id} n=${peekAgent.cues.length}`,
+        );
+        return;
+      }
       console.log(
-        `[subtitle] keep ready cues on ${source} item=${peekResolved.item.id} n=${peekAgent.cues.length}`,
+        `[subtitle] cancionero modified — discarding ready cues item=${peekResolved.item.id}`,
       );
-      return;
+      forgetReadyAgent(sessionId, peekResolved.item.id);
     }
     const hit = recallReadyAgent(
       sessionId,
@@ -1964,22 +2012,31 @@ async function runSubtitleJob(
       );
       forgetReadyAgent(sessionId, peekResolved.item.id);
     } else if (hit && hit.cues.length > 0) {
-      bumpJob(sessionId);
-      inflightJobs.delete(sessionId);
-      pendingAdds.delete(sessionId);
-      peekSession.live.subtitleAgent = {
-        ...hit,
-        enabled: true,
-        fontSize: peekAgent.fontSize,
-        leadMs: peekAgent.leadMs,
-        cueIndex: null,
-        updatedAt: new Date().toISOString(),
-      };
-      broadcastSession(sessionId, sessionStore.touchSubtitleAgent(peekSession));
+      if (await agentLyricsStillCurrent(hit, peekResolved.mediaPath)) {
+        bumpJob(sessionId);
+        inflightJobs.delete(sessionId);
+        pendingAdds.delete(sessionId);
+        peekSession.live.subtitleAgent = {
+          ...hit,
+          enabled: true,
+          fontSize: peekAgent.fontSize,
+          leadMs: peekAgent.leadMs,
+          cueIndex: null,
+          updatedAt: new Date().toISOString(),
+        };
+        broadcastSession(
+          sessionId,
+          sessionStore.touchSubtitleAgent(peekSession),
+        );
+        console.log(
+          `[subtitle] restored session cache on ${source} item=${peekResolved.item.id} cues=${hit.cues.length}`,
+        );
+        return;
+      }
       console.log(
-        `[subtitle] restored session cache on ${source} item=${peekResolved.item.id} cues=${hit.cues.length}`,
+        `[subtitle] cancionero modified — ignoring session cache item=${peekResolved.item.id}`,
       );
-      return;
+      forgetReadyAgent(sessionId, peekResolved.item.id);
     }
     // Disk restore only for Go Live — preparation already purged/rebuilt once.
     if (source === "go_live") {
@@ -1999,9 +2056,39 @@ async function runSubtitleJob(
     }
   }
 
-  // First calculation for this song (Guion add / not ready yet): purge stale
-  // aligned clocks so the new run opens when the voice starts.
-  if (peekResolved?.ok && source !== "go_live") {
+  // Guion add: re-check cancionero before calculating. Unchanged lyrics →
+  // restore disk cues; modified / missing → purge and recalculate.
+  if (peekResolved?.ok && source === "guion_add" && peekAgent) {
+    if (
+      await restorePersistedAgent(
+        sessionId,
+        peekResolved.item.id,
+        peekResolved.assetId,
+        peekResolved.mediaPath,
+        peekAgent.targetLang,
+        true,
+      )
+    ) {
+      console.log(
+        `[subtitle] guion_add: cancionero unchanged — restored cues item=${peekResolved.item.id}`,
+      );
+      return;
+    }
+    console.log(
+      `[subtitle] guion_add: cancionero missing or modified — calculating cues item=${peekResolved.item.id}`,
+    );
+    const mediaKey = cancioneroMediaKey({
+      youtubeVideoId: peekResolved.youtube?.videoId,
+      assetId: peekResolved.assetId,
+    });
+    forgetReadyAgent(sessionId, peekResolved.item.id);
+    await forgetCancioneroTiming(mediaKey);
+    await purgeKaraokeCacheForSong({
+      assetId: peekResolved.assetId,
+      mediaPath: peekResolved.mediaPath,
+    });
+  } else if (peekResolved?.ok && source !== "go_live") {
+    // Toggle / focus: purge stale aligned clocks before a fresh run.
     const mediaKey = cancioneroMediaKey({
       youtubeVideoId: peekResolved.youtube?.videoId,
       assetId: peekResolved.assetId,

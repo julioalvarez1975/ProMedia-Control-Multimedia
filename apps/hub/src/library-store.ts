@@ -405,6 +405,10 @@ export class LibraryStore {
     };
     this.items.set(id, updated);
     await this.persist();
+    // Guion add compares lyricsHash before cues — drop stale karaoke caches.
+    void import("./subtitle-agent.js")
+      .then((m) => m.invalidateKaraokeAfterLibrarySongEdit(id))
+      .catch(() => undefined);
     return updated;
   }
 
