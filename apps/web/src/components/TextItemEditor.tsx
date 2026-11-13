@@ -20,7 +20,7 @@ export type TextItemEditorProps = {
 };
 
 function slidesToBlock(slides: readonly TextSlide[]): string {
-  // Phrase breaks stay as blank lines. 6-line projection chunks do not.
+  // Phrase breaks stay as blank lines. 2-line projection chunks do not.
   return editorBlockFromTextPayload({ slides });
 }
 

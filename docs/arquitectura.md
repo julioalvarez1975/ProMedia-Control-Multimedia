@@ -49,7 +49,7 @@ El registro está en `packages/item-types/src/registry.ts`. Cada tipo expone `Pr
 
 | `type` | Contenido | Navegación |
 |--------|-----------|------------|
-| `text` | Bloque de editor (`payload.body`) + slides de proyección (frases y trozos ≤6 líneas). Canciones, avisos, import PDF/XML/txt | ← / → |
+| `text` | Bloque de editor (`payload.body`) + slides de proyección (frases y trozos ≤2 líneas). Canciones, avisos, import PDF/XML/txt | ← / → |
 | `bible` | Pasaje ya resuelto a slides | ← / → |
 | `presentation` | Import PPTX/PDF/ODP… como imágenes. Sin macros (`.pptm` / `.ppsm`) | ← / → |
 | `image` | Asset de sesión, `fit` contain/cover/fill | — |

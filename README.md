@@ -195,7 +195,7 @@ Mediateca **local** del hub (no nube en esta fase). Datos en `data/library/` (gi
 
 | Categoría | Contenido |
 |-----------|-----------|
-| Canciones | Editor de título / artista / estrofas → texto proyectable (chunks de 5 líneas). También import Quelea `.qsp` / `.xml` |
+| Canciones | Editor de título / artista / letra → texto proyectable (2 renglones por slide; línea en blanco = corte de frase). También import Quelea `.qsp` / `.xml` |
 | Biblias | Traducciones importadas (XML/XMM/PDF) → solo en disco local; se eligen en Guion → Biblia |
 | Textos | Guardados en biblioteca para reutilizar |
 | Presentaciones | Import `.pptx` `.ppt` `.ppsx` `.potx` `.odp` `.pdf` → diapositivas para ←/→. **Sin** macros (`.pptm`/`.ppsm`). Sin edición nativa |

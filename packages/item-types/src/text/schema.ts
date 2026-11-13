@@ -68,7 +68,7 @@ export function normalizeTextPayload(payload: TextPayload): TextPayload {
       ? payload.body.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
       : undefined;
   // Prefer the editor block so blank rows survive save. Slides are only the
-  // projection (phrase splits + 6-line chunks) derived from that block.
+  // projection (phrase splits + 2-line chunks) derived from that block.
   const mapped =
     body !== undefined
       ? [

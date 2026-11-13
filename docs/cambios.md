@@ -35,3 +35,10 @@ Resumen de las modificaciones locales documentadas y subidas juntos con esta car
 - `viewport-fit=cover` en `apps/web/index.html`.
 - i18n ES/EN/PT/FR/ZH alineado con Letra / Configuración y sin strings de Preparar/Teach.
 - Cargar guion desde archivo del dispositivo **suma** al Guion; la copia del hub puede reemplazar (ya documentado en API).
+
+## Fixes de proyección (post-sync)
+
+- Slides de canción: **2 renglones** por defecto; línea en blanco = corte de frase. Sin blancos, `ensureSongPhraseBreaks` inserta el corte cada dos líneas al pasar Biblioteca → Guion.
+- Import Quelea: conserva cortes (`.` / vacíos) y separa secciones con línea en blanco.
+- Botón **Letra**: overlay también en Vista previa cuando la fila está seleccionada; ←/→ avanza por frase (no renglón suelto); limpia `cueIndex` karaoke trabado.
+- Flechas: si hay A/V en vivo con karaoke, ←/→ lo mueven aunque esté seleccionado un texto.

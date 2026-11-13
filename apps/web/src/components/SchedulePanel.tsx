@@ -1,7 +1,7 @@
 import { useRef, useState, type ReactNode } from "react";
 import { useLocale } from "../locale/LocaleContext";
 import type { PlaylistItem, SubtitleItemProgress } from "@promedia/shared";
-import { itemLabel, manualLyricLines } from "@promedia/shared";
+import { itemLabel, manualLyricPhrases } from "@promedia/shared";
 import {
   ScheduleTypeIcon,
   scheduleKindOf,
@@ -537,7 +537,7 @@ export function SchedulePanel({
                             .filter(Boolean)
                             .join(" ")}
                           disabled={
-                            !canMutate || manualLyricLines(item).length === 0
+                            !canMutate || manualLyricPhrases(item).length === 0
                           }
                           title={
                             lyricOverlayItemId === item.id

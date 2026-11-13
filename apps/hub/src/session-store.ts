@@ -36,7 +36,7 @@ import {
   isThemeId,
   isTransitionEffect,
   itemProjectionSlideCount,
-  manualLyricLines,
+  manualLyricPhrases,
   normalizeThemeBackground,
   normalizeThemeOverrides,
 } from "@promedia/shared";
@@ -723,9 +723,10 @@ export class SessionStore {
   }
 
   /**
-   * One cancionero line over the current output (video or stage background).
-   * Leaves currentItemId and mediaClock alone, so video audio keeps playing.
-   * `itemId: null` hides the line.
+   * One cancionero phrase (usually 2 lines) over the current output (video or
+   * stage background). Leaves currentItemId and mediaClock alone, so video
+   * audio keeps playing. `itemId: null` hides it. Also clears a stuck karaoke
+   * cueIndex so Output is not frozen under the manual letter.
    */
   setLyricOverlay(
     session: SessionRecord,
@@ -739,16 +740,24 @@ export class SessionStore {
     if (!item || item.type !== "text") {
       return { error: "not_a_song" };
     }
-    const lines = manualLyricLines(item);
-    if (lines.length === 0) {
+    const phrases = manualLyricPhrases(item);
+    if (phrases.length === 0) {
       return { error: "empty_lyrics" };
     }
     const raw = patch.lineIndex ?? 0;
     const lineIndex = Math.min(
-      lines.length - 1,
+      phrases.length - 1,
       Math.max(0, Math.trunc(raw)),
     );
     session.live.lyricOverlay = { itemId: item.id, lineIndex };
+    const agent = session.live.subtitleAgent;
+    if (agent && agent.cueIndex != null) {
+      session.live.subtitleAgent = {
+        ...agent,
+        cueIndex: null,
+        updatedAt: new Date().toISOString(),
+      };
+    }
     return this.bumpUpdated(session);
   }
 

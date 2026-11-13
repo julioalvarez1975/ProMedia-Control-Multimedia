@@ -1,11 +1,13 @@
 /**
- * Test: songs project one blank-line-separated phrase per slide.
+ * Test: songs project one blank-line-separated phrase per slide (2 lines max).
  * Run: pnpm --filter @promedia/hub exec tsx scripts/test-phrases.mts
  */
 import assert from "node:assert/strict";
 import {
   editorBlockFromTextPayload,
+  ensureSongPhraseBreaks,
   manualLyricLines,
+  manualLyricPhrases,
   projectionTextSlides,
   resolveProjectionTextSlides,
   songToTextPayload,
@@ -14,13 +16,20 @@ import {
 
 const song = ["a1", "a2", "a3", "", "b1", "b2", "b3", "", "c1", "c2", "c3"];
 const slides = projectionTextSlides([{ id: "s", lines: song }]);
-assert.equal(slides.length, 3, "one slide per phrase");
-assert.deepEqual(slides.map((s) => s.lines), [["a1", "a2", "a3"], ["b1", "b2", "b3"], ["c1", "c2", "c3"]]);
+assert.equal(slides.length, 6, "each phrase pages in 2-line chunks");
+assert.deepEqual(slides.map((s) => s.lines), [
+  ["a1", "a2"],
+  ["a3"],
+  ["b1", "b2"],
+  ["b3"],
+  ["c1", "c2"],
+  ["c3"],
+]);
 
-// A phrase longer than 6 lines is chunked (6 + 2), blanks never leak into slides.
-const long = Array.from({ length: 8 }, (_, i) => `l${i}`);
+// A phrase longer than 2 lines is chunked; blanks never leak into slides.
+const long = Array.from({ length: 5 }, (_, i) => `l${i}`);
 const chunked = projectionTextSlides([{ id: "x", lines: long }]);
-assert.deepEqual(chunked.map((s) => s.lines.length), [6, 2]);
+assert.deepEqual(chunked.map((s) => s.lines.length), [2, 2, 1]);
 assert.ok(chunked.every((s) => s.lines.every((l) => l.trim() !== "")));
 
 // Idempotent and unique ids.
@@ -34,23 +43,63 @@ const legacy = resolveProjectionTextSlides({
   slides: [{ id: "lyrics", lines: song }],
   chunkLines: false,
 } as never);
-assert.equal(legacy.length, 3);
+assert.equal(legacy.length, 6);
 
 assert.equal(splitSlideOnBlankLines({ id: "z", lines: ["solo", "una"] }).length, 1);
+
+const paired = ensureSongPhraseBreaks([
+  "Cuando pienso en tu amor",
+  "Y en tu fidelidad",
+  "No puedo hacer más",
+  "Que postrarme y adorar",
+]);
+assert.deepEqual(paired, [
+  "Cuando pienso en tu amor",
+  "Y en tu fidelidad",
+  "",
+  "No puedo hacer más",
+  "Que postrarme y adorar",
+]);
 
 const payload = songToTextPayload({
   title: "Prueba",
   artist: "Yo",
   stanzas: [{ id: "st", lines: song }],
 });
-assert.equal(payload.slides.length, 3);
+assert.equal(payload.slides.length, 6);
 assert.equal(payload.title, "Prueba — Yo");
 assert.equal(payload.body, song.join("\n"));
 assert.equal(editorBlockFromTextPayload(payload), song.join("\n"));
 
-// A phrase longer than 6 lines is chunked for ←/→, but reopening the editor
+// Songs without blanks get auto 2-line phrase breaks in body + slides.
+const flatSong = songToTextPayload({
+  title: "Plano",
+  stanzas: [
+    {
+      id: "p",
+      lines: [
+        "Cuando pienso en tu amor",
+        "Y en tu fidelidad",
+        "No puedo hacer más",
+        "Que postrarme y adorar",
+      ],
+    },
+  ],
+});
+assert.equal(flatSong.slides.length, 2);
+assert.deepEqual(flatSong.slides[0]!.lines, [
+  "Cuando pienso en tu amor",
+  "Y en tu fidelidad",
+]);
+assert.deepEqual(flatSong.slides[1]!.lines, [
+  "No puedo hacer más",
+  "Que postrarme y adorar",
+]);
+assert.ok(flatSong.body?.includes("\n\n"));
+
+// A phrase longer than 2 lines is chunked for ←/→, but reopening the editor
 // must not turn that chunk into a blank line between two rows.
-const verse = ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "", "l8"];
+const verse = ["l1", "l2", "l3", "", "l4"];
 const versePayload = songToTextPayload({
   title: "Verso",
   stanzas: [{ id: "v", lines: verse }],
@@ -70,5 +119,13 @@ const manual = manualLyricLines({
   payload: versePayload,
 });
 assert.deepEqual(manual, verse.filter((line) => line.trim() !== ""));
+
+const phrases = manualLyricPhrases({
+  id: "song",
+  type: "text",
+  order: 0,
+  payload: versePayload,
+});
+assert.deepEqual(phrases, ["l1\nl2", "l3", "l4"]);
 
 console.log("TEST_OK test-phrases");

@@ -8,7 +8,7 @@ import {
   DEFAULT_THEME_ID,
   DEFAULT_TRANSITION_EFFECT,
   emptySubtitleAgentState,
-  manualLyricLines,
+  manualLyricPhrases,
   normalizeThemeBackground,
 } from "@promedia/shared";
 import { LiveItemLayer } from "../components/LiveItemLayer";
@@ -195,11 +195,11 @@ export function OutputPage() {
     if (!item) {
       return null;
     }
-    const lines = manualLyricLines(item);
-    if (lines.length === 0) {
+    const phrases = manualLyricPhrases(item);
+    if (phrases.length === 0) {
       return null;
     }
-    return lines[Math.min(lyricOverlay.lineIndex, lines.length - 1)] ?? null;
+    return phrases[Math.min(lyricOverlay.lineIndex, phrases.length - 1)] ?? null;
   }, [lyricOverlay, snapshot]);
   const themeStyle = themeSurfaceStyle(themeId, themeOverrides);
   const liveItemKey = liveItem?.id ?? "__empty__";

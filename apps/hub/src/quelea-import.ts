@@ -51,9 +51,9 @@ function firstTagText(xml: string, tag: string): string {
 }
 
 /**
- * Quelea stanza body: each non-empty newline is one lyric row; blank lines
- * and a lone "." (Quelea blank placeholder) are skipped. Import stores all
- * rows in one block so the karaoke agent syncs lines (no ←/→ slider).
+ * Quelea stanza body: each non-empty newline is one lyric row. Blank lines
+ * and a lone "." (Quelea blank placeholder) become phrase breaks so ←/→ and
+ * the Letra overlay step two lines at a time after import.
  */
 export function parseQueleaLyricBody(raw: string): string[] {
   const text = decodeXmlEntities(raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
@@ -61,9 +61,15 @@ export function parseQueleaLyricBody(raw: string): string[] {
   for (const part of text.split("\n")) {
     const trimmed = part.trim();
     if (trimmed === "" || trimmed === ".") {
+      if (lines.length > 0 && lines[lines.length - 1] !== "") {
+        lines.push("");
+      }
       continue;
     }
     lines.push(trimmed);
+  }
+  while (lines.length > 0 && lines[lines.length - 1] === "") {
+    lines.pop();
   }
   return lines;
 }
@@ -132,7 +138,8 @@ export function parseQueleaSongXml(
 
   const author = firstTagText(trimmed, "author");
   const sections = [...trimmed.matchAll(/<section\b[^>]*>([\s\S]*?)<\/section>/gi)];
-  // One lyric block (section order preserved) — karaoke agent splits by line.
+  // One lyric block (section order preserved). Blank row between sections =
+  // phrase break for projection / Letra.
   const allLines: string[] = [];
 
   for (const match of sections) {
@@ -143,6 +150,9 @@ export function parseQueleaSongXml(
     const lines = parseQueleaLyricBody(body);
     if (lines.length === 0) {
       continue;
+    }
+    if (allLines.length > 0 && allLines[allLines.length - 1] !== "") {
+      allLines.push("");
     }
     allLines.push(...lines);
   }

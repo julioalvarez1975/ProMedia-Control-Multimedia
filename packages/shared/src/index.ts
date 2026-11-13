@@ -20,14 +20,14 @@ export type TextPayload = {
   align?: TextAlign;
   /**
    * Exact lyric block from the editor, including blank lines between rows.
-   * Projection slides are derived from this; 6-line chunks must not be written
+   * Projection slides are derived from this; 2-line chunks must not be written
    * back into the editor as extra blank lines.
    */
   body?: string;
   /**
    * @deprecated Ignored. Older songs stored one big block with `false`; every
    * text item now projects one blank-line-separated phrase per slide (long
-   * phrases split every 6 lines), so those legacy items still navigate.
+   * phrases split every 2 lines), so those legacy items still navigate.
    */
   chunkLines?: boolean;
 };
@@ -727,16 +727,17 @@ export type SessionLiveState = {
    */
   videoCover: VideoCoverState | null;
   /**
-   * Manual cancionero line over whatever is already on the output (video or
+   * Manual cancionero phrase over whatever is already on the output (video or
    * the stage background). Does not change `currentItemId` or the media
    * clock, so the video audio keeps playing. `lineIndex` is into
-   * `manualLyricLines` of that text item. Null = hidden.
+   * `manualLyricPhrases` of that text item. Null = hidden.
    */
   lyricOverlay: LyricOverlayState | null;
 };
 
 export type LyricOverlayState = {
   itemId: string;
+  /** Index into `manualLyricPhrases` (usually one 2-line slide). */
   lineIndex: number;
 };
 
@@ -1076,9 +1077,10 @@ export function itemHasSlides(item: PlaylistItem): boolean {
 
 /**
  * Max lines shown at once on Output / Preview / Live text stages.
- * Longer slides are split into chunks so ←/→ advances by 6 lines.
+ * Songs and lyric blocks page 2 lines at a time (same as karaoke).
+ * A blank editor row still starts a new phrase/slide before this limit.
  */
-export const TEXT_PROJECTION_LINES = 6;
+export const TEXT_PROJECTION_LINES = 2;
 
 /**
  * Absolute max visual rows for karaoke projection (pack + soft-wrap).
@@ -1341,18 +1343,33 @@ export function resolveProjectionTextSlides(payload: {
 }
 
 /**
- * One operator step of a cancionero/text item: each non-empty projected row.
- * Blank lines stay phrase separators and are not themselves emitted.
+ * One operator step for the manual **Letra** overlay: each projection slide
+ * (typically 2 lines / one blank-separated phrase) as a single cue string.
  */
-export function manualLyricLines(item: PlaylistItem): string[] {
+export function manualLyricPhrases(item: PlaylistItem): string[] {
   if (item.type !== "text" && item.type !== "bible") {
     return [];
   }
-  const slides = resolveProjectionTextSlides(item.payload);
+  return resolveProjectionTextSlides(item.payload)
+    .map((slide) =>
+      (slide.lines ?? [])
+        .map((line) => String(line).trim())
+        .filter(Boolean)
+        .join("\n"),
+    )
+    .filter(Boolean);
+}
+
+/**
+ * Flat non-empty rows (tests / callers that need every lyric line).
+ * Prefer `manualLyricPhrases` for ←/→ over the live video.
+ */
+export function manualLyricLines(item: PlaylistItem): string[] {
+  const phrases = manualLyricPhrases(item);
   const lines: string[] = [];
-  for (const slide of slides) {
-    for (const line of slide.lines ?? []) {
-      const text = String(line).trim();
+  for (const phrase of phrases) {
+    for (const line of phrase.split("\n")) {
+      const text = line.trim();
       if (text) {
         lines.push(text);
       }
@@ -1390,15 +1407,42 @@ export function flattenSongLyrics(song: LibrarySongPayload): LibrarySongPayload 
 }
 
 /**
+ * If the operator (or Quelea) left no blank rows, insert one every two lines
+ * so projection / Letra step two phrases per slider — same as karaoke pack.
+ * Explicit blank rows are kept as the phrase boundaries.
+ */
+export function ensureSongPhraseBreaks(lines: readonly string[]): string[] {
+  const raw = (lines ?? []).map((line) => String(line).replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
+  if (raw.some((line) => !line.trim())) {
+    return raw.length > 0 ? raw : [""];
+  }
+  const out: string[] = [];
+  let count = 0;
+  for (const line of raw) {
+    const text = line.trim();
+    if (!text) {
+      continue;
+    }
+    if (count > 0 && count % 2 === 0) {
+      out.push("");
+    }
+    out.push(text);
+    count += 1;
+  }
+  return out.length > 0 ? out : [""];
+}
+
+/**
  * Convert library song → text slides, one per phrase (blank lines in the
  * lyrics separate phrases). ←/→ steps phrase by phrase; a phrase longer than
- * 6 lines is split on projection.
+ * 2 lines is split on projection.
  */
 export function songToTextPayload(song: LibrarySongPayload): TextPayload {
   const flat = flattenSongLyrics(song);
   const stanza = flat.stanzas[0]!;
-  const lines =
-    stanza.lines.length > 0 ? stanza.lines.map((l) => String(l)) : [""];
+  const lines = ensureSongPhraseBreaks(
+    stanza.lines.length > 0 ? stanza.lines.map((l) => String(l)) : [""],
+  );
   const title = flat.title.trim();
   const artist = flat.artist?.trim();
   const slides = projectionTextSlides([
@@ -1407,7 +1451,7 @@ export function songToTextPayload(song: LibrarySongPayload): TextPayload {
   return {
     title: artist ? `${title} — ${artist}` : title || undefined,
     align: "center",
-    // Keep every blank row the operator saved. Slide chunks are for ←/→ only.
+    // Keep every blank row the operator saved (or the auto 2-line breaks).
     body: lines.join("\n"),
     slides,
   };

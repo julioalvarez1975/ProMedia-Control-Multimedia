@@ -29,7 +29,7 @@ import {
   isSubtitleTargetLang,
   itemHasSlides,
   itemProjectionSlideCount,
-  manualLyricLines,
+  manualLyricPhrases,
   normalizeThemeBackground,
   songToTextPayload,
 } from "@promedia/shared";
@@ -754,21 +754,32 @@ export function ControlPage() {
     })();
   };
 
-  const karaokeManualReady = Boolean(
+  /** Karaoke ←/→ follows the live A/V (or the selected A/V), not only Preview. */
+  const karaokeNudgeItem =
+    liveItem &&
+    (liveItem.type === "video" || liveItem.type === "audio") &&
     subtitleAgent.enabled &&
-      subtitleAgent.status === "ready" &&
-      subtitleAgent.cues.length > 0 &&
-      selectedItem &&
-      (selectedItem.type === "video" || selectedItem.type === "audio") &&
-      (!subtitleAgent.itemId || subtitleAgent.itemId === selectedItem.id),
-  );
+    subtitleAgent.status === "ready" &&
+    subtitleAgent.cues.length > 0 &&
+    (!subtitleAgent.itemId || subtitleAgent.itemId === liveItem.id)
+      ? liveItem
+      : selectedItem &&
+          (selectedItem.type === "video" || selectedItem.type === "audio") &&
+          subtitleAgent.enabled &&
+          subtitleAgent.status === "ready" &&
+          subtitleAgent.cues.length > 0 &&
+          (!subtitleAgent.itemId || subtitleAgent.itemId === selectedItem.id)
+        ? selectedItem
+        : null;
+
+  const karaokeManualReady = Boolean(karaokeNudgeItem);
 
   const karaokePositionMs = (): number => {
     if (
-      selectedItem &&
-      selectedItem.id === liveItemId &&
+      karaokeNudgeItem &&
+      karaokeNudgeItem.id === liveItemId &&
       mediaClock &&
-      mediaClock.itemId === selectedItem.id
+      mediaClock.itemId === karaokeNudgeItem.id
     ) {
       return effectiveMediaClockPositionMs(mediaClock);
     }
@@ -783,14 +794,14 @@ export function ControlPage() {
     if (!item) {
       return null;
     }
-    const lines = manualLyricLines(item);
-    if (lines.length === 0) {
+    const phrases = manualLyricPhrases(item);
+    if (phrases.length === 0) {
       return null;
     }
-    return lines[Math.min(lyricOverlay.lineIndex, lines.length - 1)] ?? null;
+    return phrases[Math.min(lyricOverlay.lineIndex, phrases.length - 1)] ?? null;
   })();
 
-  /** ←/→ steps the manual cancionero line. Leaves the video and its audio. */
+  /** ←/→ steps the manual Letra phrase (usually 2 lines). Leaves video audio. */
   const stepLyricOverlay = (delta: -1 | 1): boolean => {
     if (!lyricOverlay) {
       return false;
@@ -799,12 +810,12 @@ export function ControlPage() {
     if (!item) {
       return false;
     }
-    const lines = manualLyricLines(item);
-    if (lines.length === 0) {
+    const phrases = manualLyricPhrases(item);
+    if (phrases.length === 0) {
       return false;
     }
     const next = Math.min(
-      lines.length - 1,
+      phrases.length - 1,
       Math.max(0, lyricOverlay.lineIndex + delta),
     );
     if (next !== lyricOverlay.lineIndex) {
@@ -829,13 +840,13 @@ export function ControlPage() {
   };
 
   const nudgeKaraoke = (delta: -1 | 1) => {
-    if (!karaokeManualReady || !selectedItem) {
+    if (!karaokeNudgeItem) {
       return false;
     }
     return session.nudgeSubtitleCancionero({
       delta,
       positionMs: karaokePositionMs(),
-      itemId: selectedItem.id,
+      itemId: karaokeNudgeItem.id,
     });
   };
 
@@ -1747,6 +1758,9 @@ export function ControlPage() {
   };
 
   const previewGoPrev = () => {
+    if (stepLyricOverlay(-1)) {
+      return;
+    }
     if (nudgeKaraoke(-1)) {
       return;
     }
@@ -1767,6 +1781,9 @@ export function ControlPage() {
   };
 
   const previewGoNext = () => {
+    if (stepLyricOverlay(1)) {
+      return;
+    }
     if (nudgeKaraoke(1)) {
       return;
     }
@@ -1787,16 +1804,18 @@ export function ControlPage() {
   };
 
   const canPreviewPrev =
-    Boolean(selectedItem) &&
-    (karaokeManualReady ||
-      previewSlideIndex > 0 ||
-      selectedIndex > 0);
+    Boolean(lyricOverlay) ||
+    (Boolean(selectedItem) &&
+      (karaokeManualReady ||
+        previewSlideIndex > 0 ||
+        selectedIndex > 0));
   const canPreviewNext =
-    Boolean(selectedItem) &&
-    (karaokeManualReady ||
-      (itemHasSlides(selectedItem!) &&
-        previewSlideIndex < slideCount - 1) ||
-      (selectedIndex >= 0 && selectedIndex < items.length - 1));
+    Boolean(lyricOverlay) ||
+    (Boolean(selectedItem) &&
+      (karaokeManualReady ||
+        (itemHasSlides(selectedItem!) &&
+          previewSlideIndex < slideCount - 1) ||
+        (selectedIndex >= 0 && selectedIndex < items.length - 1)));
 
   const removeOne = (id: string) => {
     if (!ensureWsOrHint()) {
@@ -2739,7 +2758,7 @@ export function ControlPage() {
               ) : (
                 <p>{t("control.previewEmpty")}</p>
               )}
-              {lyricOverlay && selectedItem?.id !== lyricOverlay.itemId ? (
+              {lyricOverlayLine ? (
                 <ManualLyricOverlay
                   line={lyricOverlayLine}
                   fontSize={subtitleAgent.fontSize}
