@@ -39,7 +39,8 @@ assert.ok(cues[0]!.endMs <= cues[1]!.startMs);
 assert.ok(cues[0]!.endMs < cues[1]!.startMs || cues[0]!.endMs === cues[1]!.startMs);
 assert.equal(cues[0]!.text, "Línea uno");
 
-// Breath → blank; next renglón pulled forward by air.
+// Breath → blank; cue 0 stays on the sung word (voz ↔ letra), later lines
+// pull forward by air so the next renglón is readable before the voice returns.
 const voice = [
   { id: "a", startMs: 5_000, endMs: 8_000, text: "Línea uno" },
   { id: "b", startMs: 12_000, endMs: 15_000, text: "Línea dos" },
@@ -50,7 +51,7 @@ const blanked = blankCuesAtPhraseSilence(
   30_000,
   400,
 );
-assert.equal(blanked[0]!.startMs, 4_600);
+assert.equal(blanked[0]!.startMs, 5_000, "first line at voice onset (no air)");
 assert.ok(blanked[0]!.endMs <= 8_300 + 120, "blank at breath (+pad)");
 assert.equal(blanked[1]!.startMs, 11_600, "next line shown early");
 assert.ok(blanked[0]!.endMs <= blanked[1]!.startMs, "no overlap");
