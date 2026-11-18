@@ -81,17 +81,39 @@ La marca de agua (esquina) es independiente de la escena Logo. La tapa de vídeo
 
 ## Karaoke
 
-El agente corre en el hub (`apps/hub/src/subtitle-agent.ts` y módulos `subtitle-*`). Con el agente activo se dispara al **añadir** al Guion un vídeo, un audio o un YouTube, y también al poner ese ítem En vivo si aún no está listo. No hay cola «Preparar Guion» ni diálogo «Corregir letra».
+El agente corre en el hub (`apps/hub/src/subtitle-agent.ts` y módulos `subtitle-*`). Al **añadir** al Guion un vídeo, un audio o un YouTube (o al importar un guion / activar el agente), cada fila entra a una **cola en segundo plano**: no hace falta seleccionarla. El porcentaje de la fila sube sola; el resultado queda en la caché por canción. En vivo solo usa ese resultado si aún no está listo. No hay cola «Preparar Guion» ni diálogo «Corregir letra».
 
-Orden de la **letra** (la primera que exista):
+Orden de la **letra** (la primera que exista). El reconocedor no reemplaza el texto del cancionero:
 
-1. Cancionero de la Biblioteca (memoria por medio/título o coincidencia difusa). Esa letra es la que se proyecta; el reconocedor de voz no la reemplaza.
+1. Cancionero de la Biblioteca (memoria por medio/título o coincidencia difusa).
 2. [LRCLIB](https://lrclib.net) si `PROMEDIA_LRCLIB` no es `0`.
-3. Captions de YouTube, pista `.srt`/`.vtt`, o transcripción (whisper.cpp) como último recurso.
+3. Captions de YouTube, pista `.srt`/`.vtt`, o la transcripción de whisper.cpp.
 
-Orden de los **tiempos**: relojes LRC de LRCLIB + texto del cancionero, subtítulos oficiales o sidecars, reparto uniforme. WhisperX y Fast Whisper fueron retirados.
+### Procedimiento de tiempos (cada canción que se analiza)
 
-Los silencios solo blanquean la pantalla entre frases. El detalle de instalación está en el README raíz y en `apps/hub/python/README.md`.
+Whisper.cpp analiza **el audio de esa grabación** antes de publicar cues. LRCLIB y el reparto uniforme aportan el gráfico de renglones; no deciden cuándo entra la voz. No saltear Whisper porque ya haya relojes LRC.
+
+1. Bajar o abrir el audio y medir silencios (`ffmpeg silencedetect`). El silencio blanquea la frase al respirar y adelanta el renglón siguiente ~700 ms (`SILENCE_AIR_ANTICIPATION_MS`). No inventa el reloj de cada línea.
+2. Transcribir con `whisper-cli` y el modelo `ggml-base.bin`:
+   - Idioma: `-l` del idioma de Control (no `auto`).
+   - Segmentos: `-ml 48 -sow -sns`.
+   - Semilla de la letra oficial: **`--prompt`**. El flag corto `-prompt` no existe: whisper-cli imprime `unknown argument` y **sale con código 0**. Tratar eso como fallo y reintentar sin el flag; si no, se publica el gráfico uniforme sin palabras.
+   - Relojes de palabra: **`-ojf`** (tokens con `offsets` y `p`). Sin eso solo hay segmentos de ~30 s y el ancla no ve la voz.
+3. Inicio de la voz: `sungEntranceMs` (`subtitle-cancionero.ts`). Es el primer grupo denso (≥4 palabras con `p ≥ 0.45` en ≤8 s). Si en los 12 s anteriores hay un silencio ≥1,2 s, el ataque es el fin de ese silencio. Los tokens sueltos del intro no cuentan. El tope de 40 s de `conservativeIntroMs` **no** es la voz: es solo el arranque del reparto uniforme.
+4. Ancla (`withVoiceAndBlank` en `subtitle-agent.ts`). Si Whisper no devolvió palabras pero hay captions, el ataque es el primer cue de esas captions (no el tope del 12 %). Libre Soy `053BvHDfIdI`: la voz entra a los 22 s; un match fallido no puede abrir a los 37 s.
+   - Gráfico uniforme (reparto igual o LRCLIB): se desplaza **entero** para que el renglón 0 empiece en ese ataque.
+   - Relojes ya medidos línea por línea (Whisper o captions): solo se mueve el **primer** renglón al ataque; el resto queda en su palabra.
+   - Sin palabras de Whisper y sin captions: se conserva el gráfico. No afirmar que el tope de 40 s ni el 12 % del tema es el onset.
+5. No hay ajuste manual de tiempos. ←/→ en Vista previa solo cambia el renglón visible; no reescribe `startMs` ni guarda `cueStarts`. Un `timingByMedia` viejo no se vuelve a aplicar al publicar. El ancla de Whisper queda como se midió.
+6. El mismo análisis corre si no hay cancionero: las cues de Whisper se anclan al mismo onset.
+7. **En vivo no recalcula.** Si el ítem ya está `ready` con cues válidas, Go Live las deja. No hay un segundo 0→100 %. Solo se descartan si el fingerprint guardado de la letra ya no coincide con la Biblioteca. Un publish parcial igual guarda ese fingerprint; no se borra.
+8. **Cola de Guion.** `maybeStartKaraokeOnGuionItem(s)` encola cada A/V al cargarlo. Un drain serial (`bgQueued` / `bgStore`) calcula una canción a la vez en un agente privado: no pisa En vivo ni Vista previa. Caché en memoria → disco → Whisper. El % de cada fila viene de `setBgProgress`.
+9. **Recurso del navegador.** Los ticks de progreso en segundo plano se coalescen antes del broadcast; hay yield entre canciones. Output no reaplica updates que solo cambian `itemProgress` (el proyector no pinta el Guion). Control difiere el % del Guion. Si el recurso queda comprometido: desactivar el agente cancela la cola; el cálculo pesado sigue siendo del hub, no del browser.
+10. **Ancla voz ↔ letra.** Charts equal-time: `sungEntranceMs` / caption onset. Charts LRCLIB: preferir cuando Whisper oye la primera línea (`firstLyricOnsetMs`); no adelantar el LRC por un cluster de intro. Caché `ALIGNED_CACHE_VERSION` 6.
+
+Al cambiar este procedimiento, subir `ALIGNED_CACHE_VERSION` (`subtitle-aligned-store.ts`, hoy **5**) y `ASR_CACHE_VERSION` (`subtitle-asr.ts`, hoy **3**). El hub borra al arrancar los resultados de otra versión.
+
+WhisperX y Fast Whisper siguen retirados. Instalación: README raíz y `apps/hub/python/README.md`.
 
 ## Control: ajustes
 

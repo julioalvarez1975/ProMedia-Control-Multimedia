@@ -37,19 +37,30 @@ const { WaveFile } = wavefile as unknown as {
   };
 };
 
+export type AsrWordStamp = {
+  text: string;
+  startMs: number;
+  /** Decoder probability 0–1 when whisper.cpp provided it. */
+  p?: number;
+};
+
 export type AsrResult = {
   cues: SubtitleCue[];
   sourceLang: string | null;
   /** True when Whisper ran with task=translate (always English). */
   whisperTranslatedToEn: boolean;
+  /** Word clocks from whisper.cpp tokens. Empty for other backends. */
+  words?: AsrWordStamp[];
 };
 
 /**
  * Version of the transcription procedure (engine / options). Bump it to make
  * every cached transcript be ignored and removed at hub start.
  *   2: transcripts made before faster-whisper became the default engine.
+ *   3: keep whisper.cpp word stamps so the first lyric can follow the voice
+ *      instead of the 40s equal-time cap. `-prompt` was also rejected.
  */
-export const ASR_CACHE_VERSION = 2;
+export const ASR_CACHE_VERSION = 3;
 
 type CachedAsr = {
   /** Procedure version that produced this transcript. */
@@ -59,6 +70,7 @@ type CachedAsr = {
   sourceLang: string | null;
   whisperTranslatedToEn: boolean;
   cues: SubtitleCue[];
+  words?: AsrWordStamp[];
   createdAt: string;
 };
 
@@ -425,6 +437,7 @@ async function transcribeWithTransformers(options: {
         ? options.languageHint
         : null,
     whisperTranslatedToEn: options.translateToEn,
+    words: [],
   };
 }
 
@@ -451,6 +464,7 @@ async function transcribeViaWhisperCpp(options: {
   });
   return {
     cues: result.cues,
+    words: result.words,
     sourceLang: result.sourceLang,
     whisperTranslatedToEn: result.whisperTranslatedToEn,
   };
@@ -494,10 +508,20 @@ export async function transcribeLocalFile(options: {
       const cues = shapeLyricLikeCues(filterSpeechCues(cached.cues));
       // Ignore stale music-label-only caches (showed as `[MÚSICA]` only).
       if (cues.length > 0) {
+        const words = Array.isArray(cached.words)
+          ? cached.words.filter(
+              (w) =>
+                w &&
+                typeof w.text === "string" &&
+                typeof w.startMs === "number" &&
+                Number.isFinite(w.startMs),
+            )
+          : [];
         return {
           cues,
           sourceLang: cached.sourceLang,
           whisperTranslatedToEn: cached.whisperTranslatedToEn,
+          words,
         };
       }
     }
@@ -578,6 +602,7 @@ export async function transcribeLocalFile(options: {
       sourceLang: asr.sourceLang,
       whisperTranslatedToEn: asr.whisperTranslatedToEn,
       cues: asr.cues,
+      words: asr.words ?? [],
       createdAt: new Date().toISOString(),
     };
     await writeFile(cachePath, JSON.stringify(payload, null, 2), "utf8");

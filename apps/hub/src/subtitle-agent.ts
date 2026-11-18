@@ -1,5 +1,7 @@
 import {
+  deriveItemProgress,
   forgetItemProgress,
+  isItemReady,
   setBgProgress,
 } from "./subtitle-item-progress.js";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -43,14 +45,11 @@ import {
   shapeLyricLikeCues,
 } from "./subtitle-lyric-shape.js";
 import {
-  applyRememberedCueStarts,
   cancioneroMediaKey,
   forgetCancioneroTiming,
   recallCancioneroByMedia,
   recallCancioneroByTitles,
-  recallCancioneroTiming,
   rememberCancioneroMatch,
-  rememberCancioneroTiming,
 } from "./cancionero-memory.js";
 import {
   alignCancioneroLinesToSilence,
@@ -63,8 +62,13 @@ import {
   packKaraokeDisplayCues,
   probeMediaDurationMs,
   resolveCancioneroSongById,
+  firstSpeechOnsetMs,
+  isConservativeEqualTimeStart,
   resolveFirstVoiceOnsetMs,
+  resolveKaraokeVoiceAnchorMs,
   scoreSongLyricOverlap,
+  sungEntranceMs,
+  type LyricWordStamp,
   scoreSongMatch,
   songCancioneroLines,
   songToSubtitleCues,
@@ -89,7 +93,6 @@ import {
   rememberReadyAgent,
 } from "./subtitle-ready-cache.js";
 import {
-  clearPersistMeta,
   getPersistMeta,
   cacheKeyOf,
   loadPersistedAgent,
@@ -153,6 +156,8 @@ export function disposeSubtitleSession(sessionId: string): void {
   bgGeneration.delete(sessionId);
   bgQueued.delete(sessionId);
   bgCurrent.delete(sessionId);
+  bgDraining.delete(sessionId);
+  clearBgBroadcastTimer(sessionId);
   void flushPersistedAgents();
   bumpJob(sessionId);
   jobGeneration.delete(sessionId);
@@ -194,6 +199,60 @@ const bgStore = new AsyncLocalStorage<BgCtx>();
 /** Rows waiting for / being processed by the background queue, per session. */
 const bgQueued = new Map<string, Set<string>>();
 const bgCurrent = new Map<string, string | null>();
+/** Sessions currently walking that queue (one drain loop at a time). */
+const bgDraining = new Set<string>();
+
+/**
+ * Browser protection: background % updates are coalesced so Control/Output
+ * are not flooded with full `session.updated` clones on every Whisper tick.
+ * Ready / failed / focused-row mirror always flush immediately.
+ */
+const BG_PROGRESS_BROADCAST_MS = 450;
+const BG_PROGRESS_BROADCAST_BUSY_MS = 900;
+const BG_QUEUE_YIELD_MS = 280;
+const BG_QUEUE_BUSY_THRESHOLD = 6;
+const bgBroadcastTimer = new Map<string, ReturnType<typeof setTimeout>>();
+
+function clearBgBroadcastTimer(sessionId: string): void {
+  const t = bgBroadcastTimer.get(sessionId);
+  if (t) clearTimeout(t);
+  bgBroadcastTimer.delete(sessionId);
+}
+
+function bgQueuedDepth(sessionId: string): number {
+  return (bgQueued.get(sessionId)?.size ?? 0) + (bgCurrent.get(sessionId) ? 1 : 0);
+}
+
+function flushBgProgressBroadcast(sessionId: string): void {
+  bgBroadcastTimer.delete(sessionId);
+  const live = sessionStore.get(sessionId);
+  if (!live?.live.subtitleAgent?.enabled) return;
+  broadcastSession(sessionId, sessionStore.touchSubtitleAgent(live));
+}
+
+/**
+ * @param immediate — terminal state or operator is watching this row.
+ */
+function scheduleBgProgressBroadcast(
+  session: SessionRecord,
+  immediate: boolean,
+): void {
+  const sessionId = session.id;
+  if (immediate) {
+    clearBgBroadcastTimer(sessionId);
+    broadcastSession(sessionId, sessionStore.touchSubtitleAgent(session));
+    return;
+  }
+  if (bgBroadcastTimer.has(sessionId)) return;
+  const delay =
+    bgQueuedDepth(sessionId) >= BG_QUEUE_BUSY_THRESHOLD
+      ? BG_PROGRESS_BROADCAST_BUSY_MS
+      : BG_PROGRESS_BROADCAST_MS;
+  bgBroadcastTimer.set(
+    sessionId,
+    setTimeout(() => flushBgProgressBroadcast(sessionId), delay),
+  );
+}
 
 /** Test hook: run `fn` as a background row job with a private agent state. */
 export function runInBackgroundContextForTest<T>(
@@ -250,9 +309,11 @@ function ytDownloadProgress(
   gen: number,
 ): (percent: number) => void {
   let last = -1;
+  // Background rows: coarser steps (broadcasts are also coalesced).
+  const step = gen < 0 ? 5 : 2;
   return (percent) => {
     const pct = Math.max(0, Math.min(100, Math.round(percent)));
-    if (pct === last || (pct < 100 && last >= 0 && pct - last < 2)) return;
+    if (pct === last || (pct < 100 && last >= 0 && pct - last < step)) return;
     if (!isCurrent(sessionId, gen)) return;
     last = pct;
     const live = sessionStore.get(sessionId);
@@ -266,6 +327,9 @@ function ytDownloadProgress(
  * agent the operator sees; when the job finishes the result goes to the
  * per-item caches (memory + disk) and, if that row is the focused one, onto the
  * screen. Progress feeds the Guion row percentage.
+ *
+ * Intermediate % ticks are coalesced (see scheduleBgProgressBroadcast) so the
+ * browser is not flooded with full session snapshots while Whisper runs.
  */
 function applyBackgroundPatch(
   session: SessionRecord,
@@ -280,12 +344,15 @@ function applyBackgroundPatch(
   };
   const a = bg.agent;
   let changed = false;
+  let terminal = false;
   if (a.status === "ready" && a.cues.length > 0) {
     rememberReadyAgent(session.id, a);
     persistReadyAgent(a);
     changed = setBgProgress(session.id, bg.itemId, { percent: 100, ready: true });
+    terminal = true;
   } else if (a.status === "error" || a.status === "unsupported") {
     changed = setBgProgress(session.id, bg.itemId, { percent: 0, ready: false, failed: true });
+    terminal = true;
   } else {
     changed = setBgProgress(session.id, bg.itemId, {
       percent: subtitleOverallPercent(a.status, a.downloadPercent),
@@ -318,7 +385,20 @@ function applyBackgroundPatch(
     mirrored = true;
   }
   if (changed || mirrored) {
-    broadcastSession(session.id, sessionStore.touchSubtitleAgent(session));
+    // Keep itemProgress on the in-memory agent in sync even when the WS
+    // broadcast is deferred (tests + any hub reader).
+    if (session.live.subtitleAgent) {
+      session.live.subtitleAgent = {
+        ...session.live.subtitleAgent,
+        itemProgress: deriveItemProgress(
+          session.id,
+          session.live.subtitleAgent,
+          session.playlist.items.map((i) => i.id),
+        ),
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    scheduleBgProgressBroadcast(session, terminal || mirrored);
   }
 }
 
@@ -588,51 +668,6 @@ async function finishWithCues(options: {
   return true;
 }
 
-function mediaKeyFromAssetId(assetId: string | null | undefined): string | null {
-  const id = assetId?.trim();
-  if (!id) return null;
-  if (id.startsWith("yt_")) {
-    return cancioneroMediaKey({ youtubeVideoId: id.slice(3) });
-  }
-  return cancioneroMediaKey({ assetId: id });
-}
-
-/** Stamp cue `index` to start at `positionMs`; keep neighbors monotonic. */
-function retimedCuesAtIndex(
-  cues: readonly SubtitleCue[],
-  index: number,
-  positionMs: number,
-): SubtitleCue[] {
-  if (index < 0 || index >= cues.length) return [...cues];
-  const now = Math.max(0, Math.round(positionMs));
-  const next = cues.map((c) => ({ ...c }));
-  const cur = next[index]!;
-  cur.startMs = now;
-  if (index > 0) {
-    const prev = next[index - 1]!;
-    prev.endMs = Math.max(prev.startMs + 400, now);
-  }
-  if (index + 1 < next.length) {
-    const following = next[index + 1]!;
-    if (following.startMs < now + 400) {
-      following.startMs = now + 400;
-    }
-    cur.endMs = Math.max(now + 500, following.startMs);
-  } else {
-    cur.endMs = Math.max(now + 800, cur.endMs);
-  }
-  // Repair forward chain if we pushed following starts.
-  for (let i = index + 1; i < next.length; i++) {
-    const a = next[i - 1]!;
-    const b = next[i]!;
-    if (b.startMs < a.startMs + 400) {
-      b.startMs = a.startMs + 400;
-    }
-    a.endMs = Math.max(a.startMs + 400, b.startMs);
-  }
-  return next;
-}
-
 function isStickyMissingBin(agent: SubtitleAgentState | null | undefined): boolean {
   return Boolean(
     agent && agent.status === "error" && isMissingBinHint(agent.hint),
@@ -738,7 +773,11 @@ async function fetchCancioneroTimingCues(options: {
     status: "downloading" | "extracting" | "transcribing",
     hint: string,
   ) => void;
-}): Promise<{ cues: import("@promedia/shared").SubtitleCue[]; assetId: string } | null> {
+}): Promise<{
+  cues: import("@promedia/shared").SubtitleCue[];
+  assetId: string;
+  words: LyricWordStamp[];
+} | null> {
   const { sessionId, gen, targetLang, resolved } = options;
   let mediaPath = resolved.mediaPath;
   let assetId = resolved.assetId;
@@ -759,7 +798,7 @@ async function fetchCancioneroTimingCues(options: {
           console.log(
             `[subtitle] cancionero timing from YouTube captions kind=${caps.trackKind} n=${speech.length}`,
           );
-          return { cues: speech, assetId: caps.assetId };
+          return { cues: speech, assetId: caps.assetId, words: [] };
         }
       }
     } catch (err) {
@@ -801,7 +840,7 @@ async function fetchCancioneroTimingCues(options: {
           console.log(
             `[subtitle] cancionero timing from local captions origin=${local.origin} n=${speech.length}`,
           );
-          return { cues: speech, assetId };
+          return { cues: speech, assetId, words: [] };
         }
       }
     } catch (err) {
@@ -829,11 +868,14 @@ async function fetchCancioneroTimingCues(options: {
     });
     if (!isCurrent(sessionId, gen)) return null;
     const speech = filterSpeechCues(asr.cues);
-    if (speech.length === 0) return null;
+    if (speech.length === 0) {
+      console.warn("[subtitle] karaoke timing ASR returned no speech");
+      return null;
+    }
     console.log(
       `[subtitle] karaoke timing from ASR n=${speech.length} prompt=${Boolean(options.alignPrompt)}`,
     );
-    return { cues: speech, assetId };
+    return { cues: speech, assetId, words: asr.words ?? [] };
   } catch (err) {
     console.warn(
       "[subtitle] karaoke timing ASR failed:",
@@ -1098,22 +1140,88 @@ async function tryCancioneroLyricPath(options: {
     mediaPath = silence.mediaPath || mediaPath;
   }
   const phraseSilences = silence?.silences ?? [];
+  /** Whisper token clocks for this recording. Every song is measured. */
+  let asrWords: LyricWordStamp[] = [];
+  let timing:
+    | {
+        cues: import("@promedia/shared").SubtitleCue[];
+        assetId: string;
+        words: LyricWordStamp[];
+      }
+    | null = null;
 
-  // Word clocks from the chart; silence only floors intro quiet + blanks breaths.
+  // Whisper on this audio decides when the voice starts. LRCLIB / equal-time
+  // only supply the lyric chart; the first line is moved onto that onset.
   const withVoiceAndBlank = (cues: SubtitleCue[]): SubtitleCue[] => {
     const wordHint = cues[0]?.startMs ?? null;
-    const voiceMs = resolveFirstVoiceOnsetMs(
-      phraseSilences,
-      silence?.onsetsMs ?? [],
-      wordHint,
-    );
+    const entrance = sungEntranceMs(asrWords, phraseSilences);
+    const equalTime =
+      wordHint != null &&
+      isConservativeEqualTimeStart(
+        wordHint,
+        durationMs,
+        Math.max(cues.length, lines.length),
+      );
+    const lrclibChart = timingModeHint.includes("lrclib");
+    // A failed line-match publishes equal-time (Libre Soy opened at 37s).
+    // The manual captions already start at the voice (22.03s). Do not pull a
+    // real LRCLIB chart to that cue — only the equal-time guess.
+    const captionVoice = equalTime
+      ? firstSpeechOnsetMs(timing?.cues ?? [])
+      : null;
+    let voiceMs: number | null = null;
+    let shiftAll = false;
+    let anchorReason = "none";
+    if (wordHint != null && (equalTime || lrclibChart)) {
+      const anchor = resolveKaraokeVoiceAnchorMs({
+        asrWords,
+        silences: phraseSilences,
+        firstLineText: cues[0]?.text ?? lines[0] ?? "",
+        chartFirstMs: wordHint,
+        equalTime,
+        lrclibChart,
+        captionVoiceMs: captionVoice,
+      });
+      voiceMs = anchor.voiceMs;
+      shiftAll = anchor.shiftAll;
+      anchorReason = anchor.reason;
+    } else if (entrance != null) {
+      voiceMs = entrance;
+      shiftAll = false;
+      anchorReason = "caption_entrance";
+    } else if (textSynced && wordHint != null) {
+      voiceMs = resolveFirstVoiceOnsetMs(
+        phraseSilences,
+        silence?.onsetsMs ?? [],
+        wordHint,
+      );
+      shiftAll = true;
+      anchorReason = "text_synced_onset";
+    } else {
+      voiceMs = wordHint;
+      anchorReason = "chart_first";
+    }
     if (cues.length > 0 && voiceMs != null) {
       console.log(
-        `[subtitle] voice↔lyric anchor: first line at ${Math.round(cues[0]!.startMs)}ms, sung onset ${Math.round(voiceMs)}ms → shift ${Math.round(voiceMs - cues[0]!.startMs)}ms (silence onsets=${silence?.onsetsMs?.length ?? 0})`,
+        `[subtitle] voice↔lyric anchor: first line at ${Math.round(cues[0]!.startMs)}ms, sung onset ${Math.round(voiceMs)}ms → shift ${Math.round(voiceMs - cues[0]!.startMs)}ms (silence onsets=${silence?.onsetsMs?.length ?? 0} entrance=${entrance ?? "n/a"} caption=${captionVoice ?? "n/a"} equalTime=${equalTime} reason=${anchorReason})`,
       );
     }
+    let placed = cues.map((c) => ({ ...c }));
+    if (shiftAll) {
+      placed = anchorFirstCueToVoiceOnset(placed, voiceMs);
+    } else if (voiceMs != null && placed[0] && !lrclibChart) {
+      const next = placed[1]?.startMs ?? voiceMs + 4_000;
+      const startMs = Math.max(0, Math.min(Math.round(voiceMs), next - 700));
+      if (Math.abs(startMs - placed[0].startMs) >= 40) {
+        const endMs = Math.max(
+          startMs + 500,
+          Math.min(Math.max(placed[0].endMs, startMs + 500), next - 40),
+        );
+        placed = [{ ...placed[0], startMs, endMs }, ...placed.slice(1)];
+      }
+    }
     return blankCuesAtPhraseSilence(
-      anchorFirstCueToVoiceOnset(cues, voiceMs),
+      placed,
       phraseSilences,
       durationMs,
       SILENCE_AIR_ANTICIPATION_MS,
@@ -1125,19 +1233,14 @@ async function tryCancioneroLyricPath(options: {
     hint: string,
   ): Promise<boolean> => {
     const voiceLocked = withVoiceAndBlank(nextLineCues);
-    let nextCues = packKaraokeDisplayCues(
+    const nextCues = packKaraokeDisplayCues(
       ensureCancioneroCueTexts(voiceLocked, lines),
       1,
       1,
     );
-    const taughtTiming = await recallCancioneroTiming(mediaKey);
-    if (taughtTiming?.cueStarts?.length) {
-      nextCues = applyRememberedCueStarts(nextCues, taughtTiming.cueStarts);
-      nextCues = withVoiceAndBlank(nextCues);
-    }
     if (!nextCues.length) return false;
     const lyricsFrom: "cancionero" | "lrclib" = lrclib ? "lrclib" : "cancionero";
-    if (!hint.endsWith("_partial") && match) {
+    if (match) {
       await resolveCacheKey(assetId, resolved.mediaPath);
       setPersistMeta(assetId, {
         songId: match.item.id,
@@ -1151,8 +1254,6 @@ async function tryCancioneroLyricPath(options: {
             }
           : undefined,
       });
-    } else {
-      clearPersistMeta(assetId);
     }
     const okPub = await finishWithCues({
       sessionId,
@@ -1195,6 +1296,35 @@ async function tryCancioneroLyricPath(options: {
     return true;
   };
 
+  // Whisper analyzes this recording before any chart is published.
+  // `--prompt` biases the clocks; word stamps anchor cue 0 to the voice.
+  {
+    const alignPrompt = buildKaraokeAlignPrompt(lines);
+    timing = await fetchCancioneroTimingCues({
+      sessionId,
+      gen,
+      targetLang,
+      resolved: { ...resolved, mediaPath, assetId },
+      alignPrompt,
+      onStatus: statusPatch,
+    });
+    if (!isCurrent(sessionId, gen)) return true;
+    if (timing?.words.length) asrWords = timing.words;
+    const entrance = sungEntranceMs(asrWords, phraseSilences);
+    console.log(
+      `[subtitle] whisper voice scan words=${asrWords.length} cues=${timing?.cues.length ?? 0} entrance=${entrance ?? "n/a"}ms`,
+    );
+    if (timing && entrance != null) {
+      const kept = timing.cues.filter((c) => c.startMs >= entrance - 400);
+      if (kept.length > 0 && kept.length < timing.cues.length) {
+        console.log(
+          `[subtitle] drop intro ASR before sung entrance ${entrance}ms kept=${kept.length}/${timing.cues.length}`,
+        );
+        timing = { ...timing, cues: kept };
+      }
+    }
+  }
+
   // 1) PRIMARY — LRCLIB synced LRC clocks + cancionero/Biblioteca text.
   let lrclibClocks: SubtitleCue[] | null =
     lrclib?.syncedCues?.map((c) => ({ ...c })) ?? null;
@@ -1234,23 +1364,7 @@ async function tryCancioneroLyricPath(options: {
       (await publishKaraokeCues(lineCues, timingModeHint)) || published;
   }
 
-  // 2) Captions / local tracks only if LRCLIB had no synced clocks.
-  let timing:
-    | { cues: import("@promedia/shared").SubtitleCue[]; assetId: string }
-    | null = null;
-  if (!textSynced) {
-    const alignPrompt = buildKaraokeAlignPrompt(lines);
-    timing = await fetchCancioneroTimingCues({
-      sessionId,
-      gen,
-      targetLang,
-      resolved: { ...resolved, mediaPath, assetId },
-      alignPrompt,
-      onStatus: statusPatch,
-    });
-    if (!isCurrent(sessionId, gen)) return true;
-  }
-
+  // 2) Whisper / caption clocks when LRCLIB had no synced chart.
   if (!textSynced && timing && timing.cues.length > 0) {
     const textAligned = alignCancioneroLinesToTiming(
       lines,
@@ -1440,10 +1554,8 @@ async function missingBinStillAbsent(hint: string): Promise<boolean> {
 }
 
 /**
- * Operator steps karaoke on Preview with ←/→ (does not seek the media clock).
- * → show next cue and teach “this line starts now” at positionMs.
- * ← previous cue, or blank (−1) before the first; delays the left-behind cue
- *   so auto timing will not flash it again at the current position.
+ * Preview ←/→ only changes which cue is shown.
+ * Cue clocks stay on the Whisper voice anchor — a manual nudge must not move them.
  */
 export function nudgeSubtitleCancionero(
   session: SessionRecord,
@@ -1461,7 +1573,6 @@ export function nudgeSubtitleCancionero(
       ? Math.max(0, patch.positionMs)
       : Math.max(0, clock?.positionMs ?? 0);
 
-  // Manual blank (−1) must win over clock lookup.
   const current =
     prev.cueIndex === -1
       ? -1
@@ -1472,44 +1583,17 @@ export function nudgeSubtitleCancionero(
         : cueIndexAtPositionMs(cues, positionMs);
 
   const delta: -1 | 1 = patch.delta === -1 ? -1 : 1;
-  let nextIndex: number;
-  if (delta === 1) {
-    nextIndex = current < 0 ? 0 : Math.min(cues.length - 1, current + 1);
-  } else {
-    // Allow stepping to blank before the first lyric.
-    nextIndex = current <= 0 ? -1 : current - 1;
-  }
-
-  let nextCues = [...cues];
-  if (delta === 1) {
-    // → teaches: the line we land on starts at the operator’s wall clock.
-    nextCues = retimedCuesAtIndex(cues, nextIndex, positionMs);
-  } else if (current >= 0 && current < cues.length) {
-    // ← means “too early”: push the cue we leave so it starts after now.
-    const delayTo = Math.max(positionMs + 500, Math.round(positionMs) + 500);
-    if (cues[current]!.startMs <= positionMs + 50) {
-      nextCues = retimedCuesAtIndex(cues, current, delayTo);
-    }
-  }
-
-  if (delta === 1 || (delta === -1 && current >= 0)) {
-    const mediaKey = mediaKeyFromAssetId(prev.assetId);
-    if (mediaKey) {
-      void rememberCancioneroTiming({
-        mediaKey,
-        cueStarts: nextCues.map((c) => c.startMs),
-      }).catch((err) => {
-        console.warn(
-          "[subtitle] cancionero timing save failed:",
-          err instanceof Error ? err.message : err,
-        );
-      });
-    }
-  }
+  const nextIndex =
+    delta === 1
+      ? current < 0
+        ? 0
+        : Math.min(cues.length - 1, current + 1)
+      : current <= 0
+        ? -1
+        : current - 1;
 
   session.live.subtitleAgent = {
     ...prev,
-    cues: nextCues,
     cueIndex: nextIndex,
     hint: "cancionero_nudge",
     updatedAt: new Date().toISOString(),
@@ -1600,12 +1684,16 @@ export function setSubtitleAgent(
 
   const message = sessionStore.touchSubtitleAgent(session);
 
-  // Fire-and-forget local job (does not block WS).
-  // force=true only when enabling from off (user toggle) — retries missing bins / YT.
-  void runSubtitleJob(session.id, patch.itemId, {
-    force: wasOff,
-    source: "toggle_or_set",
-  });
+  if (wasOff) {
+    // Turn-on: calculate every A/V row already in the Guion in the background.
+    maybeStartKaraokeOnGuionItems(session);
+  } else {
+    // Focus / lang change: only the preferred row (or current) if needed.
+    void runSubtitleJob(session.id, patch.itemId, {
+      force: false,
+      source: "toggle_or_set",
+    });
+  }
 
   return message;
 }
@@ -1775,48 +1863,263 @@ export function saveLrclibLyricsToLibrary(
   return sessionStore.touchSubtitleAgent(session);
 }
 
+function isKaraokeGuionItem(item: PlaylistItem): boolean {
+  if (item.type === "audio") return true;
+  return item.type === "video" && item.payload.sourceKind === "youtube";
+}
+
 /**
- * When a YouTube (or audio) link lands in Guion: enable karaoke and examine
- * the downloaded media (silence → cancionero cues). Fire-and-forget.
+ * Ensure karaoke is on without stealing the focused / En vivo row.
+ * Background jobs report into their own agent state + per-row percent.
+ */
+function ensureKaraokeEnabledForBackground(session: SessionRecord): void {
+  const prev = session.live.subtitleAgent ?? emptySubtitleAgentState();
+  if (prev.enabled && prev.status !== "off") return;
+  const targetLang = prev.targetLang ?? "es";
+  session.live.subtitleAgent = {
+    ...emptySubtitleAgentState(targetLang),
+    enabled: true,
+    status: "idle",
+    targetLang,
+    fontSize: prev.fontSize,
+    leadMs: prev.leadMs,
+    updatedAt: new Date().toISOString(),
+  };
+  broadcastSession(session.id, sessionStore.touchSubtitleAgent(session));
+}
+
+/**
+ * Queue one Guion A/V row for flag calculation. Does not require selecting the
+ * row. Progress appears on that row; the result lands in the per-item cache.
+ */
+function enqueueBackgroundKaraoke(
+  session: SessionRecord,
+  itemId: string,
+  opts?: { deferBroadcast?: boolean },
+): void {
+  if (isItemReady(session.id, itemId)) return;
+  if (bgCurrent.get(session.id) === itemId) return;
+  let q = bgQueued.get(session.id);
+  if (!q) {
+    q = new Set();
+    bgQueued.set(session.id, q);
+  }
+  if (q.has(itemId)) return;
+  q.add(itemId);
+  if (setBgProgress(session.id, itemId, { percent: 0, ready: false })) {
+    // Bulk import: one coalesced broadcast for all rows, not N full snapshots.
+    if (opts?.deferBroadcast) {
+      scheduleBgProgressBroadcast(session, false);
+    } else {
+      scheduleBgProgressBroadcast(session, true);
+    }
+  }
+}
+
+/**
+ * Walk the Guion queue one song at a time. Each job uses a private agent
+ * state so En vivo / Vista previa are never wiped mid-song.
+ */
+async function drainBackgroundKaraoke(sessionId: string): Promise<void> {
+  if (bgDraining.has(sessionId)) return;
+  bgDraining.add(sessionId);
+  try {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const q = bgQueued.get(sessionId);
+      if (!q || q.size === 0) break;
+      const itemId = q.values().next().value as string;
+      q.delete(itemId);
+      bgCurrent.set(sessionId, itemId);
+
+      const session = sessionStore.get(sessionId);
+      if (!session?.live.subtitleAgent?.enabled) {
+        bgCurrent.set(sessionId, null);
+        break;
+      }
+
+      try {
+        await prepareRowInBackground(session, itemId);
+      } catch (err) {
+        console.warn(
+          `[subtitle] background row failed item=${itemId}:`,
+          err instanceof Error ? err.message : err,
+        );
+        if (setBgProgress(sessionId, itemId, { percent: 0, ready: false, failed: true })) {
+          const live = sessionStore.get(sessionId);
+          if (live) {
+            scheduleBgProgressBroadcast(live, true);
+          }
+        }
+      } finally {
+        bgCurrent.set(sessionId, null);
+      }
+
+      // Yield between songs so Control/Output can paint and the hub event
+      // loop is not starved when many rows are queued.
+      const more = (bgQueued.get(sessionId)?.size ?? 0) > 0;
+      if (more) {
+        await new Promise<void>((r) => setTimeout(r, BG_QUEUE_YIELD_MS));
+      }
+    }
+  } finally {
+    bgDraining.delete(sessionId);
+    const q = bgQueued.get(sessionId);
+    if (
+      q &&
+      q.size > 0 &&
+      sessionStore.get(sessionId)?.live.subtitleAgent?.enabled
+    ) {
+      void drainBackgroundKaraoke(sessionId);
+    }
+  }
+}
+
+/**
+ * Restore from memory/disk or run Whisper for this Guion row in the background.
+ */
+async function prepareRowInBackground(
+  session: SessionRecord,
+  itemId: string,
+): Promise<void> {
+  const sessionId = session.id;
+  const liveAgent = session.live.subtitleAgent;
+  if (!liveAgent?.enabled) return;
+
+  const resolved = resolveMediaSource(session, itemId);
+  if (!resolved.ok) {
+    setBgProgress(sessionId, itemId, { percent: 0, ready: false, failed: true });
+    broadcastSession(sessionId, sessionStore.touchSubtitleAgent(session));
+    return;
+  }
+
+  const targetLang = liveAgent.targetLang;
+  const hit = recallReadyAgent(
+    sessionId,
+    itemId,
+    resolved.assetId,
+    targetLang,
+  );
+  if (
+    hit &&
+    hit.cues.length > 0 &&
+    !cuesSuspiciouslyEarly(hit.cues) &&
+    (await agentLyricsStillCurrent(hit, resolved.mediaPath))
+  ) {
+    setBgProgress(sessionId, itemId, { percent: 100, ready: true });
+    if (liveAgent.itemId === itemId) {
+      session.live.subtitleAgent = {
+        ...liveAgent,
+        ...hit,
+        enabled: true,
+        itemId,
+        assetId: resolved.assetId,
+        status: "ready",
+        cueIndex: null,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    broadcastSession(sessionId, sessionStore.touchSubtitleAgent(session));
+    console.log(
+      `[subtitle] background cache hit item=${itemId} cues=${hit.cues.length}`,
+    );
+    return;
+  }
+
+  const fileKey = await resolveCacheKey(resolved.assetId, resolved.mediaPath);
+  if (fileKey) {
+    const saved = await loadPersistedAgent(fileKey, targetLang);
+    if (saved && (await persistedStillValid(saved))) {
+      const restored: SubtitleAgentState = {
+        ...emptySubtitleAgentState(targetLang),
+        ...saved.agent,
+        enabled: true,
+        status: "ready",
+        targetLang,
+        itemId,
+        assetId: resolved.assetId,
+        cues: saved.agent.cues.map((c) => ({ ...c })),
+        hint: saved.agent.hint ?? "cancionero_restored",
+        lyricsSource: saved.agent.lyricsSource ?? saved.source,
+        leadMs: CANCIONERO_DEFAULT_LEAD_MS,
+        cueIndex: null,
+        updatedAt: new Date().toISOString(),
+      };
+      setPersistMeta(resolved.assetId, {
+        songId: saved.songId,
+        lyricsHash: saved.lyricsHash,
+        source: saved.source,
+        lrclibSong: saved.lrclibSong,
+      });
+      rememberReadyAgent(sessionId, restored);
+      setBgProgress(sessionId, itemId, { percent: 100, ready: true });
+      if (session.live.subtitleAgent?.itemId === itemId) {
+        session.live.subtitleAgent = {
+          ...session.live.subtitleAgent,
+          ...restored,
+          fontSize: session.live.subtitleAgent.fontSize,
+        };
+      }
+      broadcastSession(sessionId, sessionStore.touchSubtitleAgent(session));
+      console.log(
+        `[subtitle] background disk restore item=${itemId} cues=${restored.cues.length}`,
+      );
+      return;
+    }
+  }
+
+  bumpBg(sessionId);
+  const privateAgent: SubtitleAgentState = {
+    ...emptySubtitleAgentState(targetLang),
+    enabled: true,
+    status: "idle",
+    targetLang,
+    itemId,
+    assetId: resolved.assetId,
+    fontSize: liveAgent.fontSize,
+    leadMs: liveAgent.leadMs,
+  };
+  console.log(`[subtitle] background calculate item=${itemId}`);
+  await bgStore.run({ itemId, agent: privateAgent }, async () => {
+    await runSubtitleJobInner(sessionId, itemId, {
+      force: true,
+      source: "guion_add",
+    });
+  });
+}
+
+/**
+ * When a YouTube / audio item lands in Guion: enable karaoke and queue the
+ * flag calculation in the background. The operator does not need to select
+ * the row — each song gets its own progress % and per-item cache.
  */
 export function maybeStartKaraokeOnGuionItem(
   session: SessionRecord,
   item: PlaylistItem,
 ): void {
-  const isYoutube =
-    item.type === "video" && item.payload.sourceKind === "youtube";
-  const isAudio = item.type === "audio";
-  if (!isYoutube && !isAudio) return;
+  if (!isKaraokeGuionItem(item)) return;
+  ensureKaraokeEnabledForBackground(session);
+  enqueueBackgroundKaraoke(session, item.id);
+  void drainBackgroundKaraoke(session.id);
+}
 
-  // Another item is projecting: starting here would overwrite the agent state
-  // (cues cleared) and blank the live karaoke. It is aligned on its own Go Live
-  // (or restored from the per-item cache if it was already processed).
-  const liveId = session.live.currentItemId;
-  if (liveId && liveId !== item.id) {
-    console.log(
-      `[subtitle] skip prefetch item=${item.id} (live item ${liveId} is projecting)`,
-    );
-    return;
+/**
+ * Queue every A/V row already in the Guion (import, toggle-on, bulk add).
+ */
+export function maybeStartKaraokeOnGuionItems(
+  session: SessionRecord,
+  items?: readonly PlaylistItem[],
+): void {
+  const list = items ?? session.playlist.items;
+  const karaoke = list.filter(isKaraokeGuionItem);
+  if (karaoke.length === 0) return;
+  ensureKaraokeEnabledForBackground(session);
+  for (const item of karaoke) {
+    enqueueBackgroundKaraoke(session, item.id, { deferBroadcast: true });
   }
-
-  const prev = session.live.subtitleAgent ?? emptySubtitleAgentState();
-  const targetLang = prev.targetLang ?? "es";
-  session.live.subtitleAgent = {
-    ...prev,
-    enabled: true,
-    targetLang,
-    status: "idle",
-    itemId: item.id,
-    hint: isYoutube ? "silence_scan" : prev.hint,
-    cues: prev.itemId === item.id ? prev.cues : [],
-    updatedAt: new Date().toISOString(),
-  };
-  const message = sessionStore.touchSubtitleAgent(session);
-  broadcastSession(session.id, message);
-  void runSubtitleJob(session.id, item.id, {
-    force: true,
-    source: "guion_add",
-  });
+  // One flush for the batch of 0 % rows, then start the drain.
+  scheduleBgProgressBroadcast(session, true);
+  void drainBackgroundKaraoke(session.id);
 }
 
 /** In-flight job per session — lets non-forced triggers join instead of restart. */
@@ -1987,9 +2290,15 @@ async function runSubtitleJob(
       );
       forgetReadyAgent(sessionId, peekResolved.item.id);
     } else if (shownReady) {
-      if (
-        await agentLyricsStillCurrent(peekAgent, peekResolved.mediaPath)
-      ) {
+      const meta = peekAgent.assetId
+        ? getPersistMeta(peekAgent.assetId)
+        : null;
+      const lyricsChanged =
+        meta != null &&
+        meta.source !== "lrclib" &&
+        !(await agentLyricsStillCurrent(peekAgent, peekResolved.mediaPath));
+      if (!lyricsChanged) {
+        // Already calculated for this item. En vivo must not restart 0→100%.
         console.log(
           `[subtitle] keep ready cues on ${source} item=${peekResolved.item.id} n=${peekAgent.cues.length}`,
         );
@@ -2536,6 +2845,20 @@ async function runSubtitleJobInner(
     });
     if (!isCurrent(sessionId, gen)) return;
 
+    const voiceEntrance = sungEntranceMs(
+      asr.words ?? [],
+      silenceAuto?.silences ?? [],
+    );
+    if (voiceEntrance != null) {
+      console.log(
+        `[subtitle] whisper voice scan words=${asr.words?.length ?? 0} entrance=${voiceEntrance}ms`,
+      );
+    }
+    const asrAtVoice =
+      voiceEntrance != null
+        ? anchorFirstCueToVoiceOnset(shapedAsr, voiceEntrance)
+        : shapedAsr;
+
     // Silence can only place a line per onset. With far fewer onsets than ASR
     // lines (e.g. 10 onsets / 28 lines) it would squash the lyric chart, so
     // keep Whisper's own clocks and use silence only to blank at the breath.
@@ -2545,7 +2868,7 @@ async function runSubtitleJobInner(
 
     // Prefer silence phrase placement when onsets cover the ASR lines; else
     // keep Fast Whisper / whisper.cpp segment clocks and blank on breaths.
-    const asrClockCues: SubtitleCue[] = shapedAsr;
+    const asrClockCues: SubtitleCue[] = asrAtVoice;
 
     if (
       silenceAuto &&
@@ -2560,7 +2883,11 @@ async function runSubtitleJobInner(
         SILENCE_AIR_ANTICIPATION_MS,
         silenceAuto.silences,
       );
-      const packed = packKaraokeDisplayCues(aligned.cues, 1, 1);
+      const voiced = anchorFirstCueToVoiceOnset(
+        aligned.cues,
+        voiceEntrance,
+      );
+      const packed = packKaraokeDisplayCues(voiced, 1, 1);
       console.log(
         `[subtitle] ASR silence-align synced=${aligned.synced} lines=${asrLines.length} onsets=${silenceAuto.onsetsMs.length} airMs=${SILENCE_AIR_ANTICIPATION_MS}`,
       );

@@ -21,8 +21,13 @@ import {
   songCancioneroLines,
   songLyricChunks,
   songLyricPhrases,
+  firstSpeechOnsetMs,
+  isConservativeEqualTimeStart,
   songToSubtitleCues,
   splitLyricPhrases,
+  firstLyricOnsetMs,
+  resolveKaraokeVoiceAnchorMs,
+  sungEntranceMs,
   titleFromAudioFilename,
   titleVariants,
 } from "../src/subtitle-cancionero.ts";
@@ -285,5 +290,95 @@ assert(
   "messy ASR never rewrites Biblioteca text",
 );
 assert(messyAligned.synced, "messy ASR still syncs via normalize");
+
+// Vasijas Rotas: sparse intro tokens are not the voice. The verse packs up
+// just after the breath that ends ~25.5s — not the 40s equal-time cap.
+const vasijasSilences = [
+  { startMs: 2_730, endMs: 4_400, durationMs: 1_670 },
+  { startMs: 9_670, endMs: 12_880, durationMs: 3_210 },
+  { startMs: 23_780, endMs: 25_520, durationMs: 1_740 },
+];
+const vasijasWords = [
+  { text: "alma", startMs: 7_050, p: 1 },
+  { text: "estaba", startMs: 14_110, p: 1 },
+  { text: "vida", startMs: 30_560, p: 0.61 },
+  { text: "pero", startMs: 32_250, p: 0.97 },
+  { text: "tu", startMs: 33_380, p: 0.95 },
+  { text: "gracia", startMs: 33_940, p: 0.97 },
+];
+const vasijasEntrance = sungEntranceMs(vasijasWords, vasijasSilences);
+assert(
+  vasijasEntrance != null && vasijasEntrance >= 25_000 && vasijasEntrance <= 26_000,
+  `Vasijas sung entrance should be the breath before the verse, got ${vasijasEntrance}`,
+);
+const equalGuess = songToSubtitleCues(
+  { title: "Vasijas Rotas", artist: "", stanzas: [{ id: "s", lines: Array.from({ length: 35 }, () => "línea") }] },
+  343_353,
+);
+assert(
+  isConservativeEqualTimeStart(equalGuess[0]!.startMs, 343_353, 35),
+  `35-line chart on a 5:43 track is the 40s cap, got ${equalGuess[0]!.startMs}`,
+);
+assert(equalGuess[0]!.startMs === 40_000, "cap is exactly 40s");
+
+// Libre Soy (053BvHDfIdI): manual captions open at 22.03s. A failed
+// one-line match must not keep the 12% intro (~37s).
+assert(
+  firstSpeechOnsetMs([
+    { startMs: 0 },
+    { startMs: 22_030 },
+    { startMs: 36_960 },
+  ]) === 22_030,
+  "first sung caption is the voice, not the equal-time cap",
+);
+
+// Digno Y Santo (YExhjAP8zPU): LRCLIB opens at 31.95s. A Whisper cluster at
+// 26.65s without hearing "digno/santo" must NOT yank the chart 5s early.
+const dignoWords = [
+  { text: "intro", startMs: 26_650, p: 0.9 },
+  { text: "ooh", startMs: 27_200, p: 0.8 },
+  { text: "yeah", startMs: 28_100, p: 0.7 },
+  { text: "mmm", startMs: 29_000, p: 0.6 },
+  { text: "digno", startMs: 31_900, p: 0.95 },
+  { text: "y", startMs: 32_200, p: 0.9 },
+  { text: "santo", startMs: 32_500, p: 0.95 },
+];
+assert(
+  firstLyricOnsetMs(dignoWords, "Digno y santo el cordero") != null &&
+    firstLyricOnsetMs(dignoWords, "Digno y santo el cordero")! >= 31_500,
+  "first lyric onset is when Whisper hears digno/santo, not intro ad-libs",
+);
+const dignoAnchor = resolveKaraokeVoiceAnchorMs({
+  asrWords: dignoWords,
+  silences: [{ startMs: 20_000, endMs: 26_000, durationMs: 6_000 }],
+  firstLineText: "Digno y santo el cordero",
+  chartFirstMs: 31_950,
+  equalTime: false,
+  lrclibChart: true,
+});
+assert(
+  dignoAnchor.reason === "lrclib_first_line" &&
+    dignoAnchor.voiceMs != null &&
+    dignoAnchor.voiceMs >= 31_500,
+  `Digno LRCLIB anchors to first-line ASR, got ${dignoAnchor.reason}/${dignoAnchor.voiceMs}`,
+);
+const dignoEarlyCluster = resolveKaraokeVoiceAnchorMs({
+  asrWords: [
+    { text: "ooh", startMs: 26_650, p: 0.9 },
+    { text: "yeah", startMs: 27_200, p: 0.9 },
+    { text: "mmm", startMs: 28_000, p: 0.9 },
+    { text: "ah", startMs: 29_000, p: 0.9 },
+  ],
+  silences: [{ startMs: 20_000, endMs: 26_000, durationMs: 6_000 }],
+  firstLineText: "Digno y santo el cordero",
+  chartFirstMs: 31_950,
+  equalTime: false,
+  lrclibChart: true,
+});
+assert(
+  dignoEarlyCluster.reason === "lrclib_reject_early" &&
+    dignoEarlyCluster.shiftAll === false,
+  `bare early cluster must not pull LRCLIB, got ${dignoEarlyCluster.reason}`,
+);
 
 console.log("SMOKE_OK cancionero-match");

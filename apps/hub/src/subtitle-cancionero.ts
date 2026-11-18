@@ -814,6 +814,222 @@ function phraseVoiceEndMs(
 /** Small pad so exclusive endMs (`t < end`) does not clip the last syllable. */
 const LAST_WORD_HOLD_PAD_MS = 120;
 
+/** Word clock from whisper.cpp (`-ojf` tokens). */
+export type LyricWordStamp = {
+  text: string;
+  startMs: number;
+  p?: number;
+};
+
+/**
+ * True when `startMs` is the equal-time intro guess (`conservativeIntroMs`),
+ * not a measured word clock. That guess caps at 40s.
+ */
+export function isConservativeEqualTimeStart(
+  startMs: number,
+  durationMs: number,
+  lineCount: number,
+): boolean {
+  if (!Number.isFinite(startMs) || lineCount < 1) return false;
+  const guess = conservativeIntroMs(
+    Math.max(0, durationMs),
+    Math.max(1, Math.trunc(lineCount)),
+  );
+  return Math.abs(Math.round(startMs) - guess) <= 80;
+}
+
+/**
+ * First caption or ASR cue that is not a t≈0 credit.
+ * Used when Whisper has no word stamps but the track already has clocks.
+ */
+export function firstSpeechOnsetMs(
+  cues: readonly { startMs: number }[],
+): number | null {
+  let best: number | null = null;
+  for (const cue of cues) {
+    if (typeof cue.startMs !== "number" || !Number.isFinite(cue.startMs)) {
+      continue;
+    }
+    const t = Math.max(0, Math.round(cue.startMs));
+    if (t < 800) continue;
+    if (best == null || t < best) best = t;
+  }
+  return best;
+}
+
+/**
+ * When Whisper first hears the opening cancionero line (not intro ad-libs).
+ * Used to gate LRCLIB voice-anchors: a bare word-cluster entrance often lands
+ * mid-intro and would yank a good LRC chart too early (Digno Y Santo).
+ */
+export function firstLyricOnsetMs(
+  words: readonly LyricWordStamp[],
+  firstLine: string,
+): number | null {
+  const targets = normalizeAlignText(firstLine)
+    .split(/\s+/)
+    .filter((t) => t.length >= 3);
+  if (targets.length === 0 || words.length < 2) return null;
+  const targetSet = new Set(targets);
+  const primary = [...targets].sort((a, b) => b.length - a.length).slice(
+    0,
+    Math.min(3, targets.length),
+  );
+  const need = Math.min(2, primary.length);
+
+  const stamps = words
+    .map((w) => ({
+      t: Math.max(0, Math.round(w.startMs)),
+      tok: normalizeAlignText(w.text)
+        .split(/\s+/)
+        .filter(Boolean),
+      p: typeof w.p === "number" ? w.p : 1,
+    }))
+    .filter((w) => w.p >= 0.4 && w.tok.length > 0)
+    .sort((a, b) => a.t - b.t);
+
+  for (let i = 0; i < stamps.length; i++) {
+    const startT = stamps[i]!.t;
+    const seen = new Set<string>();
+    let end = i;
+    for (; end < stamps.length && stamps[end]!.t - startT <= 6_000; end++) {
+      for (const tok of stamps[end]!.tok) {
+        if (targetSet.has(tok)) seen.add(tok);
+      }
+      const hits = primary.filter((p) => seen.has(p)).length;
+      if (hits < need) continue;
+      for (let k = i; k <= end; k++) {
+        if (stamps[k]!.tok.some((t) => targetSet.has(t))) {
+          return stamps[k]!.t;
+        }
+      }
+      return startT;
+    }
+  }
+  return null;
+}
+
+/** How far earlier a Whisper cluster may pull an LRCLIB chart without lyric proof. */
+export const LRCLIB_EARLY_PULL_MAX_MS = 2_500;
+
+/**
+ * Voice onset used to shift a lyric chart onto this recording.
+ *
+ * - Equal-time / guess charts: use sung entrance (or caption onset) freely.
+ * - LRCLIB LRC: prefer Whisper hearing the first line text. A bare cluster
+ *   entrance that is much earlier than the LRC open is treated as intro noise
+ *   and the chart is left alone (Digno Y Santo opened 5s early).
+ */
+export function resolveKaraokeVoiceAnchorMs(opts: {
+  asrWords: readonly LyricWordStamp[];
+  silences: readonly SilenceRegion[];
+  firstLineText: string;
+  chartFirstMs: number;
+  equalTime: boolean;
+  lrclibChart: boolean;
+  captionVoiceMs?: number | null;
+}): {
+  voiceMs: number | null;
+  shiftAll: boolean;
+  reason: string;
+} {
+  const chartFirst = Math.max(0, Math.round(opts.chartFirstMs));
+  const entrance = sungEntranceMs(opts.asrWords, opts.silences);
+  const lyricOnset = firstLyricOnsetMs(opts.asrWords, opts.firstLineText);
+  const caption =
+    typeof opts.captionVoiceMs === "number" && Number.isFinite(opts.captionVoiceMs)
+      ? Math.max(0, Math.round(opts.captionVoiceMs))
+      : null;
+
+  if (opts.equalTime) {
+    const voiceMs = entrance ?? caption;
+    return {
+      voiceMs,
+      shiftAll: voiceMs != null,
+      reason: entrance != null ? "equal_time_entrance" : "equal_time_caption",
+    };
+  }
+
+  if (opts.lrclibChart) {
+    if (lyricOnset != null) {
+      return {
+        voiceMs: lyricOnset,
+        shiftAll: true,
+        reason: "lrclib_first_line",
+      };
+    }
+    if (entrance == null) {
+      return { voiceMs: chartFirst, shiftAll: false, reason: "lrclib_keep" };
+    }
+    // Entrance at/after the LRC open (or only a small early nudge): OK.
+    if (entrance + LRCLIB_EARLY_PULL_MAX_MS >= chartFirst) {
+      return {
+        voiceMs: entrance,
+        shiftAll: true,
+        reason: "lrclib_entrance_near",
+      };
+    }
+    // Large early pull without hearing the first line → keep LRCLIB clocks.
+    console.log(
+      `[subtitle] keep lrclib open (whisper entrance ${entrance}ms earlier than chart ${chartFirst}ms without first-line match)`,
+    );
+    return { voiceMs: chartFirst, shiftAll: false, reason: "lrclib_reject_early" };
+  }
+
+  if (entrance != null) {
+    return { voiceMs: entrance, shiftAll: false, reason: "caption_entrance" };
+  }
+  return { voiceMs: chartFirst, shiftAll: false, reason: "chart_first" };
+}
+
+/**
+ * When singing actually starts.
+ *
+ * Whisper often smears the first lyric across the intro (`alma` at 7s,
+ * `estaba` at 14s) and only packs real words once the verse is underway.
+ * The sung attack is the breath (silence ≥ 1.2s) just before that dense run,
+ * not the 40s equal-time cap and not the first sparse token.
+ */
+export function sungEntranceMs(
+  words: readonly LyricWordStamp[],
+  silences: readonly SilenceRegion[],
+): number | null {
+  const sung = words
+    .filter((w) => {
+      const text = w.text.trim();
+      if (!/[\p{L}\p{N}]/u.test(text)) return false;
+      if (typeof w.p === "number" && w.p < 0.45) return false;
+      return Number.isFinite(w.startMs);
+    })
+    .map((w) => Math.max(0, Math.round(w.startMs)))
+    .sort((a, b) => a - b);
+  if (sung.length < 4) return null;
+
+  let clusterStart: number | null = null;
+  for (let i = 0; i <= sung.length - 4; i++) {
+    const last = sung[i + 3]!;
+    const first = sung[i]!;
+    if (last - first <= 8_000) {
+      clusterStart = first;
+      break;
+    }
+  }
+  if (clusterStart == null) return null;
+
+  const lookFrom = clusterStart - 12_000;
+  const lookTo = clusterStart - 250;
+  let breathEnd = -1;
+  for (const s of silences) {
+    const start = Math.max(0, Math.round(s.startMs));
+    const end = Math.max(start, Math.round(s.endMs));
+    const dur = Math.max(end - start, Math.round(s.durationMs));
+    if (dur < 1_200) continue;
+    if (end < lookFrom || end > lookTo) continue;
+    if (end > breathEnd) breathEnd = end;
+  }
+  return breathEnd > 0 ? breathEnd : clusterStart;
+}
+
 /**
  * When the first lyric is actually sung.
  *

@@ -29,6 +29,7 @@ import {
 } from "./watermark-store.js";
 import { clientIpFromHeaders, rateLimitAllow } from "./rate-limit.js";
 import { sessionStore } from "./session-store.js";
+import { maybeStartKaraokeOnGuionItems } from "./subtitle-agent.js";
 import { downloadYoutubeVideoFile } from "./subtitle-youtube.js";
 
 /** Session media upload cap (bytes) — prevents LAN DoS filling disk. */
@@ -687,6 +688,8 @@ export function createApiRoutes(): Hono {
       return c.json({ error: result.error }, 400);
     }
     broadcastSession(sessionId, result.message);
+    // Flag calculation for every A/V row — no need to select each one.
+    maybeStartKaraokeOnGuionItems(session);
     return c.json({
       snapshot: sessionStore.toSnapshot(session),
       added: result.added,
@@ -728,6 +731,7 @@ export function createApiRoutes(): Hono {
       return c.json({ error: result.error }, 400);
     }
     broadcastSession(sessionId, result.message);
+    maybeStartKaraokeOnGuionItems(session);
     return c.json({
       snapshot: sessionStore.toSnapshot(session),
       skipped: result.skipped,
@@ -1223,6 +1227,7 @@ export function createApiRoutes(): Hono {
         return c.json({ error: result.error }, 400);
       }
       broadcastSession(sessionId, result);
+      maybeStartKaraokeOnGuionItems(session, [materialized.item]);
       return c.json({
         item: materialized.item,
         snapshot: sessionStore.toSnapshot(session),

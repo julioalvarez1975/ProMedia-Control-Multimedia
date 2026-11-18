@@ -1,7 +1,8 @@
 /**
  * Persistent karaoke “learning”: remember which Biblioteca song worked for a
  * YouTube id / audio asset / primary title so the next run skips bad aliases,
- * plus operator-taught cue start times from Preview ←/→ nudges.
+ * `timingByMedia` is legacy: publish no longer applies those starts, and ←/→
+ * does not write them. The Whisper voice anchor owns cue clocks.
  */
 import { readJsonFile, writeJsonAtomic } from "./json-file.js";
 import path from "node:path";

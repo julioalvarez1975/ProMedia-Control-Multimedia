@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   createEmptyTextPayload,
   cryptoRandomId,
@@ -291,6 +291,10 @@ export function ControlPage() {
     session.snapshot?.live.transitionEffect ?? DEFAULT_TRANSITION_EFFECT;
   const subtitleAgent =
     session.snapshot?.live.subtitleAgent ?? emptySubtitleAgentState();
+  /** Defer Guion % paints so a flood of karaoke ticks does not freeze Control. */
+  const deferredKaraokeProgress = useDeferredValue(
+    subtitleAgent.enabled ? subtitleAgent.itemProgress : undefined,
+  );
   const themeStyle = themeSurfaceStyle(themeId, themeOverrides);
 
   const subtitleFocusItem = liveItem ?? selectedItem;
@@ -2145,9 +2149,7 @@ export function ControlPage() {
         {/* Left column: Guion list (full height). Live goes via Output / En vivo. */}
         <div className="control-guion-column">
           <SchedulePanel
-            karaokeProgress={
-              subtitleAgent.enabled ? subtitleAgent.itemProgress : undefined
-            }
+            karaokeProgress={deferredKaraokeProgress}
             items={items}
             selectedItemId={selectedItemId}
             liveItemId={liveItemId}

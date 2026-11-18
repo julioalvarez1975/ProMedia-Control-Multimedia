@@ -8,7 +8,9 @@ import type {
   PlaylistItem,
   PresentationPayload,
   SceneMode,
+  SessionLiveState,
   SessionSnapshot,
+  SubtitleAgentState,
   SubtitleFontSize,
   SubtitleLeadMs,
   SubtitleTargetLang,
@@ -38,9 +40,71 @@ const HUB_HINT =
 const SESSION_EXPIRED_HINT =
   "SESSION_EXPIRED: El hub se reinició y esta sesión ya no existe. Creando una nueva…";
 
+/**
+ * Fields Output needs to paint. Guion row % (itemProgress / downloadPercent)
+ * is Control-only noise — applying it would re-render the projector on every
+ * background karaoke tick and can freeze the browser during a long Guion.
+ */
+function projectionAgentKey(agent: SubtitleAgentState | null | undefined): string {
+  if (!agent) return "";
+  return [
+    agent.enabled ? 1 : 0,
+    agent.status,
+    agent.itemId ?? "",
+    agent.assetId ?? "",
+    agent.cueIndex ?? "",
+    agent.fontSize ?? "",
+    agent.leadMs ?? "",
+    agent.hint ?? "",
+    agent.cues.length,
+    agent.cues[0]?.startMs ?? "",
+    agent.cues[agent.cues.length - 1]?.endMs ?? "",
+  ].join("|");
+}
+
+function projectionLiveKey(live: SessionLiveState): string {
+  return [
+    live.currentItemId ?? "",
+    live.currentSlideIndex,
+    live.mediaClock?.positionMs ?? "",
+    live.mediaClock?.playing ? 1 : 0,
+    live.lyricOverlay?.itemId ?? "",
+    live.lyricOverlay?.lineIndex ?? "",
+    live.themeId ?? "",
+    live.sceneMode ?? "",
+    live.videoCover?.active ? 1 : 0,
+    live.videoCover?.assetId ?? "",
+    live.watermarkEnabled ? 1 : 0,
+    projectionAgentKey(live.subtitleAgent),
+  ].join("::");
+}
+
+function isOutputProgressNoise(
+  prev: SessionSnapshot,
+  nextLive: SessionLiveState | undefined,
+  nextPlaylist: SessionSnapshot["playlist"] | undefined,
+): boolean {
+  if (!nextLive) return false;
+  if (nextPlaylist && nextPlaylist !== prev.playlist) {
+    // Playlist identity changed in the payload — keep the update.
+    if (nextPlaylist.items !== prev.playlist.items) {
+      const a = prev.playlist.items;
+      const b = nextPlaylist.items;
+      if (
+        a.length !== b.length ||
+        a.some((item, i) => item.id !== b[i]?.id || item.order !== b[i]?.order)
+      ) {
+        return false;
+      }
+    }
+  }
+  return projectionLiveKey(prev.live) === projectionLiveKey(nextLive);
+}
+
 function applyHubMessage(
   msg: HubMessage,
   prev: SessionSnapshot | null,
+  role: ClientRole,
 ): SessionSnapshot | null {
   if (msg.type === "session.snapshot") {
     return msg.payload as SessionSnapshot;
@@ -49,6 +113,19 @@ function applyHubMessage(
     const p = msg.payload as Partial<SessionSnapshot>;
     if (!prev) {
       return prev;
+    }
+    if (
+      role === "output" &&
+      isOutputProgressNoise(prev, p.live, p.playlist)
+    ) {
+      // Stay seq-aligned without re-rendering the projector.
+      if (prev.seq === msg.seq) return prev;
+      return {
+        ...prev,
+        seq: msg.seq,
+        lastTouchAt: p.lastTouchAt ?? prev.lastTouchAt,
+        touchNote: p.touchNote ?? prev.touchNote,
+      };
     }
     return {
       ...prev,
@@ -201,12 +278,12 @@ export function useSessionConnection(role: ClientRole) {
           return;
         }
         setLastSeq(msg.seq);
-        setSnapshot((prev) => applyHubMessage(msg, prev));
+        setSnapshot((prev) => applyHubMessage(msg, prev, role));
       },
     });
     socketRef.current = sock;
     sock.connect();
-  }, [clearReconnectTimer]);
+  }, [clearReconnectTimer, role]);
 
   const send = useCallback((type: string, payload?: unknown): boolean => {
     return socketRef.current?.send(type, payload) ?? false;

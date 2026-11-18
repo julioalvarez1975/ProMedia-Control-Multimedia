@@ -250,21 +250,22 @@ El agente pone la **letra** en pantalla sincronizada con la canción (audio del 
 2. **LRCLIB** ([lrclib.net](https://lrclib.net)): si el cancionero no tiene la canción, busca por artista, título y duración (±6 s).
 3. **Subtítulos de YouTube o whisper.cpp:** último recurso (puede errar al oír).
 
-**Tiempos** (de más a menos fiable):
+**Tiempos.** En cada canción el hub analiza el audio con whisper.cpp y ancla el primer renglón al inicio de la voz de **esa** grabación. LRCLIB y el reparto uniforme solo arman el gráfico de líneas; no fijan el ataque. El procedimiento (flags, onset, ancla, versiones de caché) está en [docs/arquitectura.md](docs/arquitectura.md).
 
-1. Relojes sincronizados de **LRCLIB** (LRC) con el **texto del cancionero** (también si la canción ya está en Biblioteca).
-2. Subtítulos oficiales de YouTube o pistas locales `.srt` / `.vtt`.
-3. Reparto uniforme como último recurso.
+1. Whisper (`--prompt` de la letra oficial + `-ojf` para tiempos por palabra) mide cuándo entra la voz.
+2. Si el gráfico es LRCLIB o un reparto uniforme, se corre entero hasta ese onset. Si cada línea ya tiene reloj propio, solo se mueve la primera.
+3. Subtítulos oficiales o sidecars aportan relojes de línea cuando no hay LRC.
+4. El reparto uniforme (tope de intro 40 s) es el último recurso y **no** se publica como si fuera la voz.
 
-El **silencio** del audio solo sirve para **blanquear** la pantalla cuando el cantante respira, y la siguiente línea aparece un poco antes (~700 ms) de que vuelva la voz.
+El **silencio** blanquea la pantalla cuando el cantante respira; la línea siguiente aparece ~700 ms antes de que vuelva la voz. No reemplaza la medición de Whisper.
 
 **Rendimiento y cambio de canción**
 
 - Cada canción procesada queda en un **caché por canción** en el hub: al volver a ponerla **En vivo** las líneas se restauran al instante (≈0,1 s) sin recalcular.
-- Si añadís varias canciones al Guion seguidas, se procesan **en cola** una tras otra.
-- Añadir algo al Guion mientras otra canción se proyecta **no** borra su letra; la nueva se alinea al ponerla En vivo.
-- Un mismo disparo repetido (Go Live, `set` de Control) **no reinicia** un trabajo que ya está corriendo.
-- El caché vive en la memoria del hub: al reiniciarlo se pierde y hay que recargar Control.
+- Al cargar temas en el Guion (uno a uno, importar archivo o encender el agente) el cálculo de flag **arranca solo** en segundo plano: el % de cada fila sube sin seleccionarla.
+- Varias canciones se procesan **en cola** una tras otra; En vivo / Vista previa no se borran mientras otra fila se prepara. El hub limita los avisos de % al navegador para que Control/Output no se cuelguen; si igual se pone pesado, apagá el agente karaoke (cancela la cola).
+- Un mismo disparo repetido (Go Live) **no reinicia** un trabajo que ya terminó en `ready`.
+- El caché en memoria se pierde al reiniciar el hub; el de disco (`data/subtitles/aligned/`) se reutiliza.
 
 **Dependencias en el PATH (Mac)**
 
@@ -274,7 +275,7 @@ brew install yt-dlp ffmpeg whisper-cpp
 
 Reiniciá el hub tras instalar. Overrides: `FFMPEG_PATH`, `YT_DLP_PATH`, `WHISPER_CPP_PATH`.
 
-En el modo por defecto (`SUBTITLE_ASR_BACKEND=auto`) el hub transcribe con **whisper.cpp** (`whisper-cli`) solo cuando hace falta inventar letra (sin cancionero/LRCLIB/captions). **No carga** Xenova/ONNX en `auto`.
+En el modo por defecto (`SUBTITLE_ASR_BACKEND=auto`) el hub analiza **cada canción** con **whisper.cpp** (`whisper-cli`) para anclar el inicio de la voz, aunque la letra ya venga del cancionero o de LRCLIB. **No carga** Xenova/ONNX en `auto`.
 
 #### Agente alternativo local (recomendado si Whisper falla en Mac)
 
@@ -300,7 +301,7 @@ YouTube con captions oficiales en el idioma de Control es el camino de referenci
 
 **Primera ejecución (descarga de modelos)**
 
-- Con **whisper-cpp** instalado: red **una vez** para bajar `ggml-base.bin` (~142 MB) a `data/models/whisper/` (gitignore). Override `SUBTITLE_WHISPER_CPP_MODEL=ggml-tiny.bin` si hace falta. El hub pasa `-l <idioma de Control>` (no `auto`), `-ml 48 -sow`. Caché ASR **`_v7`** (borrar `data/subtitles/cache` tras actualizar; karaoke usa `-prompt` de la letra). Referencia: captions manuales ES de `G6P1VnEPvjg`.
+- Con **whisper-cpp** instalado: red **una vez** para bajar `ggml-base.bin` (~142 MB) a `data/models/whisper/` (gitignore). Override `SUBTITLE_WHISPER_CPP_MODEL=ggml-tiny.bin` si hace falta. El hub pasa `-l <idioma de Control>` (no `auto`), `-ml 48 -sow`, **`--prompt`** (no `-prompt`) y **`-ojf`**. Caché ASR versión **3** y letra alineada versión **4**: al actualizar, el arranque descarta los cálculos viejos. Referencia: captions manuales ES de `G6P1VnEPvjg`.
 - Sin whisper-cli: error `whisper_cpp_missing` → `brew install whisper-cpp` (no Xenova por defecto).
 - Caché: `data/subtitles/cache/`, `wav/`, `youtube-cache/` (gitignore)
 - Requiere **`ffmpeg`** + **`whisper-cli`**; YouTube también **`yt-dlp`**
@@ -468,7 +469,7 @@ No son paquetes npm. El hub los busca en el PATH.
 
 1. **ffmpeg** — audio, silencios (`silencedetect`) y pistas embebidas.
 2. **yt-dlp** — audio de un YouTube público.
-3. **whisper.cpp** (`whisper-cli`) — transcripción local si no hay letra ni subtítulos.
+3. **whisper.cpp** (`whisper-cli`) — analiza el audio de cada canción y ancla el primer renglón al inicio de la voz (`--prompt`, `-ojf`).
 ### Servicios externos (sin librería npm)
 
 1. **LRCLIB** (`lrclib.net`) — letra y relojes LRC (también para canciones ya en Biblioteca). Se apaga con `PROMEDIA_LRCLIB=0`.

@@ -25,8 +25,18 @@ import { subtitleDataRoot } from "./subtitle-paths.js";
  * (`purgeStaleAlignedCache`), and the song is calculated again.
  *   1 → 2: results made before per-row background jobs, faster-whisper and the
  *          voice-anchor diagnostics (e.g. out-of-sync "El Gran Yo Soy").
+ *   2 → 3: equal-time charts pinned the first line at the 40s intro cap
+ *          (Vasijas Rotas sang ~15s earlier). Recalculate.
+ *   3 → 4: every song is analyzed with whisper.cpp and the first line is
+ *          anchored to that recording's voice onset.
+ *   4 → 5: a failed caption match must open on the first sung caption, not
+ *          the 12% intro cap (Libre Soy / 053BvHDfIdI opened at 37s; voice
+ *          is at 22s). En vivo reuses the ready chart.
+ *   5 → 6: LRCLIB charts must not be yanked earlier by a bare Whisper
+ *          cluster entrance (Digno Y Santo / YExhjAP8zPU opened 5s early).
+ *          Anchor only when ASR hears the first line, or leave LRC clocks.
  */
-export const ALIGNED_CACHE_VERSION = 2;
+export const ALIGNED_CACHE_VERSION = 6;
 const VERSION = ALIGNED_CACHE_VERSION;
 /** `yt_<videoId>` or `fh_<sha1 of the local file>`. */
 const SAFE_KEY = /^(?:yt_[A-Za-z0-9_-]{6,20}|fh_[0-9a-f]{40})$/;

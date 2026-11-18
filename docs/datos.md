@@ -23,7 +23,7 @@ data/
     sidecars/               .srt / .vtt nombrados como el archivo o como {assetId}
   models/
     whisper/                ggml-base.bin (whisper.cpp)
-    # (whisperx-venv eliminado — karaoke usa LRCLIB, no Python ASR)
+    # (whisperx-venv eliminado — el ASR es whisper.cpp, no Python)
 ```
 
 En Docker el volumen es `/data` dentro del contenedor (`MEDIA_ROOT=/data/media`, `PLAYLISTS_PATH=/data/playlists.json`).
@@ -37,7 +37,7 @@ En Docker el volumen es `/data` dentro del contenedor (`MEDIA_ROOT=/data/media`,
 | Cancionero, Biblias, textos, presentaciones, medios de biblioteca | Sí |
 | Logo y marca de agua del templo | Sí |
 | Assets subidos solo a la sesión | Dependen del adapter (`MEDIA_ROOT`). El puntero vive en la sesión en memoria: al morir el proceso, el Guion que los usaba ya no está |
-| Caché de karaoke | Sí, en `data/subtitles/`. Al cambiar la versión del procedimiento el hub purga cálculos viejos al arrancar |
+| Caché de karaoke | Sí, en `data/subtitles/`. Procedimiento actual: ASR **3**, letra alineada **5**. Al cambiar esas versiones el hub purga los cálculos viejos al arrancar |
 | Memoria «esta pista es esta canción» | Sí, junto al cancionero (`cancionero-memory`) |
 
 ## Qué no se commitea

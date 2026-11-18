@@ -153,7 +153,7 @@ Definidos como `ClientToHubMessage` en `@promedia/shared`. Output solo puede env
 | `live.setSlide` | `{ index }` |
 | `live.mediaClock.set` | `{ playing, positionMs? }` — también lo envía Output |
 | `live.subtitleAgent.set` | `enabled`, `targetLang`, `fontSize`, `leadMs` (−3 s…0), `itemId?` |
-| `live.subtitleAgent.nudge` | `{ delta: -1 \| 1, positionMs?, itemId? }` |
+| `live.subtitleAgent.nudge` | `{ delta: -1 \| 1, positionMs?, itemId? }` — solo cambia el renglón visible; no mueve los relojes anclados por Whisper |
 | `live.subtitleAgent.saveLyrics` | `{ itemId? }` guarda la letra de LRCLIB como sugerida |
 | `live.setLyricOverlay` | `{ itemId: string \| null, lineIndex? }` — una línea del cancionero sobre vídeo/fondo **sin** cambiar `currentItemId` ni el reloj; `null` oculta |
 | `live.setVideoCover` | `{ assetId?, active?, background? }` |

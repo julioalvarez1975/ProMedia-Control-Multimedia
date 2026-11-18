@@ -344,10 +344,19 @@ export async function ensureWhisperCppModel(
   return pending;
 }
 
+export type WhisperWordStamp = {
+  text: string;
+  startMs: number;
+  /** Decoder probability 0–1 when the JSON token included `p`. */
+  p?: number;
+};
+
 export type WhisperCppParsed = {
   cues: SubtitleCue[];
   /** Detected spoken language from whisper-cli JSON (`result.language`), if any. */
   language: string | null;
+  /** Token clocks (`-ojf`). Empty when the JSON has segment offsets only. */
+  words: WhisperWordStamp[];
 };
 
 /** Map ProMedia / BCP-47-ish tags to whisper-cli `-l` codes. */
@@ -374,7 +383,7 @@ export function parseWhisperCppResult(raw: string): WhisperCppParsed {
   try {
     data = JSON.parse(raw);
   } catch {
-    return { cues: [], language: null };
+    return { cues: [], language: null, words: [] };
   }
   const root = data as {
     result?: { language?: string };
@@ -383,6 +392,11 @@ export function parseWhisperCppResult(raw: string): WhisperCppParsed {
       text?: string;
       offsets?: { from?: number; to?: number };
       timestamps?: { from?: string; to?: string };
+      tokens?: Array<{
+        text?: string;
+        p?: number;
+        offsets?: { from?: number; to?: number };
+      }>;
     }>;
     segments?: Array<{
       text?: string;
@@ -403,6 +417,7 @@ export function parseWhisperCppResult(raw: string): WhisperCppParsed {
     : null;
 
   const cues: SubtitleCue[] = [];
+  const words: WhisperWordStamp[] = [];
   let i = 0;
 
   const push = (text: string, startMs: number, endMs: number) => {
@@ -416,6 +431,24 @@ export function parseWhisperCppResult(raw: string): WhisperCppParsed {
 
   if (Array.isArray(root.transcription)) {
     for (const seg of root.transcription) {
+      if (Array.isArray(seg.tokens)) {
+        for (const tok of seg.tokens) {
+          const raw = typeof tok.text === "string" ? tok.text.trim() : "";
+          if (!raw || raw.startsWith("[_")) continue;
+          if (!/[\p{L}\p{N}]/u.test(raw)) continue;
+          const at = tok.offsets?.from;
+          if (typeof at !== "number" || !Number.isFinite(at)) continue;
+          const p =
+            typeof tok.p === "number" && Number.isFinite(tok.p)
+              ? tok.p
+              : undefined;
+          words.push({
+            text: raw,
+            startMs: Math.max(0, Math.round(at)),
+            p,
+          });
+        }
+      }
       const from = seg.offsets?.from;
       const to = seg.offsets?.to;
       if (typeof from === "number" && typeof to === "number") {
@@ -446,7 +479,7 @@ export function parseWhisperCppResult(raw: string): WhisperCppParsed {
     }
   }
 
-  return { cues, language };
+  return { cues, language, words };
 }
 
 /** Parse whisper-cli JSON (`-oj`) segments into cues. */
@@ -545,13 +578,15 @@ export async function transcribeWithWhisperCpp(options: {
   /**
    * Optional initial prompt (karaoke timing path): bias Whisper toward
    * official cancionero vocabulary. Clocks only — cue text is discarded
-   * after forced align. Older whisper-cli builds may reject `-prompt`.
+   * after forced align. whisper-cli expects `--prompt` (not `-prompt`).
+   * Older builds may reject it; a rejected flag must not be treated as success.
    */
   prompt?: string | null;
   workDir: string;
   onStatus?: (status: "downloading" | "transcribing") => void;
 }): Promise<{
   cues: SubtitleCue[];
+  words: WhisperWordStamp[];
   whisperTranslatedToEn: boolean;
   sourceLang: string | null;
 }> {
@@ -587,6 +622,8 @@ export async function transcribeWithWhisperCpp(options: {
     sns: boolean;
     lyricSeg: boolean;
     prompt: boolean;
+    /** `-ojf` adds token clocks. Some builds only accept `-oj`. */
+    jsonFull: boolean;
   }): string[] => {
     const args = [
       "-m",
@@ -595,7 +632,7 @@ export async function transcribeWithWhisperCpp(options: {
       options.wavPath,
       "-of",
       outBase,
-      "-oj",
+      optional.jsonFull ? "-ojf" : "-oj",
       "-ovtt",
       "-osrt",
       "-nt", // no timestamps in stdout (cleaner)
@@ -611,8 +648,10 @@ export async function transcribeWithWhisperCpp(options: {
     ) {
       args.push("-ml", String(Math.floor(lyricMaxLen)), "-sow");
     }
+    // Long flag. `-prompt` is unknown on current whisper-cli and still exits 0,
+    // which used to publish the 40s equal-time chart with no word clocks.
     if (optional.prompt && promptText) {
-      args.push("-prompt", promptText);
+      args.push("--prompt", promptText);
     }
     if (options.translateToEn) {
       args.push("-tr");
@@ -620,16 +659,23 @@ export async function transcribeWithWhisperCpp(options: {
     return args;
   };
 
+  const flagRejected = (text: string): boolean =>
+    /unknown argument|unrecognized|invalid argument|-(?:np|sns|ml|sow|ojf)|--prompt|max-len|split-on-word/i.test(
+      text,
+    );
+
   let code: number;
   let stderr: string;
+  let stdout: string;
   let args = buildArgs({
     np: true,
     sns: true,
     lyricSeg: true,
     prompt: Boolean(promptText),
+    jsonFull: true,
   });
   try {
-    ({ code, stderr } = await runCmd(bin, args));
+    ({ code, stderr, stdout } = await runCmd(bin, args));
   } catch (err) {
     if (missingBinHintFromError(err, "whisper_cpp")) {
       throw new Error("whisper_cpp_missing");
@@ -641,31 +687,25 @@ export async function transcribeWithWhisperCpp(options: {
     throw err;
   }
 
-  if (
-    code !== 0 &&
-    /-(?:np|sns|ml|sow|prompt)|max-len|split-on-word|unknown|unrecognized/i.test(
-      stderr,
-    )
-  ) {
-    // Older builds may reject optional flags — peel them off in stages.
+  // Homebrew whisper-cli prints "unknown argument: -prompt" and exits 0.
+  // That is not a transcript — peel the flag and run again.
+  const combined = `${stderr}\n${stdout}`;
+  if ((code !== 0 || /unknown argument/i.test(combined)) && flagRejected(combined)) {
     const retries = [
-      { np: true, sns: true, lyricSeg: true, prompt: false },
-      { np: true, sns: true, lyricSeg: false, prompt: false },
-      { np: false, sns: false, lyricSeg: false, prompt: false },
+      { np: true, sns: true, lyricSeg: true, prompt: false, jsonFull: true },
+      { np: true, sns: true, lyricSeg: true, prompt: false, jsonFull: false },
+      { np: true, sns: true, lyricSeg: false, prompt: false, jsonFull: false },
+      { np: false, sns: false, lyricSeg: false, prompt: false, jsonFull: false },
     ] as const;
     for (const opt of retries) {
       args = buildArgs(opt);
       const next = await runCmd(bin, args);
       code = next.code;
       stderr = next.stderr;
-      if (code === 0) break;
-      if (
-        !/-(?:np|sns|ml|sow|prompt)|max-len|split-on-word|unknown|unrecognized/i.test(
-          stderr,
-        )
-      ) {
-        break;
-      }
+      stdout = next.stdout;
+      const nextText = `${stderr}\n${stdout}`;
+      if (code === 0 && !/unknown argument/i.test(nextText)) break;
+      if (code !== 0 && !flagRejected(nextText)) break;
     }
   }
 
@@ -683,11 +723,13 @@ export async function transcribeWithWhisperCpp(options: {
   }
 
   let cues: SubtitleCue[] = [];
+  let words: WhisperWordStamp[] = [];
   let sourceLang: string | null = null;
   try {
     const jsonRaw = await readFile(`${outBase}.json`, "utf8");
     const parsed = parseWhisperCppResult(jsonRaw);
     cues = parsed.cues;
+    words = parsed.words;
     sourceLang = parsed.language;
   } catch {
     // fall through
@@ -730,6 +772,7 @@ export async function transcribeWithWhisperCpp(options: {
 
   return {
     cues,
+    words,
     whisperTranslatedToEn: options.translateToEn,
     sourceLang,
   };
